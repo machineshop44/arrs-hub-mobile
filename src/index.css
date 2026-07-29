@@ -215,13 +215,17 @@ input {
   margin-top: 0.75rem;
 }
 
+.tabs-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 .tab {
   border: 1px solid var(--line);
   background: var(--bg1);
   color: var(--muted);
   border-radius: 8px;
-  padding: 0.45rem 0.25rem;
-  font-size: 0.72rem;
+  padding: 0.45rem 0.2rem;
+  font-size: 0.7rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -229,6 +233,62 @@ input {
 .tab.active {
   color: var(--text);
   border-color: var(--accent);
+}
+
+.search-panel {
+  margin-top: 0.65rem;
+}
+
+.search-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.4rem;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #041018;
+}
+
+.btn.primary.tight {
+  width: auto;
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+}
+
+.ok.banner {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
+  color: #b8f0d0;
+}
+
+.arr-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.search-item .overview {
+  display: block;
+  margin-top: 0.15rem;
+}
+
+.search-item .meta {
+  color: var(--accent);
+}
+
+.releases {
+  margin-top: 1rem;
+}
+
+.releases h2 {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
 }
 
 .arr-list {

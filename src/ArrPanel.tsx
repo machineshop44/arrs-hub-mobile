@@ -23,6 +23,7 @@ import {
   type ArrWantedItem,
 } from "./arrApi";
 import type { ServiceConfig } from "./services";
+import { ServiceIcon } from "./icons";
 
 type Tab = "library" | "search" | "calendar" | "missing" | "queue";
 type DetailTab = "overview" | "episodes";
@@ -533,7 +534,10 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
         <button type="button" className="icon-btn" onClick={onBack}>
           ←
         </button>
-        <h1>{service.name}</h1>
+        <h1 className="panel-title">
+          <ServiceIcon id={service.id} color={service.color} size={22} />
+          {service.name}
+        </h1>
         <button
           type="button"
           className="icon-btn"

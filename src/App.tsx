@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrPanel } from "./ArrPanel";
+import { IconDashboard, IconSettings, ServiceIcon } from "./icons";
 import {
   loadServices,
   probeService,
@@ -10,6 +11,12 @@ import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 
 type Screen = "modules" | "settings" | "arr" | "tautulli" | "dashboard";
+
+function statusDotClass(up: boolean | null | undefined): string {
+  if (up === true) return "status-dot status-up";
+  if (up === false) return "status-dot status-down";
+  return "status-dot status-unknown";
+}
 
 const MODULE_COPY: Record<string, string> = {
   sonarr: "Manage Television Series",
@@ -301,22 +308,12 @@ export function App() {
                   className="module-row"
                   onClick={() => openModule(service)}
                 >
-                  <span
-                    className={`status-dot ${
-                      upState === true
-                        ? "status-up"
-                        : upState === false
-                          ? "status-down"
-                          : "status-unknown"
-                    }`}
-                  />
+                  <span className={statusDotClass(upState)} aria-hidden="true" />
                   <span className="module-text">
                     <strong>{service.name}</strong>
                     <small>{health[service.id]?.message || "Checking…"}</small>
                   </span>
-                  <span className="module-icon" style={{ color: service.color }}>
-                    ●
-                  </span>
+                  <ServiceIcon id={service.id} color={service.color} size={26} />
                 </button>
               </li>
             );
@@ -346,8 +343,9 @@ export function App() {
               setDrawer(false);
               setScreen("settings");
             }}
+            aria-label="Settings"
           >
-            ⚙
+            <IconSettings size={22} color="currentColor" />
           </button>
         </div>
         <button
@@ -367,7 +365,10 @@ export function App() {
             className="drawer-item"
             onClick={() => openModule(service)}
           >
-            <span style={{ color: service.color }}>●</span> {service.name}
+            <span style={{ display: "inline-flex" }}>
+              <ServiceIcon id={service.id} color={service.color} size={18} />
+            </span>{" "}
+            {service.name}
           </button>
         ))}
         <button
@@ -398,7 +399,7 @@ export function App() {
           onClick={() => setScreen("settings")}
           aria-label="Settings"
         >
-          ⚙
+          <IconSettings size={22} color="currentColor" />
         </button>
       </header>
 
@@ -413,35 +414,35 @@ export function App() {
               <strong>Dashboard</strong>
               <small>Status of all modules</small>
             </span>
-            <span className="module-icon" style={{ color: "#5ad1c9" }}>
-              ⌂
-            </span>
+            <IconDashboard color="#5ad1c9" size={28} />
           </button>
         </li>
-        {modules.map((service) => (
-          <li key={service.id}>
-            <button
-              type="button"
-              className="module-row"
-              onClick={() => openModule(service)}
-            >
-              <span className="module-text">
-                <strong>{service.name}</strong>
-                <small>
-                  {MODULE_COPY[service.id] || "Open module"}
-                  {health[service.id]?.up === true
-                    ? " · Online"
-                    : health[service.id]?.up === false
-                      ? " · Offline"
-                      : ""}
-                </small>
-              </span>
-              <span className="module-icon" style={{ color: service.color }}>
-                ◆
-              </span>
-            </button>
-          </li>
-        ))}
+        {modules.map((service) => {
+          const upState = health[service.id]?.up;
+          return (
+            <li key={service.id}>
+              <button
+                type="button"
+                className="module-row"
+                onClick={() => openModule(service)}
+              >
+                <span className={statusDotClass(upState)} aria-hidden="true" />
+                <span className="module-text">
+                  <strong>{service.name}</strong>
+                  <small>
+                    {MODULE_COPY[service.id] || "Open module"}
+                    {upState === true
+                      ? " · Online"
+                      : upState === false
+                        ? " · Offline"
+                        : ""}
+                  </small>
+                </span>
+                <ServiceIcon id={service.id} color={service.color} size={28} />
+              </button>
+            </li>
+          );
+        })}
         <li>
           <button
             type="button"
@@ -452,9 +453,7 @@ export function App() {
               <strong>Settings</strong>
               <small>Configure Arrs</small>
             </span>
-            <span className="module-icon" style={{ color: "#7ddea0" }}>
-              ⚙
-            </span>
+            <IconSettings color="#7ddea0" size={28} />
           </button>
         </li>
       </ul>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
 import { fetchTautulliActivity, type TautulliSession } from "./tautulliApi";
 
@@ -40,7 +41,10 @@ export function TautulliPanel({
         <button type="button" className="icon-btn" onClick={onBack} aria-label="Back">
           ←
         </button>
-        <h1>Tautulli</h1>
+        <h1 className="panel-title">
+          <ServiceIcon id="tautulli" color={service.color} size={22} />
+          Tautulli
+        </h1>
         <button type="button" className="icon-btn" onClick={() => void load()}>
           ↻
         </button>

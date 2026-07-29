@@ -6,7 +6,7 @@ import {
   type ServiceConfig,
 } from "./services";
 
-const STORAGE_KEY = "arrs-mobile-services-v2";
+const STORAGE_KEY = "arrs-mobile-services-v3";
 
 export type ProbeResult = {
   up: boolean | null;

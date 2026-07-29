@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "live:prepare": "node scripts/enable-live-reload.mjs",
+    "sync:keys": "node scripts/sync-credentials-from-hub.mjs",
     "cap:sync": "npm run build && npx cap sync",
     "cap:android": "npm run cap:sync && npx cap open android",
     "cap:add:android": "npx cap add android"

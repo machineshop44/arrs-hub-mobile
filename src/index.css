@@ -63,6 +63,13 @@ body {
   font-weight: 700;
 }
 
+.luna-top h1.panel-title {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
 .icon-btn {
   width: 40px;
   height: 40px;
@@ -72,6 +79,9 @@ body {
   color: var(--text);
   font-size: 1.15rem;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .module-list {
@@ -115,6 +125,10 @@ body {
 
 .module-icon {
   font-size: 1.35rem;
+}
+
+.module-row svg {
+  flex-shrink: 0;
 }
 
 .luna-bottom {
@@ -507,9 +521,10 @@ input[type="text"] {
 }
 
 .status-dot {
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.6rem;
+  height: 0.6rem;
   border-radius: 50%;
+  flex-shrink: 0;
   background: var(--unknown);
 }
 
@@ -521,6 +536,11 @@ input[type="text"] {
 .status-dot.status-down {
   background: var(--bad);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 25%, transparent);
+}
+
+.status-dot.status-unknown {
+  background: var(--unknown);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--unknown) 25%, transparent);
 }
 
 .empty-card {

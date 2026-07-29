@@ -1,143 +1,256 @@
+import { Browser } from "@capacitor/browser";
+import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  fetchHubHealth,
-  fetchWatchdogStatus,
-  loadHubUrl,
-  normalizeHubUrl,
-  saveHubUrl,
-  type PcHealth,
-  type ServiceHealth,
-  type WatchPc,
-  type WatchTarget,
-} from "./hubApi";
+  loadServices,
+  probeService,
+  saveServices,
+  type ProbeResult,
+} from "./probe";
+import type { ServiceConfig } from "./services";
 
-type Screen = "status" | "setup";
+type Screen = "status" | "settings" | "viewer";
 
 export function App() {
-  const [hubUrl, setHubUrl] = useState(() => loadHubUrl());
-  const [draftUrl, setDraftUrl] = useState(() => loadHubUrl());
-  const [screen, setScreen] = useState<Screen>(() =>
-    loadHubUrl() ? "status" : "setup",
-  );
-  const [hubUp, setHubUp] = useState<boolean | null>(null);
-  const [targets, setTargets] = useState<WatchTarget[]>([]);
-  const [services, setServices] = useState<Record<string, ServiceHealth>>({});
-  const [pcDefs, setPcDefs] = useState<WatchPc[]>([]);
-  const [pcs, setPcs] = useState<Record<string, PcHealth>>({});
-  const [watchEnabled, setWatchEnabled] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>("status");
+  const [services, setServices] = useState<ServiceConfig[]>([]);
+  const [health, setHealth] = useState<Record<string, ProbeResult>>({});
+  const [ready, setReady] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ServiceConfig | null>(null);
+  const [iframeBlocked, setIframeBlocked] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const loaded = await loadServices();
+      setServices(loaded);
+      setReady(true);
+    })();
+  }, []);
+
+  const enabled = useMemo(
+    () => services.filter((s) => s.enabled && s.url.trim()),
+    [services],
+  );
 
   const refresh = useCallback(async () => {
-    const base = normalizeHubUrl(hubUrl);
-    if (!base) {
-      setHubUp(false);
-      setError("Set your Arrs Hub URL first.");
+    if (!enabled.length) {
+      setHealth({});
+      setError("Enable at least one service in Settings.");
       return;
     }
     setRefreshing(true);
     setError(null);
-    try {
-      const ok = await fetchHubHealth(base);
-      setHubUp(ok);
-      if (!ok) {
-        setError("Hub did not respond. Check URL, Wi‑Fi, and LAN bind.");
-        return;
-      }
-      const status = await fetchWatchdogStatus(base);
-      setTargets(Array.isArray(status.targets) ? status.targets : []);
-      setServices(status.services ?? {});
-      setPcDefs(Array.isArray(status.settings?.pcs) ? status.settings.pcs : []);
-      setPcs(status.pcs ?? {});
-      setWatchEnabled(status.settings?.enabled !== false);
-      setLastRefresh(new Date().toLocaleTimeString());
-    } catch (err) {
-      setHubUp(false);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRefreshing(false);
-    }
-  }, [hubUrl]);
+    const next: Record<string, ProbeResult> = {};
+    await Promise.all(
+      enabled.map(async (service) => {
+        next[service.id] = await probeService(service);
+      }),
+    );
+    setHealth(next);
+    setLastRefresh(new Date().toLocaleTimeString());
+    setRefreshing(false);
+  }, [enabled]);
 
   useEffect(() => {
-    if (screen !== "status" || !hubUrl) return;
+    if (!ready || screen !== "status") return;
     void refresh();
     const timer = setInterval(() => {
       void refresh();
     }, 15000);
     return () => clearInterval(timer);
-  }, [screen, hubUrl, refresh]);
+  }, [ready, screen, refresh]);
 
-  const rows = useMemo(() => {
-    if (targets.length > 0) {
-      return targets.map((t) => ({
-        id: t.id,
-        name: t.name,
-        health: services[t.id],
-      }));
-    }
-    return Object.entries(services).map(([id, health]) => ({
-      id,
-      name: id,
-      health,
-    }));
-  }, [targets, services]);
+  const upCount = enabled.filter((s) => health[s.id]?.up === true).length;
+  const downCount = enabled.filter((s) => health[s.id]?.up === false).length;
 
-  const upCount = rows.filter((r) => r.health?.up === true).length;
-  const downCount = rows.filter((r) => r.health?.up === false).length;
-  const pcOnline = pcDefs.filter((p) => pcs[p.id]?.online === true).length;
-  const pcOffline = pcDefs.filter((p) => pcs[p.id]?.online === false).length;
-
-  const onSaveSetup = () => {
-    const normalized = normalizeHubUrl(draftUrl);
-    if (!normalized) {
-      setError("Enter a hub URL like http://192.168.1.50:3847");
-      return;
-    }
-    saveHubUrl(normalized);
-    setHubUrl(normalized);
-    setDraftUrl(normalized);
-    setScreen("status");
-    setError(null);
+  const openService = async (service: ServiceConfig) => {
+    const url = service.url.trim();
+    if (!url) return;
+    setViewer(service);
+    setIframeBlocked(false);
+    setScreen("viewer");
   };
 
-  if (screen === "setup") {
+  const openExternalBrowser = async (url: string) => {
+    try {
+      await Browser.open({ url });
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const persist = async (next: ServiceConfig[]) => {
+    setServices(next);
+    await saveServices(next);
+  };
+
+  if (!ready) {
+    return (
+      <div className="page">
+        <p className="hint">Loading…</p>
+      </div>
+    );
+  }
+
+  if (screen === "settings") {
     return (
       <div className="page">
         <header className="top">
-          <h1>Arrs Hub</h1>
-          <p className="sub">Phone status companion</p>
+          <div className="top-row">
+            <div>
+              <h1>Settings</h1>
+              <p className="sub">URLs live on this device — no Arrs Hub needed</p>
+            </div>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => setScreen("status")}
+            >
+              Done
+            </button>
+          </div>
         </header>
-        <section className="card">
-          <h2>Hub address</h2>
-          <p className="hint">
-            On the same Wi‑Fi as your Plex PC. Use the PC&apos;s LAN IP and port
-            3847 (or 3000 in desktop mode). Example:{" "}
-            <code>http://192.168.1.50:3847</code>
-          </p>
-          <label className="field">
-            <span>Hub base URL</span>
-            <input
-              type="url"
-              inputMode="url"
-              autoCapitalize="off"
-              autoCorrect="off"
-              placeholder="http://192.168.1.50:3847"
-              value={draftUrl}
-              onChange={(e) => setDraftUrl(e.target.value)}
-            />
-          </label>
-          {error && <p className="err">{error}</p>}
-          <button type="button" className="btn primary" onClick={onSaveSetup}>
-            Save &amp; open status
-          </button>
-        </section>
-        <p className="footnote">
-          On the PC, start the hub with LAN bind (
-          <code>ARRS_HUB_BIND=0.0.0.0</code>) and allow port 3847 in Windows
-          Firewall. See the project README.
+
+        <p className="hint">
+          Prefills use your remote host (<code>67.84.101.14</code>). Edit any URL
+          for home Wi‑Fi if you prefer. Optional API keys improve *arr checks.
         </p>
+
+        {services.map((service) => (
+          <section key={service.id} className="card service-edit">
+            <div className="top-row">
+              <strong style={{ color: service.color }}>{service.name}</strong>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={service.enabled}
+                  onChange={(e) => {
+                    void persist(
+                      services.map((s) =>
+                        s.id === service.id
+                          ? { ...s, enabled: e.target.checked }
+                          : s,
+                      ),
+                    );
+                  }}
+                />
+                <span>On</span>
+              </label>
+            </div>
+            <label className="field">
+              <span>URL</span>
+              <input
+                type="url"
+                inputMode="url"
+                autoCapitalize="off"
+                autoCorrect="off"
+                value={service.url}
+                onChange={(e) => {
+                  setServices((prev) =>
+                    prev.map((s) =>
+                      s.id === service.id ? { ...s, url: e.target.value } : s,
+                    ),
+                  );
+                }}
+                onBlur={() => void saveServices(services)}
+              />
+            </label>
+            {service.probe === "arr-ping" && (
+              <label className="field">
+                <span>API key (optional)</span>
+                <input
+                  type="password"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  value={service.apiKey}
+                  placeholder="X-Api-Key"
+                  onChange={(e) => {
+                    setServices((prev) =>
+                      prev.map((s) =>
+                        s.id === service.id
+                          ? { ...s, apiKey: e.target.value }
+                          : s,
+                      ),
+                    );
+                  }}
+                  onBlur={() => void saveServices(services)}
+                />
+              </label>
+            )}
+          </section>
+        ))}
+
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => {
+            void saveServices(services);
+            setScreen("status");
+          }}
+        >
+          Save &amp; back to status
+        </button>
+      </div>
+    );
+  }
+
+  if (screen === "viewer" && viewer) {
+    return (
+      <div className="viewer-page">
+        <header className="viewer-bar">
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              setScreen("status");
+              setViewer(null);
+            }}
+          >
+            ← Status
+          </button>
+          <strong>{viewer.name}</strong>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void openExternalBrowser(viewer.url)}
+          >
+            Browser
+          </button>
+        </header>
+        {iframeBlocked && (
+          <div className="err banner">
+            This app blocks embedding. Use Browser (in-app tab) to edit.
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void openExternalBrowser(viewer.url)}
+            >
+              Open {viewer.name}
+            </button>
+          </div>
+        )}
+        <iframe
+          title={viewer.name}
+          className="viewer-frame"
+          src={viewer.url}
+          onError={() => setIframeBlocked(true)}
+          onLoad={(e) => {
+            // Some apps refuse framing; blank/opaque detection is limited.
+            try {
+              const doc = (e.target as HTMLIFrameElement).contentDocument;
+              if (doc === null && Capacitor.isNativePlatform()) {
+                // cross-origin — usually fine (loaded)
+              }
+            } catch {
+              // ignore
+            }
+          }}
+          sandbox="allow-forms allow-modals allow-popups allow-scripts allow-same-origin allow-downloads"
+          referrerPolicy="no-referrer-when-downgrade"
+        />
       </div>
     );
   }
@@ -147,38 +260,22 @@ export function App() {
       <header className="top">
         <div className="top-row">
           <div>
-            <h1>Arrs Hub</h1>
-            <p className="sub">Status</p>
+            <h1>Arrs Status</h1>
+            <p className="sub">Standalone · tap to open &amp; edit</p>
           </div>
           <button
             type="button"
             className="btn ghost"
-            onClick={() => {
-              setDraftUrl(hubUrl);
-              setScreen("setup");
-            }}
+            onClick={() => setScreen("settings")}
           >
-            Setup
+            Settings
           </button>
         </div>
-        <div className={`pill ${hubUp ? "ok" : hubUp === false ? "bad" : ""}`}>
-          {hubUp === null
-            ? "Checking hub…"
-            : hubUp
-              ? "Hub online"
-              : "Hub offline"}
-        </div>
-        <p className="meta">
-          {watchEnabled ? "Watch enabled" : "Watch disabled"}
-          {lastRefresh ? ` · Updated ${lastRefresh}` : ""}
-        </p>
         <p className="summary">
-          {rows.length
-            ? `${upCount} up · ${downCount} down`
-            : "No services reported yet"}
-          {pcDefs.length
-            ? ` · PCs ${pcOnline} online / ${pcOffline} offline`
-            : ""}
+          {enabled.length
+            ? `${upCount} up · ${downCount} down · ${enabled.length} watched`
+            : "No services enabled"}
+          {lastRefresh ? ` · ${lastRefresh}` : ""}
         </p>
         <button
           type="button"
@@ -186,83 +283,48 @@ export function App() {
           disabled={refreshing}
           onClick={() => void refresh()}
         >
-          {refreshing ? "Refreshing…" : "Refresh now"}
+          {refreshing ? "Checking…" : "Refresh now"}
         </button>
       </header>
 
       {error && <p className="err banner">{error}</p>}
 
       <section className="list">
-        <h2>Apps</h2>
-        {rows.length === 0 && (
-          <p className="hint">
-            No watch targets yet. Keep the desktop Arrs Hub open so it registers
-            services, then refresh.
-          </p>
-        )}
-        {rows.map((row) => {
-          const up = row.health?.up;
+        {enabled.map((service) => {
+          const result = health[service.id];
+          const up = result?.up;
           const statusClass =
             up === true ? "ok" : up === false ? "bad" : "unknown";
           const label =
-            up === true ? "Up" : up === false ? "Down" : "Unknown";
+            up === true ? "Up" : up === false ? "Down" : "Checking";
           return (
-            <article key={row.id} className={`row ${statusClass}`}>
+            <button
+              type="button"
+              key={service.id}
+              className={`row clickable ${statusClass}`}
+              onClick={() => void openService(service)}
+            >
               <div>
-                <strong>{row.name}</strong>
-                <p>
-                  {row.health?.message ||
-                    (up === true
-                      ? "Responding"
-                      : up === false
-                        ? "Not responding"
-                        : "Waiting for first check")}
-                </p>
+                <strong style={{ color: service.color }}>{service.name}</strong>
+                <p>{result?.message || "Waiting…"}</p>
               </div>
               <div className="right">
                 <span className="badge">{label}</span>
-                {typeof row.health?.latencyMs === "number" && (
-                  <small>{row.health.latencyMs} ms</small>
+                {typeof result?.latencyMs === "number" && (
+                  <small>{result.latencyMs} ms</small>
                 )}
+                <small className="open-hint">Open</small>
               </div>
-            </article>
+            </button>
           );
         })}
       </section>
 
-      {pcDefs.length > 0 && (
-        <section className="list">
-          <h2>PCs</h2>
-          {pcDefs.map((pc) => {
-            const state = pcs[pc.id];
-            const online = state?.online;
-            const statusClass =
-              online === true ? "ok" : online === false ? "bad" : "unknown";
-            const label =
-              online === true
-                ? "Online"
-                : online === false
-                  ? "Offline"
-                  : "Unknown";
-            return (
-              <article key={pc.id} className={`row ${statusClass}`}>
-                <div>
-                  <strong>{pc.name}</strong>
-                  <p>
-                    {state?.message ||
-                      (pc.host ? pc.host : "No host configured")}
-                  </p>
-                </div>
-                <div className="right">
-                  <span className="badge">{label}</span>
-                </div>
-              </article>
-            );
-          })}
-        </section>
-      )}
-
-      <p className="footnote url">{hubUrl}</p>
+      <p className="footnote">
+        Status checks go straight to each app (LunaSea-style). Opening uses an
+        in-app page; if a site blocks embedding, use Browser from the top bar.
+        Native edit screens can replace WebViews later, one app at a time.
+      </p>
     </div>
   );
 }

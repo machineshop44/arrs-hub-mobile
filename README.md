@@ -1,64 +1,42 @@
-# Arrs Hub Status (Android companion)
+# Arrs Hub Mobile (standalone)
 
-Separate Capacitor Android app that shows live app/PC status from **Arrs Hub**.
-It does **not** replace the desktop hub — Arrs Hub still runs the watch loop; this phone app is a viewer.
+Android status + in-app opener for your *arr stack. **Does not require Arrs Hub**
+to be running. The phone talks to Sonarr, Radarr, Plex, etc. directly (same idea
+as LunaSea).
 
-Sibling project: [Arrs-Hub](https://github.com/machineshop44/arrs-hub) (desktop + sync server).
+## What it does
 
-## Prerequisites
+1. **Status** — polls each enabled service (native HTTP, no CORS issues in the APK)
+2. **Open & edit** — tap a service to open it in-app (iframe viewer). If that app
+   blocks embedding, use **Browser** in the top bar (Chrome Custom Tab) to edit.
+3. **Settings** — URLs (and optional *arr API keys) stored on the device
 
-1. Arrs Hub running on your Plex PC with **LAN bind** (`ARRS_HUB_BIND=0.0.0.0` or `start-hub-lan.bat` in Arrs Hub)
-2. Phone on the **same Wi‑Fi**
-3. Android Studio (optional second window — leave your other apps alone)
+Defaults use your remote host `http://67.84.101.14` (same as Arrs Hub remotes).
 
-## 1. Start Arrs Hub for LAN
-
-In the **Arrs Hub** repo on the Plex PC:
-
-- Run `start-hub-lan.bat`, or set `ARRS_HUB_BIND=0.0.0.0` before starting the hub
-
-Find your PC LAN IP:
-
-```powershell
-Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' } | Select-Object IPAddress, InterfaceAlias
-```
-
-Phone hub URL example: `http://192.168.1.50:3847`
-
-Allow inbound TCP **3847** in Windows Firewall (private network) if the phone cannot connect.
-
-## 2. Develop this app in a browser
+## Build / run (Ava bedtime style)
 
 ```bat
 cd Arrs-Hub-Mobile
-npm install
-npm run dev
-```
-
-Open the Vite URL → Setup → enter hub base URL → confirm status updates.
-
-## 3. Build the Android APK
-
-```bat
-cd Arrs-Hub-Mobile
+set NODE_OPTIONS=--use-system-ca
 npm install
 npm run cap:sync
 npx cap open android
 ```
 
-In Android Studio (**File → Open → `Arrs-Hub-Mobile/android`** — use a second window if needed):
+In Android Studio: sync Gradle → Run on your tablet/phone.
 
-1. Wait for Gradle sync
-2. Run on a device, or **Build → Build Bundle(s) / APK(s) → Build APK(s)**
-3. Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
+After UI changes: `npm run cap:sync` then Run again.
 
-Install, open **Arrs Hub Status**, enter `http://<lan-ip>:3847`.
+## Dev in browser
 
-## API used (read-only)
+```bat
+npm run dev
+```
 
-| Call | Purpose |
-|------|---------|
-| `GET /api/health` | Hub reachable |
-| `GET /api/watchdog/status` | Service + PC status |
+Browser probes may hit CORS; the **APK** uses Capacitor native HTTP and is the
+real test path.
 
-This app does **not** push watch targets. Keep the desktop Arrs Hub open so targets stay registered.
+## Later (true LunaSea)
+
+Replace per-app WebViews with native API screens (queue, calendar, wanted) one
+service at a time. Status + open-in-app is the bridge.

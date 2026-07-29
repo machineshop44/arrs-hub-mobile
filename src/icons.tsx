@@ -70,6 +70,30 @@ export function IconSettings(props: IconProps) {
   );
 }
 
+/** Chrome-only: show password. */
+export function IconEye(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        d="M12 5c5.2 0 9.4 3.4 10.7 7-1.3 3.6-5.5 7-10.7 7S2.6 15.6 1.3 12C2.6 8.4 6.8 5 12 5Zm0 2.2A4.8 4.8 0 1 0 12 16.8 4.8 4.8 0 0 0 12 7.2Zm0 2.2a2.6 2.6 0 1 1 0 5.2 2.6 2.6 0 0 1 0-5.2Z"
+      />
+    </Svg>
+  );
+}
+
+/** Chrome-only: hide password. */
+export function IconEyeOff(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        d="M3.3 3.3 20.7 20.7l-1.4 1.4-2.5-2.5A12.4 12.4 0 0 1 12 19c-5.2 0-9.4-3.4-10.7-7 .6-1.7 1.9-3.4 3.6-4.7L1.9 4.7 3.3 3.3ZM12 7c.6 0 1.2.1 1.7.3L11.4 9A2.6 2.6 0 0 0 9.3 11.1L7.1 8.9C8.3 7.7 10 7 12 7Zm10.7 5c-.5 1.4-1.4 2.8-2.6 3.9l-2-2A4.8 4.8 0 0 0 12.4 8.2l2.1-2.1c2.3.7 4.3 2.1 5.7 3.9.7.9 1.2 1.9 1.5 2.9Z"
+      />
+    </Svg>
+  );
+}
+
 /**
  * Official product marks keyed by service id.
  * Sources recorded in src/assets/brands/SOURCES.md

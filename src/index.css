@@ -135,10 +135,93 @@ body {
 .brand-icon {
   display: block;
   object-fit: contain;
+  object-position: center;
   border-radius: 6px;
   flex-shrink: 0;
   user-select: none;
   -webkit-user-drag: none;
+  background: transparent;
+}
+
+.secret-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.secret-input input {
+  width: 100%;
+  padding-right: 2.6rem;
+}
+
+.secret-toggle {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.secret-toggle:hover,
+.secret-toggle:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg1) 55%, transparent);
+  outline: none;
+}
+
+.web-panel-page {
+  max-width: none;
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.web-frame-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg0);
+}
+
+.web-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.web-loading {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+  background: color-mix(in srgb, var(--bg0) 88%, transparent);
+}
+
+.web-blocked {
+  position: absolute;
+  inset: 1rem;
+  z-index: 2;
+  max-width: 28rem;
+  margin: auto;
+  height: fit-content;
 }
 
 .luna-bottom {

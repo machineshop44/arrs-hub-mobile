@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrPanel } from "./ArrPanel";
-import { IconDashboard, IconSettings, ServiceIcon } from "./icons";
+import {
+  IconDashboard,
+  IconEye,
+  IconEyeOff,
+  IconSettings,
+  ServiceIcon,
+} from "./icons";
 import {
   loadServices,
   probeService,
@@ -9,8 +15,18 @@ import {
 } from "./probe";
 import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
+import { WebPanel } from "./WebPanel";
 
-type Screen = "modules" | "settings" | "arr" | "tautulli" | "dashboard";
+type Screen = "modules" | "settings" | "arr" | "tautulli" | "web" | "dashboard";
+
+/** *arr apps with a native ArrPanel (not Prowlarr — web UI only for now). */
+const NATIVE_ARR_IDS = new Set([
+  "sonarr",
+  "radarr",
+  "lidarr",
+  "readarr",
+  "whisparr",
+]);
 
 function statusDotClass(up: boolean | null | undefined): string {
   if (up === true) return "status-dot status-up";
@@ -31,7 +47,56 @@ const MODULE_COPY: Record<string, string> = {
   bazarr: "Manage Subtitles",
   ombi: "Media Requests",
   fileflows: "File Processing",
+  calibre: "Ebook Library",
+  overseerr: "Media Requests",
+  whisparr: "Manage Adult Movies",
 };
+
+function SecretField({
+  label,
+  value,
+  onChange,
+  onBlur,
+  fieldKey,
+  revealed,
+  onToggle,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  fieldKey: string;
+  revealed: boolean;
+  onToggle: (key: string) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div className="secret-input">
+        <input
+          type={revealed ? "text" : "password"}
+          value={value}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
+        />
+        <button
+          type="button"
+          className="secret-toggle"
+          aria-label={revealed ? `Hide ${label}` : `Show ${label}`}
+          onClick={() => onToggle(fieldKey)}
+        >
+          {revealed ? (
+            <IconEyeOff size={18} color="currentColor" />
+          ) : (
+            <IconEye size={18} color="currentColor" />
+          )}
+        </button>
+      </div>
+    </label>
+  );
+}
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("modules");
@@ -40,6 +105,9 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [active, setActive] = useState<ServiceConfig | null>(null);
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>(
+    {},
+  );
 
   useEffect(() => {
     void (async () => {
@@ -75,6 +143,10 @@ export function App() {
     await saveServices(next);
   };
 
+  const toggleSecret = (key: string) => {
+    setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const openModule = (service: ServiceConfig) => {
     setDrawer(false);
     if (service.id === "tautulli") {
@@ -82,12 +154,13 @@ export function App() {
       setScreen("tautulli");
       return;
     }
-    if (service.probe === "arr" && service.id !== "prowlarr") {
+    if (NATIVE_ARR_IDS.has(service.id)) {
       setActive(service);
       setScreen("arr");
       return;
     }
-    setScreen("settings");
+    setActive(service);
+    setScreen("web");
   };
 
   const modules = useMemo(() => {
@@ -137,6 +210,18 @@ export function App() {
           setScreen("modules");
         }}
         onOpenSettings={() => setScreen("settings")}
+      />
+    );
+  }
+
+  if (screen === "web" && active) {
+    return (
+      <WebPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
       />
     );
   }
@@ -205,23 +290,21 @@ export function App() {
               />
             </label>
             {(service.auth === "apiKey" || service.id === "tautulli") && (
-              <label className="field">
-                <span>API key</span>
-                <input
-                  type="password"
-                  value={service.apiKey}
-                  onChange={(e) =>
-                    setServices((prev) =>
-                      prev.map((s) =>
-                        s.id === service.id
-                          ? { ...s, apiKey: e.target.value }
-                          : s,
-                      ),
-                    )
-                  }
-                  onBlur={() => void saveServices(services)}
-                />
-              </label>
+              <SecretField
+                label="API key"
+                value={service.apiKey}
+                fieldKey={`${service.id}:apiKey`}
+                revealed={!!revealedSecrets[`${service.id}:apiKey`]}
+                onToggle={toggleSecret}
+                onChange={(apiKey) =>
+                  setServices((prev) =>
+                    prev.map((s) =>
+                      s.id === service.id ? { ...s, apiKey } : s,
+                    ),
+                  )
+                }
+                onBlur={() => void saveServices(services)}
+              />
             )}
             {service.auth === "userPass" && (
               <>
@@ -241,23 +324,21 @@ export function App() {
                     onBlur={() => void saveServices(services)}
                   />
                 </label>
-                <label className="field">
-                  <span>Password</span>
-                  <input
-                    type="password"
-                    value={service.password}
-                    onChange={(e) =>
-                      setServices((prev) =>
-                        prev.map((s) =>
-                          s.id === service.id
-                            ? { ...s, password: e.target.value }
-                            : s,
-                        ),
-                      )
-                    }
-                    onBlur={() => void saveServices(services)}
-                  />
-                </label>
+                <SecretField
+                  label="Password"
+                  value={service.password}
+                  fieldKey={`${service.id}:password`}
+                  revealed={!!revealedSecrets[`${service.id}:password`]}
+                  onToggle={toggleSecret}
+                  onChange={(password) =>
+                    setServices((prev) =>
+                      prev.map((s) =>
+                        s.id === service.id ? { ...s, password } : s,
+                      ),
+                    )
+                  }
+                  onBlur={() => void saveServices(services)}
+                />
               </>
             )}
           </section>

@@ -13,7 +13,7 @@ Official (or official-derived) product marks used by `ServiceIcon`.
 | bazarr | bazarr.png | https://raw.githubusercontent.com/morpheus65535/bazarr/master/frontend/public/images/pwa-512x512.png |
 | qbittorrent | qbittorrent.svg | https://raw.githubusercontent.com/qbittorrent/qBittorrent/master/src/icons/qbittorrent_mac.svg |
 | sabnzbd | sabnzbd.svg | https://raw.githubusercontent.com/sabnzbd/sabnzbd/develop/interfaces/Config/templates/staticcfg/images/logo-arrow.svg |
-| ombi | ombi.png | https://raw.githubusercontent.com/Ombi-app/Ombi/develop/src/Ombi/wwwroot/images/ms-icon-310x310.png |
+| ombi | ombi.png | https://raw.githubusercontent.com/Ombi-app/Ombi/develop/src/Ombi/wwwroot/images/favicon/android-chrome-512x512.png (official PWA app icon) |
 | tautulli | tautulli.png | https://raw.githubusercontent.com/Tautulli/Tautulli/master/data/interfaces/default/images/logo-circle.png |
 | fileflows | fileflows.png | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/fileflows.png (FileFlows app mark; product source not published as open logo kit) |
 | plex | plex.png | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/plex.png (classic Plex chevron app mark) |

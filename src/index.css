@@ -127,8 +127,18 @@ body {
   font-size: 1.35rem;
 }
 
-.module-row svg {
+.module-row svg,
+.module-row .brand-icon {
   flex-shrink: 0;
+}
+
+.brand-icon {
+  display: block;
+  object-fit: contain;
+  border-radius: 6px;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .luna-bottom {

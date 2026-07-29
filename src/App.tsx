@@ -4,6 +4,7 @@ import {
   IconDashboard,
   IconEye,
   IconEyeOff,
+  IconPower,
   IconSettings,
   ServiceIcon,
 } from "./icons";
@@ -16,6 +17,17 @@ import {
 import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
+import {
+  DEFAULT_WOL,
+  detectHomeNetwork,
+  loadWolSettings,
+  normalizeMac,
+  resolveHomeCidr,
+  saveWolSettings,
+  wakePc,
+  type HomeNetworkStatus,
+  type WolSettings,
+} from "./wol";
 
 type Screen = "modules" | "settings" | "arr" | "tautulli" | "web" | "dashboard";
 
@@ -108,13 +120,72 @@ export function App() {
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>(
     {},
   );
+  const [wol, setWol] = useState<WolSettings>(DEFAULT_WOL);
+  const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
+  const [wakeBusy, setWakeBusy] = useState(false);
+  const [wakeMessage, setWakeMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
-      setServices(await loadServices());
+      const [svc, wolSettings] = await Promise.all([
+        loadServices(),
+        loadWolSettings(),
+      ]);
+      setServices(svc);
+      setWol(wolSettings);
       setReady(true);
     })();
   }, []);
+
+  const refreshHomeNet = useCallback(async (settings: WolSettings) => {
+    if (!settings.enabled) {
+      setHomeNet(null);
+      return;
+    }
+    setHomeNet(await detectHomeNetwork(settings));
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !wol.enabled) {
+      setHomeNet(null);
+      return;
+    }
+    void refreshHomeNet(wol);
+    const timer = setInterval(() => void refreshHomeNet(wol), 30000);
+    return () => clearInterval(timer);
+    // Re-check when home-matching inputs change; avoid every keystroke on MAC.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, wol.enabled, wol.homeCidr, wol.targetHost, refreshHomeNet]);
+
+  const persistWol = async (next: WolSettings) => {
+    setWol(next);
+    await saveWolSettings(next);
+    void refreshHomeNet(next);
+  };
+
+  const onWakePc = async () => {
+    if (wakeBusy) return;
+    if (!normalizeMac(wol.mac)) {
+      setWakeMessage("Add a valid MAC in Settings → Wake-on-LAN.");
+      return;
+    }
+    const status = homeNet ?? (await detectHomeNetwork(wol));
+    setHomeNet(status);
+    if (status.warnRemote) {
+      const proceed = window.confirm(
+        `${status.message}\n\nSend Wake-on-LAN anyway? Direct magic packets only work on home LAN / VPN. Hub relay needs Arrs Hub reachable and awake.`,
+      );
+      if (!proceed) return;
+    }
+    setWakeBusy(true);
+    setWakeMessage(null);
+    try {
+      const result = await wakePc(wol);
+      setWakeMessage(result.message);
+    } finally {
+      setWakeBusy(false);
+    }
+  };
 
   const enabled = useMemo(
     () => services.filter((s) => s.enabled && s.url.trim()),
@@ -243,6 +314,7 @@ export function App() {
             className="icon-btn"
             onClick={() => {
               void saveServices(services);
+              void saveWolSettings(wol);
               setScreen("modules");
             }}
           >
@@ -253,6 +325,150 @@ export function App() {
           URLs and API keys stay on this device. Tautulli needs its API key
           (Settings → Web Interface in Tautulli).
         </p>
+
+        <section className="card slim">
+          <div className="top-row">
+            <strong>Wake-on-LAN</strong>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={wol.enabled}
+                onChange={(e) => {
+                  void persistWol({ ...wol, enabled: e.target.checked });
+                }}
+              />
+              <span>On</span>
+            </label>
+          </div>
+          <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+            Sends a UDP magic packet from this phone on the home LAN (or VPN).
+            Pure cellular / remote internet cannot wake a PC unless Arrs Hub
+            (already awake on the LAN) relays it.
+          </p>
+          <label className="field">
+            <span>Target MAC</span>
+            <input
+              value={wol.mac}
+              placeholder="AA:BB:CC:DD:EE:FF"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => setWol((prev) => ({ ...prev, mac: e.target.value }))}
+              onBlur={(e) =>
+                void persistWol({ ...wol, mac: e.target.value })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>PC host / IP (optional, for directed broadcast)</span>
+            <input
+              value={wol.targetHost}
+              placeholder="192.168.1.10"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setWol((prev) => ({ ...prev, targetHost: e.target.value }))
+              }
+              onBlur={(e) =>
+                void persistWol({ ...wol, targetHost: e.target.value })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Broadcast IP</span>
+            <input
+              value={wol.broadcastIp}
+              placeholder="255.255.255.255"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setWol((prev) => ({ ...prev, broadcastIp: e.target.value }))
+              }
+              onBlur={(e) =>
+                void persistWol({
+                  ...wol,
+                  broadcastIp: e.target.value || "255.255.255.255",
+                })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>UDP port</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              value={wol.port}
+              onChange={(e) =>
+                setWol((prev) => ({
+                  ...prev,
+                  port: Number(e.target.value) || 9,
+                }))
+              }
+              onBlur={(e) =>
+                void persistWol({
+                  ...wol,
+                  port: Number(e.target.value) || 9,
+                })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Home network CIDR</span>
+            <input
+              value={wol.homeCidr}
+              placeholder={resolveHomeCidr(wol)}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setWol((prev) => ({ ...prev, homeCidr: e.target.value }))
+              }
+              onBlur={(e) =>
+                void persistWol({ ...wol, homeCidr: e.target.value })
+              }
+            />
+          </label>
+          <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+            Detection matches this phone&apos;s local IP to the CIDR (default
+            /24 of the service host). Set your real LAN subnet if services use
+            a public IP (e.g. 192.168.1.0/24).
+          </p>
+          <label className="field">
+            <span>Arrs Hub URL (optional relay)</span>
+            <input
+              type="url"
+              value={wol.hubUrl}
+              placeholder="http://192.168.1.10:3000"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setWol((prev) => ({ ...prev, hubUrl: e.target.value }))
+              }
+              onBlur={(e) =>
+                void persistWol({ ...wol, hubUrl: e.target.value })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Hub PC id (optional)</span>
+            <input
+              value={wol.hubPcId}
+              placeholder="pc-…"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setWol((prev) => ({ ...prev, hubPcId: e.target.value }))
+              }
+              onBlur={(e) =>
+                void persistWol({ ...wol, hubPcId: e.target.value })
+              }
+            />
+          </label>
+          {homeNet && (
+            <p className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}>
+              {homeNet.message}
+            </p>
+          )}
+        </section>
+
         {services.map((service) => (
           <section key={service.id} className="card slim">
             <div className="top-row">
@@ -379,6 +595,24 @@ export function App() {
             <span>Modules</span>
           </div>
         </div>
+        {wol.enabled && (
+          <div className="wol-bar">
+            <button
+              type="button"
+              className="btn primary wol-btn"
+              disabled={wakeBusy}
+              onClick={() => void onWakePc()}
+            >
+              <IconPower size={18} color="currentColor" />
+              {wakeBusy ? "Sending…" : "Wake PC"}
+            </button>
+            <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
+              {wakeMessage ||
+                homeNet?.message ||
+                "UDP magic packet on home LAN / VPN"}
+            </small>
+          </div>
+        )}
         <ul className="module-list">
           {modules.map((service) => {
             const upState = health[service.id]?.up;
@@ -498,6 +732,26 @@ export function App() {
             <IconDashboard color="#5ad1c9" size={28} />
           </button>
         </li>
+        {wol.enabled && (
+          <li>
+            <button
+              type="button"
+              className="module-row"
+              disabled={wakeBusy}
+              onClick={() => void onWakePc()}
+            >
+              <span className="module-text">
+                <strong>{wakeBusy ? "Waking…" : "Wake PC"}</strong>
+                <small>
+                  {wakeMessage ||
+                    homeNet?.message ||
+                    "Wake-on-LAN · home Wi‑Fi / VPN"}
+                </small>
+              </span>
+              <IconPower color="#f0b429" size={28} />
+            </button>
+          </li>
+        )}
         {modules.map((service) => {
           const upState = health[service.id]?.up;
           return (

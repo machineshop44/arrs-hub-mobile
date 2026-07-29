@@ -70,6 +70,18 @@ export function IconSettings(props: IconProps) {
   );
 }
 
+/** Chrome-only: power / Wake-on-LAN. */
+export function IconPower(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        d="M12 2.8a1.1 1.1 0 0 1 1.1 1.1v7.2a1.1 1.1 0 0 1-2.2 0V3.9A1.1 1.1 0 0 1 12 2.8Zm4.3 3.2a1 1 0 0 1 1.4.1 8.2 8.2 0 1 1-11.4 0 1 1 0 1 1 1.5-1.3 6.2 6.2 0 1 0 8.6 0 1 1 0 0 1 .9-.1Z"
+      />
+    </Svg>
+  );
+}
+
 /** Chrome-only: show password. */
 export function IconEye(props: IconProps) {
   return (

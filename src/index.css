@@ -488,6 +488,30 @@ input[type="text"] {
   padding: 0.75rem;
 }
 
+.wol-bar {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.65rem 0.75rem 0.25rem;
+}
+
+.wol-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.wol-ok {
+  color: var(--ok);
+  font-size: 0.78rem;
+}
+
+.wol-warn {
+  color: #e8b84a;
+  font-size: 0.78rem;
+}
+
 .card.slim {
   background: var(--bg1);
   border: 1px solid var(--line);

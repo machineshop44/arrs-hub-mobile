@@ -18,6 +18,10 @@ const config: CapacitorConfig = {
   },
   android: {
     allowMixedContent: true,
+    // Android 15+ draws edge-to-edge; inset the WebView so UI sits below
+    // the status bar / above the nav bar (same idea as Ava's statusBarsPadding).
+    adjustMarginsForEdgeToEdge: "force",
+    backgroundColor: "#12141c",
   },
 };
 

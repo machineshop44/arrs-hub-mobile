@@ -6,7 +6,7 @@ import {
   type ServiceConfig,
 } from "./services";
 
-const STORAGE_KEY = "arrs-mobile-services-v1";
+const STORAGE_KEY = "arrs-mobile-services-v2";
 
 export type ProbeResult = {
   up: boolean | null;
@@ -18,17 +18,13 @@ function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-function arrPingUrl(base: string): string {
-  return `${normalizeBase(base)}/ping`;
-}
-
-function plexIdentityUrl(webUrl: string): string {
-  try {
-    const u = new URL(webUrl);
-    return `${u.protocol}//${u.host}/identity`;
-  } catch {
-    return `${normalizeBase(webUrl)}/identity`;
-  }
+async function loadSeed() {
+  const modules = import.meta.glob<{ default: Record<string, unknown> }>(
+    "./credentials.local.ts",
+    { eager: true },
+  );
+  const mod = modules["./credentials.local.ts"];
+  return (mod?.default ?? {}) as import("./services").CredentialSeed;
 }
 
 async function httpGet(
@@ -65,29 +61,32 @@ async function httpGet(
 export async function probeService(service: ServiceConfig): Promise<ProbeResult> {
   const base = normalizeBase(service.url);
   if (!base) {
-    return { up: null, latencyMs: null, message: "No URL configured" };
+    return { up: null, latencyMs: null, message: "No URL" };
   }
 
   try {
-    if (service.probe === "arr-ping") {
+    if (service.probe === "arr") {
       const headers: Record<string, string> = {};
       if (service.apiKey.trim()) headers["X-Api-Key"] = service.apiKey.trim();
-      const { status, latencyMs } = await httpGet(arrPingUrl(base), headers);
-      const up = status >= 200 && status < 500;
+      const path = service.apiKey.trim()
+        ? `${base}/api/v3/system/status`
+        : `${base}/ping`;
+      const { status, latencyMs } = await httpGet(path, headers);
+      const up = status >= 200 && status < 400;
       return {
         up,
         latencyMs,
-        message: up ? `Ping ${status}` : `Ping failed (${status})`,
+        message: up ? "Online" : `HTTP ${status}`,
       };
     }
 
     if (service.probe === "plex") {
-      const { status, latencyMs } = await httpGet(plexIdentityUrl(base));
+      const { status, latencyMs } = await httpGet(`${base}/identity`);
       const up = status >= 200 && status < 500;
       return {
         up,
         latencyMs,
-        message: up ? "Plex identity OK" : `Plex failed (${status})`,
+        message: up ? "Online" : `HTTP ${status}`,
       };
     }
 
@@ -96,7 +95,7 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
     return {
       up,
       latencyMs,
-      message: up ? `HTTP ${status}` : `HTTP ${status}`,
+      message: up ? "Online" : `HTTP ${status}`,
     };
   } catch (err) {
     return {
@@ -108,26 +107,33 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
 }
 
 export async function loadServices(): Promise<ServiceConfig[]> {
+  const seed = await loadSeed();
+  const defaults = buildDefaultConfigs(seed);
   try {
     const { value } = await Preferences.get({ key: STORAGE_KEY });
-    if (!value) return buildDefaultConfigs();
+    if (!value) return defaults;
     const parsed = JSON.parse(value) as ServiceConfig[];
-    if (!Array.isArray(parsed) || parsed.length === 0) return buildDefaultConfigs();
-    const defaults = buildDefaultConfigs();
+    if (!Array.isArray(parsed) || parsed.length === 0) return defaults;
     const byId = new Map(parsed.map((s) => [s.id, s]));
     return defaults.map((def) => {
       const saved = byId.get(def.id);
       if (!saved) return def;
       return {
         ...def,
-        ...saved,
-        probe: (saved.probe as ProbeKind) || def.probe,
-        color: saved.color || def.color,
-        name: saved.name || def.name,
+        url: saved.url || def.url,
+        apiKey: saved.apiKey || def.apiKey,
+        username: saved.username || def.username,
+        password: saved.password || def.password,
+        enabled: saved.enabled,
+        // Always use catalog brand color / probe / auth
+        color: def.color,
+        probe: def.probe as ProbeKind,
+        auth: def.auth,
+        name: def.name,
       };
     });
   } catch {
-    return buildDefaultConfigs();
+    return defaults;
   }
 }
 

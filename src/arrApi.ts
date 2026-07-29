@@ -186,15 +186,22 @@ export async function fetchArrOverview(service: ServiceConfig) {
   endDate.setDate(endDate.getDate() + 7);
   const end = endDate.toISOString().slice(0, 10);
 
-  const [statusRes, queueRes, calendarRes, library] = await Promise.all([
-    arrGet(service, "/api/v3/system/status"),
-    arrGet(service, "/api/v3/queue?pageSize=20"),
-    arrGet(
-      service,
-      `/api/v3/calendar?start=${start}&end=${end}&unmonitored=false`,
-    ),
-    fetchLibrary(service).catch(() => [] as ArrLibraryItem[]),
-  ]);
+  const [statusRes, queueRes, wantedRes, calendarRes, library] =
+    await Promise.all([
+      arrGet(service, "/api/v3/system/status"),
+      arrGet(service, "/api/v3/queue?pageSize=20"),
+      arrGet(
+        service,
+        "/api/v3/wanted/missing?pageSize=30&sortDirection=descending",
+      ).catch(async () =>
+        arrGet(service, "/api/v3/wanted/missing?pageSize=30"),
+      ),
+      arrGet(
+        service,
+        `/api/v3/calendar?start=${start}&end=${end}&unmonitored=false`,
+      ),
+      fetchLibrary(service).catch(() => [] as ArrLibraryItem[]),
+    ]);
 
   const queue = asRecords(queueRes.data).map((row) => ({
     id: Number(row.id) || 0,
@@ -206,6 +213,17 @@ export async function fetchArrOverview(service: ServiceConfig) {
     sizeleft: typeof row.sizeleft === "number" ? row.sizeleft : undefined,
     timeleft: row.timeleft ? String(row.timeleft) : undefined,
   })) as ArrQueueItem[];
+
+  const wanted = asRecords(wantedRes.data).map((row) => ({
+    id: Number(row.id) || 0,
+    title: String(
+      row.title ||
+        row.seriesTitle ||
+        (row.series as { title?: string } | undefined)?.title ||
+        "Missing",
+    ),
+    status: row.status ? String(row.status) : undefined,
+  })) as ArrWantedItem[];
 
   const calendar = asRecords(calendarRes.data).map((row) => ({
     id: Number(row.id) || 0,
@@ -230,11 +248,13 @@ export async function fetchArrOverview(service: ServiceConfig) {
     ok: statusOk,
     version,
     queue,
+    wanted,
     calendar,
     library,
     errors: [
       statusRes.status >= 400 ? `Status ${statusRes.status}` : null,
       queueRes.status >= 400 ? `Queue ${queueRes.status}` : null,
+      wantedRes.status >= 400 ? `Wanted ${wantedRes.status}` : null,
       calendarRes.status >= 400 ? `Calendar ${calendarRes.status}` : null,
     ].filter(Boolean) as string[],
   };
@@ -465,6 +485,19 @@ export type ArrLibraryItem = {
   network?: string;
   episodeCount?: number;
   episodeFileCount?: number;
+  percentOfEpisodes?: number;
+  sizeOnDisk?: number;
+  seasonCount?: number;
+  qualityProfile?: string;
+  nextAiring?: string;
+  overview?: string;
+  path?: string;
+  genres?: string[];
+  runtime?: number;
+  certification?: string;
+  posterUrl?: string;
+  fanartUrl?: string;
+  added?: string;
 };
 
 export type ArrEpisodeItem = {
@@ -478,6 +511,16 @@ export type ArrEpisodeItem = {
   overview?: string;
 };
 
+export function mediaCoverUrl(
+  service: ServiceConfig,
+  id: number,
+  kind: "poster" | "fanart" = "poster",
+): string {
+  const base = normalizeBase(service.url);
+  const key = encodeURIComponent(service.apiKey.trim());
+  return `${base}/api/v3/MediaCover/${id}/${kind}-500.jpg?apikey=${key}`;
+}
+
 export async function fetchLibrary(
   service: ServiceConfig,
 ): Promise<ArrLibraryItem[]> {
@@ -489,10 +532,24 @@ export async function fetchLibrary(
   else if (kind === "author") path = "/api/v3/author";
   else return [];
 
-  const res = await arrGet(service, path);
+  const [res, profilesRes] = await Promise.all([
+    arrGet(service, path),
+    arrGet(service, "/api/v3/qualityprofile").catch(() => ({
+      status: 404,
+      data: [],
+      latencyMs: 0,
+    })),
+  ]);
   if (res.status >= 400) {
     throw new Error(`Library failed (${res.status})`);
   }
+
+  const profiles = new Map(
+    asList(profilesRes.data).map((row) => [
+      Number(row.id),
+      String(row.name || row.id),
+    ]),
+  );
 
   return asList(res.data)
     .map((row) => {
@@ -504,10 +561,15 @@ export async function fetchLibrary(
             episodeCount?: number;
             episodeFileCount?: number;
             movieFileCount?: number;
+            percentOfEpisodes?: number;
+            sizeOnDisk?: number;
+            seasonCount?: number;
           }
         | undefined;
+      const id = Number(row.id) || 0;
+      const qpId = Number(row.qualityProfileId) || 0;
       return {
-        id: Number(row.id) || 0,
+        id,
         title,
         year: typeof row.year === "number" ? row.year : undefined,
         status: row.status ? String(row.status) : undefined,
@@ -516,6 +578,29 @@ export async function fetchLibrary(
         network: row.network ? String(row.network) : undefined,
         episodeCount: stats?.episodeCount,
         episodeFileCount: stats?.episodeFileCount,
+        percentOfEpisodes: stats?.percentOfEpisodes,
+        sizeOnDisk: stats?.sizeOnDisk,
+        seasonCount:
+          stats?.seasonCount ??
+          (Array.isArray(row.seasons)
+            ? row.seasons.filter(
+                (s) => Number((s as { seasonNumber?: number }).seasonNumber) > 0,
+              ).length
+            : undefined),
+        qualityProfile: profiles.get(qpId),
+        nextAiring: row.nextAiring ? String(row.nextAiring) : undefined,
+        overview: row.overview ? String(row.overview) : undefined,
+        path: row.path ? String(row.path) : undefined,
+        genres: Array.isArray(row.genres)
+          ? row.genres.map((g) => String(g))
+          : undefined,
+        runtime: typeof row.runtime === "number" ? row.runtime : undefined,
+        certification: row.certification
+          ? String(row.certification)
+          : undefined,
+        posterUrl: id ? mediaCoverUrl(service, id, "poster") : undefined,
+        fanartUrl: id ? mediaCoverUrl(service, id, "fanart") : undefined,
+        added: row.added ? String(row.added) : undefined,
       } as ArrLibraryItem;
     })
     .sort((a, b) => a.title.localeCompare(b.title));

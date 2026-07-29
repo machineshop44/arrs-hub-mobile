@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrPanel } from "./ArrPanel";
 import {
   loadServices,
@@ -7,15 +7,31 @@ import {
   type ProbeResult,
 } from "./probe";
 import type { ServiceConfig } from "./services";
+import { TautulliPanel } from "./TautulliPanel";
 
-type Screen = "status" | "settings" | "arr";
+type Screen = "modules" | "settings" | "arr" | "tautulli" | "dashboard";
+
+const MODULE_COPY: Record<string, string> = {
+  sonarr: "Manage Television Series",
+  radarr: "Manage Movies",
+  lidarr: "Manage Music",
+  readarr: "Manage Books",
+  prowlarr: "Manage Indexers",
+  sabnzbd: "Manage Usenet Downloads",
+  qbittorrent: "Manage Torrent Downloads",
+  tautulli: "View Plex Activity",
+  plex: "Plex Media Server",
+  bazarr: "Manage Subtitles",
+  ombi: "Media Requests",
+  fileflows: "File Processing",
+};
 
 export function App() {
-  const [screen, setScreen] = useState<Screen>("status");
+  const [screen, setScreen] = useState<Screen>("modules");
   const [services, setServices] = useState<ServiceConfig[]>([]);
   const [health, setHealth] = useState<Record<string, ProbeResult>>({});
   const [ready, setReady] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [drawer, setDrawer] = useState(false);
   const [active, setActive] = useState<ServiceConfig | null>(null);
 
   useEffect(() => {
@@ -31,11 +47,6 @@ export function App() {
   );
 
   const refresh = useCallback(async () => {
-    if (!enabled.length) {
-      setHealth({});
-      return;
-    }
-    setRefreshing(true);
     const next: Record<string, ProbeResult> = {};
     await Promise.all(
       enabled.map(async (service) => {
@@ -43,23 +54,28 @@ export function App() {
       }),
     );
     setHealth(next);
-    setRefreshing(false);
   }, [enabled]);
 
   useEffect(() => {
-    if (!ready || screen !== "status") return;
+    if (!ready) return;
     void refresh();
-    const timer = setInterval(() => void refresh(), 15000);
+    const timer = setInterval(() => void refresh(), 20000);
     return () => clearInterval(timer);
-  }, [ready, screen, refresh]);
+  }, [ready, refresh]);
 
   const persist = async (next: ServiceConfig[]) => {
     setServices(next);
     await saveServices(next);
   };
 
-  const openService = (service: ServiceConfig) => {
-    if (service.probe === "arr") {
+  const openModule = (service: ServiceConfig) => {
+    setDrawer(false);
+    if (service.id === "tautulli") {
+      setActive(service);
+      setScreen("tautulli");
+      return;
+    }
+    if (service.probe === "arr" && service.id !== "prowlarr") {
       setActive(service);
       setScreen("arr");
       return;
@@ -67,9 +83,27 @@ export function App() {
     setScreen("settings");
   };
 
+  const modules = useMemo(() => {
+    const preferred = [
+      "sonarr",
+      "radarr",
+      "lidarr",
+      "sabnzbd",
+      "tautulli",
+      "prowlarr",
+      "qbittorrent",
+    ];
+    const list = [...enabled].sort((a, b) => {
+      const ai = preferred.indexOf(a.id);
+      const bi = preferred.indexOf(b.id);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+    return list;
+  }, [enabled]);
+
   if (!ready) {
     return (
-      <div className="page">
+      <div className="page luna-page">
         <p className="hint">Loading…</p>
       </div>
     );
@@ -80,36 +114,53 @@ export function App() {
       <ArrPanel
         service={active}
         onBack={() => {
-          setScreen("status");
           setActive(null);
+          setScreen("modules");
         }}
+      />
+    );
+  }
+
+  if (screen === "tautulli" && active) {
+    return (
+      <TautulliPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
+        onOpenSettings={() => setScreen("settings")}
       />
     );
   }
 
   if (screen === "settings") {
     return (
-      <div className="page">
-        <header className="top compact">
-          <div className="top-row">
-            <h1>Settings</h1>
-            <button
-              type="button"
-              className="btn ghost tight"
-              onClick={() => {
-                void saveServices(services);
-                setScreen("status");
-              }}
-            >
-              Done
-            </button>
-          </div>
-          <p className="sub">
-            *arr apps use an API key (not a webpage login). Keys stay on this
-            device.
-          </p>
+      <div className="page luna-page">
+        <header className="luna-top">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setScreen("modules")}
+          >
+            ←
+          </button>
+          <h1>Settings</h1>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => {
+              void saveServices(services);
+              setScreen("modules");
+            }}
+          >
+            ✓
+          </button>
         </header>
-
+        <p className="hint">
+          URLs and API keys stay on this device. Tautulli needs its API key
+          (Settings → Web Interface in Tautulli).
+        </p>
         {services.map((service) => (
           <section key={service.id} className="card slim">
             <div className="top-row">
@@ -135,9 +186,6 @@ export function App() {
               <span>URL</span>
               <input
                 type="url"
-                inputMode="url"
-                autoCapitalize="off"
-                autoCorrect="off"
                 value={service.url}
                 onChange={(e) =>
                   setServices((prev) =>
@@ -149,15 +197,12 @@ export function App() {
                 onBlur={() => void saveServices(services)}
               />
             </label>
-            {service.auth === "apiKey" && (
+            {(service.auth === "apiKey" || service.id === "tautulli") && (
               <label className="field">
                 <span>API key</span>
                 <input
                   type="password"
-                  autoCapitalize="off"
-                  autoCorrect="off"
                   value={service.apiKey}
-                  placeholder="Paste API key"
                   onChange={(e) =>
                     setServices((prev) =>
                       prev.map((s) =>
@@ -176,9 +221,6 @@ export function App() {
                 <label className="field">
                   <span>Username</span>
                   <input
-                    type="text"
-                    autoCapitalize="off"
-                    autoCorrect="off"
                     value={service.username}
                     onChange={(e) =>
                       setServices((prev) =>
@@ -217,54 +259,222 @@ export function App() {
     );
   }
 
-  return (
-    <div className="page">
-      <header className="top compact">
-        <div className="top-row">
-          <h1>Arrs</h1>
+  if (screen === "dashboard") {
+    const up = modules.filter((m) => health[m.id]?.up === true).length;
+    const down = modules.filter((m) => health[m.id]?.up === false).length;
+    return (
+      <div className="page luna-page">
+        <header className="luna-top">
           <button
             type="button"
-            className="btn ghost tight"
-            onClick={() => setScreen("settings")}
+            className="icon-btn"
+            onClick={() => setScreen("modules")}
           >
-            Settings
+            ←
+          </button>
+          <h1>Dashboard</h1>
+          <button type="button" className="icon-btn" onClick={() => void refresh()}>
+            ↻
+          </button>
+        </header>
+        <div className="dash-summary">
+          <div>
+            <strong>{up}</strong>
+            <span>Online</span>
+          </div>
+          <div>
+            <strong>{down}</strong>
+            <span>Down</span>
+          </div>
+          <div>
+            <strong>{modules.length}</strong>
+            <span>Modules</span>
+          </div>
+        </div>
+        <ul className="module-list">
+          {modules.map((service) => {
+            const upState = health[service.id]?.up;
+            return (
+              <li key={service.id}>
+                <button
+                  type="button"
+                  className="module-row"
+                  onClick={() => openModule(service)}
+                >
+                  <span
+                    className={`status-dot ${
+                      upState === true
+                        ? "status-up"
+                        : upState === false
+                          ? "status-down"
+                          : "status-unknown"
+                    }`}
+                  />
+                  <span className="module-text">
+                    <strong>{service.name}</strong>
+                    <small>{health[service.id]?.message || "Checking…"}</small>
+                  </span>
+                  <span className="module-icon" style={{ color: service.color }}>
+                    ●
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page luna-page">
+      {drawer && (
+        <button
+          type="button"
+          className="drawer-scrim"
+          aria-label="Close menu"
+          onClick={() => setDrawer(false)}
+        />
+      )}
+      <aside className={`drawer ${drawer ? "open" : ""}`}>
+        <div className="drawer-head">
+          <strong>Arrs</strong>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => {
+              setDrawer(false);
+              setScreen("settings");
+            }}
+          >
+            ⚙
           </button>
         </div>
         <button
           type="button"
-          className="btn ghost tight refresh"
-          disabled={refreshing}
-          onClick={() => void refresh()}
+          className="drawer-item"
+          onClick={() => {
+            setDrawer(false);
+            setScreen("dashboard");
+          }}
         >
-          {refreshing ? "Checking…" : "Refresh"}
+          Dashboard
+        </button>
+        {modules.map((service) => (
+          <button
+            key={service.id}
+            type="button"
+            className="drawer-item"
+            onClick={() => openModule(service)}
+          >
+            <span style={{ color: service.color }}>●</span> {service.name}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="drawer-item"
+          onClick={() => {
+            setDrawer(false);
+            setScreen("settings");
+          }}
+        >
+          Settings
+        </button>
+      </aside>
+
+      <header className="luna-top">
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setDrawer(true)}
+          aria-label="Menu"
+        >
+          ☰
+        </button>
+        <h1>Arrs</h1>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setScreen("settings")}
+          aria-label="Settings"
+        >
+          ⚙
         </button>
       </header>
 
-      <section className="list tight">
-        {enabled.map((service) => {
-          const result = health[service.id];
-          const up = result?.up;
-          const statusClass =
-            up === true
-              ? "status-up"
-              : up === false
-                ? "status-down"
-                : "status-unknown";
-          return (
+      <ul className="module-list home">
+        <li>
+          <button
+            type="button"
+            className="module-row"
+            onClick={() => setScreen("dashboard")}
+          >
+            <span className="module-text">
+              <strong>Dashboard</strong>
+              <small>Status of all modules</small>
+            </span>
+            <span className="module-icon" style={{ color: "#5ad1c9" }}>
+              ⌂
+            </span>
+          </button>
+        </li>
+        {modules.map((service) => (
+          <li key={service.id}>
             <button
               type="button"
-              key={service.id}
-              className={`row compact ${statusClass}`}
-              style={{ "--accent": service.color } as CSSProperties}
-              onClick={() => openService(service)}
+              className="module-row"
+              onClick={() => openModule(service)}
             >
-              <span className={`status-dot ${statusClass}`} aria-hidden="true" />
-              <span className="row-name">{service.name}</span>
-              <span className={`status-dot ${statusClass}`} aria-hidden="true" />
+              <span className="module-text">
+                <strong>{service.name}</strong>
+                <small>
+                  {MODULE_COPY[service.id] || "Open module"}
+                  {health[service.id]?.up === true
+                    ? " · Online"
+                    : health[service.id]?.up === false
+                      ? " · Offline"
+                      : ""}
+                </small>
+              </span>
+              <span className="module-icon" style={{ color: service.color }}>
+                ◆
+              </span>
             </button>
-          );
-        })}
-      </section>
+          </li>
+        ))}
+        <li>
+          <button
+            type="button"
+            className="module-row"
+            onClick={() => setScreen("settings")}
+          >
+            <span className="module-text">
+              <strong>Settings</strong>
+              <small>Configure Arrs</small>
+            </span>
+            <span className="module-icon" style={{ color: "#7ddea0" }}>
+              ⚙
+            </span>
+          </button>
+        </li>
+      </ul>
+
+      <nav className="luna-bottom">
+        <button type="button" className="bottom-pill active">
+          Modules
+        </button>
+        <button
+          type="button"
+          className="bottom-icon"
+          onClick={() => {
+            const sonarr = services.find((s) => s.id === "sonarr" && s.enabled);
+            if (sonarr) openModule(sonarr);
+          }}
+          aria-label="Calendar"
+        >
+          📅
+        </button>
+      </nav>
     </div>
   );
 }

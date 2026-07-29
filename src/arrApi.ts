@@ -186,17 +186,14 @@ export async function fetchArrOverview(service: ServiceConfig) {
   endDate.setDate(endDate.getDate() + 7);
   const end = endDate.toISOString().slice(0, 10);
 
-  const [statusRes, queueRes, wantedRes, calendarRes] = await Promise.all([
+  const [statusRes, queueRes, calendarRes, library] = await Promise.all([
     arrGet(service, "/api/v3/system/status"),
     arrGet(service, "/api/v3/queue?pageSize=20"),
     arrGet(
       service,
-      "/api/v3/wanted/missing?pageSize=20&sortKey=airDateUtc&sortDirection=descending",
-    ).catch(async () => arrGet(service, "/api/v3/wanted/missing?pageSize=20")),
-    arrGet(
-      service,
       `/api/v3/calendar?start=${start}&end=${end}&unmonitored=false`,
     ),
+    fetchLibrary(service).catch(() => [] as ArrLibraryItem[]),
   ]);
 
   const queue = asRecords(queueRes.data).map((row) => ({
@@ -209,17 +206,6 @@ export async function fetchArrOverview(service: ServiceConfig) {
     sizeleft: typeof row.sizeleft === "number" ? row.sizeleft : undefined,
     timeleft: row.timeleft ? String(row.timeleft) : undefined,
   })) as ArrQueueItem[];
-
-  const wanted = asRecords(wantedRes.data).map((row) => ({
-    id: Number(row.id) || 0,
-    title: String(
-      row.title ||
-        row.seriesTitle ||
-        (row.series as { title?: string } | undefined)?.title ||
-        "Missing",
-    ),
-    status: row.status ? String(row.status) : undefined,
-  })) as ArrWantedItem[];
 
   const calendar = asRecords(calendarRes.data).map((row) => ({
     id: Number(row.id) || 0,
@@ -244,12 +230,11 @@ export async function fetchArrOverview(service: ServiceConfig) {
     ok: statusOk,
     version,
     queue,
-    wanted,
     calendar,
+    library,
     errors: [
       statusRes.status >= 400 ? `Status ${statusRes.status}` : null,
       queueRes.status >= 400 ? `Queue ${queueRes.status}` : null,
-      wantedRes.status >= 400 ? `Wanted ${wantedRes.status}` : null,
       calendarRes.status >= 400 ? `Calendar ${calendarRes.status}` : null,
     ].filter(Boolean) as string[],
   };
@@ -470,6 +455,159 @@ export async function searchExisting(
   throw new Error("Unsupported *arr type.");
 }
 
+export type ArrLibraryItem = {
+  id: number;
+  title: string;
+  year?: number;
+  status?: string;
+  monitored: boolean;
+  hasFile?: boolean;
+  network?: string;
+  episodeCount?: number;
+  episodeFileCount?: number;
+};
+
+export type ArrEpisodeItem = {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string;
+  airDate?: string;
+  hasFile: boolean;
+  monitored: boolean;
+  overview?: string;
+};
+
+export async function fetchLibrary(
+  service: ServiceConfig,
+): Promise<ArrLibraryItem[]> {
+  const kind = detectArrKind(service);
+  let path = "";
+  if (kind === "series") path = "/api/v3/series";
+  else if (kind === "movie") path = "/api/v3/movie";
+  else if (kind === "artist") path = "/api/v3/artist";
+  else if (kind === "author") path = "/api/v3/author";
+  else return [];
+
+  const res = await arrGet(service, path);
+  if (res.status >= 400) {
+    throw new Error(`Library failed (${res.status})`);
+  }
+
+  return asList(res.data)
+    .map((row) => {
+      const title = String(
+        row.title || row.artistName || row.authorName || "Item",
+      );
+      const stats = row.statistics as
+        | {
+            episodeCount?: number;
+            episodeFileCount?: number;
+            movieFileCount?: number;
+          }
+        | undefined;
+      return {
+        id: Number(row.id) || 0,
+        title,
+        year: typeof row.year === "number" ? row.year : undefined,
+        status: row.status ? String(row.status) : undefined,
+        monitored: row.monitored !== false,
+        hasFile: Boolean(row.hasFile) || (stats?.movieFileCount ?? 0) > 0,
+        network: row.network ? String(row.network) : undefined,
+        episodeCount: stats?.episodeCount,
+        episodeFileCount: stats?.episodeFileCount,
+      } as ArrLibraryItem;
+    })
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+export async function fetchSeriesEpisodes(
+  service: ServiceConfig,
+  seriesId: number,
+): Promise<ArrEpisodeItem[]> {
+  const res = await arrGet(
+    service,
+    `/api/v3/episode?seriesId=${seriesId}&includeImages=false`,
+  );
+  if (res.status >= 400) {
+    throw new Error(`Episodes failed (${res.status})`);
+  }
+  return asList(res.data)
+    .map((row) => ({
+      id: Number(row.id) || 0,
+      seasonNumber: Number(row.seasonNumber) || 0,
+      episodeNumber: Number(row.episodeNumber) || 0,
+      title: String(row.title || `Episode ${row.episodeNumber}`),
+      airDate: row.airDate ? String(row.airDate) : undefined,
+      hasFile: Boolean(row.hasFile),
+      monitored: row.monitored !== false,
+      overview: row.overview ? String(row.overview) : undefined,
+    }))
+    .sort((a, b) =>
+      a.seasonNumber === b.seasonNumber
+        ? a.episodeNumber - b.episodeNumber
+        : a.seasonNumber - b.seasonNumber,
+    );
+}
+
+export async function searchEpisode(
+  service: ServiceConfig,
+  episodeIds: number[],
+): Promise<string> {
+  await triggerArrCommand(service, "EpisodeSearch", { episodeIds });
+  return "Episode search sent to download clients.";
+}
+
+export async function fetchEpisodeReleases(
+  service: ServiceConfig,
+  episodeId: number,
+): Promise<ArrReleaseItem[]> {
+  const res = await arrGet(service, `/api/v3/release?episodeId=${episodeId}`);
+  if (res.status >= 400) {
+    throw new Error(`Release search failed (${res.status})`);
+  }
+  return asList(res.data)
+    .slice(0, 40)
+    .map((row, index) => {
+      const quality = row.quality as
+        | { quality?: { name?: string } }
+        | undefined;
+      return {
+        guid: String(row.guid || `${index}`),
+        title: String(row.title || "Release"),
+        indexer: row.indexer ? String(row.indexer) : undefined,
+        size: typeof row.size === "number" ? row.size : undefined,
+        seeders: typeof row.seeders === "number" ? row.seeders : undefined,
+        quality: quality?.quality?.name,
+        approved: row.approved !== false,
+        raw: row,
+      };
+    });
+}
+
+/** Lookup payload often includes seasons — useful before the show is added. */
+export function seasonsFromLookup(
+  item: ArrLookupItem,
+): { seasonNumber: number; episodeCount?: number; monitored?: boolean }[] {
+  const seasons = item.raw.seasons;
+  if (!Array.isArray(seasons)) return [];
+  return seasons
+    .map((s) => {
+      const row = s as {
+        seasonNumber?: number;
+        monitored?: boolean;
+        statistics?: { episodeCount?: number };
+      };
+      return {
+        seasonNumber: Number(row.seasonNumber) || 0,
+        episodeCount: row.statistics?.episodeCount,
+        monitored: row.monitored,
+      };
+    })
+    .filter((s) => s.seasonNumber >= 0)
+    .sort((a, b) => a.seasonNumber - b.seasonNumber);
+}
+
 export async function fetchReleasesForLookup(
   service: ServiceConfig,
   item: ArrLookupItem,
@@ -477,19 +615,15 @@ export async function fetchReleasesForLookup(
   const kind = detectArrKind(service);
   let path = "";
   if (kind === "movie") {
-    const tmdbId = Number(item.raw.tmdbId) || 0;
     const movieId = item.addedId || 0;
-    path = movieId
-      ? `/api/v3/release?movieId=${movieId}`
-      : `/api/v3/release?movieId=0&tmdbId=${tmdbId}`;
-    // For not-added movies, interactive search needs add first in many versions.
     if (!movieId) {
       throw new Error("Add the movie first, then use Grab releases.");
     }
+    path = `/api/v3/release?movieId=${movieId}`;
   } else if (kind === "series") {
     const seriesId = item.addedId || 0;
     if (!seriesId) {
-      throw new Error("Add the series first, then use Grab releases.");
+      throw new Error("Add the series first, then browse episodes to grab.");
     }
     path = `/api/v3/release?seriesId=${seriesId}`;
   } else {
@@ -504,7 +638,9 @@ export async function fetchReleasesForLookup(
   return asList(res.data)
     .slice(0, 40)
     .map((row, index) => {
-      const quality = row.quality as { quality?: { name?: string } } | undefined;
+      const quality = row.quality as
+        | { quality?: { name?: string } }
+        | undefined;
       return {
         guid: String(row.guid || `${index}`),
         title: String(row.title || "Release"),

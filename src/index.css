@@ -291,6 +291,32 @@ input {
   font-size: 0.95rem;
 }
 
+.season-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.65rem 0 0.35rem;
+}
+
+.btn.chip.active-chip {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.library-open {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+
 .arr-list {
   list-style: none;
   margin: 0.65rem 0 0;

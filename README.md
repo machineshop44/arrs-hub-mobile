@@ -1,42 +1,33 @@
 # Arrs Hub Mobile (standalone)
 
 Android status + in-app opener for your *arr stack. **Does not require Arrs Hub**
-to be running. The phone talks to Sonarr, Radarr, Plex, etc. directly (same idea
-as LunaSea).
+to be running.
+
+## For Andrew
+
+You do **not** run `npm` / `cap sync`. Cursor makes the edits; with live reload +
+USB, the tablet updates like Ava’s bedtime app. Just leave Android Studio open
+and the app running on the tablet.
 
 ## What it does
 
-1. **Status** — polls each enabled service (native HTTP, no CORS issues in the APK)
-2. **Open & edit** — tap a service to open it in-app (iframe viewer). If that app
-   blocks embedding, use **Browser** in the top bar (Chrome Custom Tab) to edit.
-3. **Settings** — URLs (and optional *arr API keys) stored on the device
+1. **Status** — polls each enabled service (native HTTP in the APK)
+2. **Open & edit** — tap a service to open it in-app; use **Browser** if embed is blocked
+3. **Settings** — URLs / optional API keys on the device
 
-Defaults use your remote host `http://67.84.101.14` (same as Arrs Hub remotes).
+Defaults use `http://67.84.101.14` (same remote host as Arrs Hub).
 
-## Build / run (Ava bedtime style)
+## Agent / first-time setup
 
 ```bat
-cd Arrs-Hub-Mobile
-set NODE_OPTIONS=--use-system-ca
 npm install
-npm run cap:sync
+npm run live:prepare
+npm run dev
 npx cap open android
 ```
 
-In Android Studio: sync Gradle → Run on your tablet/phone.
+Then **Run** once on the tablet (USB). Keep Vite (`npm run dev`) running so UI
+changes hot-reload. `live:prepare` sets Capacitor to `http://localhost:5174`
+and runs `adb reverse`.
 
-After UI changes: `npm run cap:sync` then Run again.
-
-## Dev in browser
-
-```bat
-npm run dev
-```
-
-Browser probes may hit CORS; the **APK** uses Capacitor native HTTP and is the
-real test path.
-
-## Later (true LunaSea)
-
-Replace per-app WebViews with native API screens (queue, calendar, wanted) one
-service at a time. Status + open-in-app is the bridge.
+Release / offline APK (no live server): unset live URL, `npm run cap:sync`, build APK.

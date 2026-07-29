@@ -191,3 +191,15 @@ export function buildDefaultConfigs(seed: CredentialSeed = {}): ServiceConfig[] 
     };
   });
 }
+
+/** Lidarr / Readarr / Prowlarr use /api/v1; Sonarr / Radarr / Whisparr use /api/v3. */
+export function arrApiVersion(service: Pick<ServiceConfig, "id">): "v1" | "v3" {
+  switch (service.id) {
+    case "lidarr":
+    case "readarr":
+    case "prowlarr":
+      return "v1";
+    default:
+      return "v3";
+  }
+}

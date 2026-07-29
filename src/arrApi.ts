@@ -1,5 +1,6 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import type { ServiceConfig } from "./services";
+import { arrApiVersion } from "./services";
 
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
@@ -69,9 +70,15 @@ export function arrHeaders(service: ServiceConfig): Record<string, string> {
   return headers;
 }
 
+/** Rewrite hardcoded /api/v3/... callers to the correct version for this app. */
+function resolveArrPath(service: ServiceConfig, apiPath: string): string {
+  const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  return path.replace(/^\/api\/v3\b/, `/api/${arrApiVersion(service)}`);
+}
+
 export async function arrGet(service: ServiceConfig, apiPath: string) {
   const base = normalizeBase(service.url);
-  const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  const path = resolveArrPath(service, apiPath);
   return httpRequest(`${base}${path}`, {
     headers: arrHeaders(service),
   });
@@ -83,7 +90,7 @@ export async function arrPost(
   data: unknown,
 ) {
   const base = normalizeBase(service.url);
-  const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  const path = resolveArrPath(service, apiPath);
   return httpRequest(`${base}${path}`, {
     method: "POST",
     headers: {
@@ -518,7 +525,8 @@ export function mediaCoverUrl(
 ): string {
   const base = normalizeBase(service.url);
   const key = encodeURIComponent(service.apiKey.trim());
-  return `${base}/api/v3/MediaCover/${id}/${kind}-500.jpg?apikey=${key}`;
+  const ver = arrApiVersion(service);
+  return `${base}/api/${ver}/MediaCover/${id}/${kind}-500.jpg?apikey=${key}`;
 }
 
 export async function fetchLibrary(

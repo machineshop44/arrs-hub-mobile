@@ -1,6 +1,7 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 import {
+  arrApiVersion,
   buildDefaultConfigs,
   type ProbeKind,
   type ServiceConfig,
@@ -69,7 +70,7 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       const headers: Record<string, string> = {};
       if (service.apiKey.trim()) headers["X-Api-Key"] = service.apiKey.trim();
       const path = service.apiKey.trim()
-        ? `${base}/api/v3/system/status`
+        ? `${base}/api/${arrApiVersion(service)}/system/status`
         : `${base}/ping`;
       const { status, latencyMs } = await httpGet(path, headers);
       const up = status >= 200 && status < 400;

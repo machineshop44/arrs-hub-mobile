@@ -187,6 +187,9 @@ export function App() {
   const [services, setServices] = useState<ServiceConfig[]>([]);
   const [health, setHealth] = useState<Record<string, ProbeResult>>({});
   const [ready, setReady] = useState(false);
+  /** False until first health wave finishes or boot timeout — avoids a frozen Home. */
+  const [healthSettled, setHealthSettled] = useState(false);
+  const [checkingLabel, setCheckingLabel] = useState("Checking services…");
   const [drawer, setDrawer] = useState(false);
   const [active, setActive] = useState<ServiceConfig | null>(null);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>(
@@ -445,6 +448,7 @@ export function App() {
       }),
     );
     setHealth(next);
+    setHealthSettled(true);
   }, [enabled, withEffectiveUrl]);
 
   useEffect(() => {
@@ -453,6 +457,15 @@ export function App() {
     const timer = setInterval(() => void refresh(), 20000);
     return () => clearInterval(timer);
   }, [ready, refresh]);
+
+  // Don't leave Home stuck on connecting if probes hang past per-request timeouts.
+  useEffect(() => {
+    if (!ready || healthSettled) return;
+    const settleTimeout = window.setTimeout(() => {
+      setHealthSettled(true);
+    }, 12000);
+    return () => window.clearTimeout(settleTimeout);
+  }, [ready, healthSettled]);
 
   const persist = async (next: ServiceConfig[]) => {
     setServices(next);
@@ -511,6 +524,20 @@ export function App() {
     );
   }, [enabled, moduleOrder]);
 
+  useEffect(() => {
+    if (healthSettled || modules.length === 0) {
+      setCheckingLabel("Checking services…");
+      return;
+    }
+    let i = 0;
+    setCheckingLabel(`Checking ${modules[0]!.name}…`);
+    const timer = window.setInterval(() => {
+      i = (i + 1) % modules.length;
+      setCheckingLabel(`Checking ${modules[i]!.name}…`);
+    }, 850);
+    return () => window.clearInterval(timer);
+  }, [healthSettled, modules]);
+
   /** Wake on Home only when on home LAN, or uncertain (with confirm). Hide off-home. */
   const showWakeControl =
     wol.enabled && homeNet != null && homeNet.onHomeNetwork !== false;
@@ -535,8 +562,10 @@ export function App() {
 
   if (!ready) {
     return (
-      <div className="page luna-page">
-        <p className="hint">Loading…</p>
+      <div className="page luna-page boot-loading" role="status" aria-live="polite">
+        <div className="boot-spinner" aria-hidden="true" />
+        <strong>Loading…</strong>
+        <p className="hint">Loading preferences…</p>
       </div>
     );
   }
@@ -1188,21 +1217,33 @@ export function App() {
       </header>
 
       <div className="home-status">
-        <p className="home-status-line" aria-live="polite">
-          <span className="status-dot status-up" aria-hidden="true" />
-          {onlineCount} online
-          <span className="home-status-sep">·</span>
-          <span className="status-dot status-down" aria-hidden="true" />
-          {offlineCount} offline
-          <span className="home-status-sep">·</span>
-          {modules.length} modules
-          {pathing.homeBaseUrl.trim() && (
-            <>
-              <span className="home-status-sep">·</span>
-              {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
-            </>
-          )}
-        </p>
+        {!healthSettled ? (
+          <div
+            className="home-status-connecting"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="boot-spinner boot-spinner-sm" aria-hidden="true" />
+            <p className="home-status-line">Connecting…</p>
+            <p className="hint home-status-checking">{checkingLabel}</p>
+          </div>
+        ) : (
+          <p className="home-status-line" aria-live="polite">
+            <span className="status-dot status-up" aria-hidden="true" />
+            {onlineCount} online
+            <span className="home-status-sep">·</span>
+            <span className="status-dot status-down" aria-hidden="true" />
+            {offlineCount} offline
+            <span className="home-status-sep">·</span>
+            {modules.length} modules
+            {pathing.homeBaseUrl.trim() && (
+              <>
+                <span className="home-status-sep">·</span>
+                {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
+              </>
+            )}
+          </p>
+        )}
         {showWakeControl && (
           <div className="wol-bar home-wol">
             <button
@@ -1223,89 +1264,117 @@ export function App() {
         )}
       </div>
 
-      {reordering && (
-        <div className="reorder-bar">
-          <span>Reorder modules</span>
-          <button
-            type="button"
-            className="btn reorder-done"
-            onClick={() => setReordering(false)}
-          >
-            Done
-          </button>
+      {!healthSettled ? (
+        <div className="home-connecting" role="status" aria-live="polite">
+          <div className="boot-spinner" aria-hidden="true" />
+          <strong>Checking services…</strong>
+          <p className="hint">{checkingLabel}</p>
+          <div className="home-connecting-dots" aria-hidden="true">
+            {modules.slice(0, 10).map((service) => (
+              <span
+                key={service.id}
+                className="status-dot status-checking"
+                style={{ background: service.color || undefined }}
+              />
+            ))}
+          </div>
         </div>
-      )}
+      ) : (
+        <>
+          {reordering && (
+            <div className="reorder-bar">
+              <span>Reorder modules</span>
+              <button
+                type="button"
+                className="btn reorder-done"
+                onClick={() => setReordering(false)}
+              >
+                Done
+              </button>
+            </div>
+          )}
 
-      <ul className={`module-list home${reordering ? " is-reordering" : ""}`}>
-        {modules.map((service, index) => {
-          const upState = health[service.id]?.up;
-          return (
-            <li
-              key={service.id}
-              className={`module-item${reordering ? " reordering" : ""}`}
-            >
-              {reordering && (
-                <div className="reorder-btns">
+          <ul
+            className={`module-list home${reordering ? " is-reordering" : ""}`}
+          >
+            {modules.map((service, index) => {
+              const upState = health[service.id]?.up;
+              return (
+                <li
+                  key={service.id}
+                  className={`module-item${reordering ? " reordering" : ""}`}
+                >
+                  {reordering && (
+                    <div className="reorder-btns">
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        aria-label={`Move ${service.name} up`}
+                        disabled={index === 0}
+                        onClick={() => void moveModule(service.id, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        aria-label={`Move ${service.name} down`}
+                        disabled={index === modules.length - 1}
+                        onClick={() => void moveModule(service.id, 1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
-                    className="reorder-btn"
-                    aria-label={`Move ${service.name} up`}
-                    disabled={index === 0}
-                    onClick={() => void moveModule(service.id, -1)}
+                    className="module-row"
+                    {...moduleRowPressHandlers}
+                    onClick={() => onModuleRowClick(service)}
                   >
-                    ↑
+                    <span
+                      className={statusDotClass(upState)}
+                      aria-hidden="true"
+                    />
+                    <span className="module-text">
+                      <strong>{service.name}</strong>
+                      <small>
+                        {MODULE_COPY[service.id] || "Open module"}
+                        {upState === true
+                          ? " · Online"
+                          : upState === false
+                            ? " · Offline"
+                            : ""}
+                      </small>
+                    </span>
+                    <ServiceIcon
+                      id={service.id}
+                      color={service.color}
+                      size={28}
+                    />
                   </button>
-                  <button
-                    type="button"
-                    className="reorder-btn"
-                    aria-label={`Move ${service.name} down`}
-                    disabled={index === modules.length - 1}
-                    onClick={() => void moveModule(service.id, 1)}
-                  >
-                    ↓
-                  </button>
-                </div>
-              )}
+                </li>
+              );
+            })}
+            <li>
               <button
                 type="button"
                 className="module-row"
-                {...moduleRowPressHandlers}
-                onClick={() => onModuleRowClick(service)}
+                onClick={() => {
+                  setReordering(false);
+                  setScreen("settings");
+                }}
               >
-                <span className={statusDotClass(upState)} aria-hidden="true" />
                 <span className="module-text">
-                  <strong>{service.name}</strong>
-                  <small>
-                    {MODULE_COPY[service.id] || "Open module"}
-                    {upState === true
-                      ? " · Online"
-                      : upState === false
-                        ? " · Offline"
-                        : ""}
-                  </small>
+                  <strong>Settings</strong>
+                  <small>Configure Arrs</small>
                 </span>
-                <ServiceIcon id={service.id} color={service.color} size={28} />
+                <IconSettings color="#7ddea0" size={28} />
               </button>
             </li>
-          );
-        })}
-        <li>
-          <button
-            type="button"
-            className="module-row"
-            onClick={() => {
-              setReordering(false);
-              setScreen("settings");
-            }}
-          >
-            <span className="module-text">
-              <strong>Settings</strong>
-              <small>Configure Arrs</small>
-            </span>
-            <IconSettings color="#7ddea0" size={28} />
-          </button>
-        </li>
-      </ul>
+          </ul>
+        </>
+      )}
     </div>
   );
 }

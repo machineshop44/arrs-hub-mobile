@@ -401,31 +401,56 @@ body {
 }
 
 .home-status {
-  padding: 0.55rem 0.85rem 0.35rem;
-  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0.75rem 0.85rem 0.45rem;
+  padding: 1rem 1.1rem 0.95rem;
+  text-align: center;
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
 .home-status-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  justify-content: center;
+  gap: 0.4rem;
   margin: 0;
-  color: var(--muted);
-  font-size: 0.88rem;
+  color: var(--text);
+  font-size: 1.08rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
 }
 
 .home-status-line .status-dot {
-  margin-right: 0.1rem;
+  width: 0.72rem;
+  height: 0.72rem;
+  margin-right: 0.12rem;
 }
 
 .home-status-sep {
-  opacity: 0.55;
-  margin: 0 0.1rem;
+  opacity: 0.5;
+  margin: 0 0.12rem;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .home-wol {
-  margin: 0.55rem 0 0.15rem;
+  width: 100%;
+  max-width: 20rem;
+  margin: 0;
+  justify-items: center;
+  text-align: center;
+}
+
+.home-wol small {
+  display: block;
+  text-align: center;
 }
 
 .library-toolbar {

@@ -10,10 +10,26 @@ android {
         versionCode 2
         versionName "1.0.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Fat / universal APK: include common ABIs so one artifact installs on
+        // Pixel (arm64), tablets, and emulators (mirrors Ava Bedtime approach).
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // Never emit per-ABI split APKs from assembleDebug / assembleRelease.
+    splits {
+        abi {
+            enable false
+        }
+    }
+    bundle {
+        abi {
+            enableSplit = false
         }
     }
     buildTypes {

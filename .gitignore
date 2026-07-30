@@ -13,6 +13,8 @@ android/captures/
 android/.idea/
 *.apk
 *.aab
+apks/*
+!apks/README.md
 *.tsbuildinfo
 src/credentials.local.ts
 credentials.local.json

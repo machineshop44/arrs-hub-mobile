@@ -30,4 +30,13 @@ Then **Run** once on the tablet (USB). Keep Vite (`npm run dev`) running so UI
 changes hot-reload. `live:prepare` sets Capacitor to `http://localhost:5174`
 and runs `adb reverse`.
 
-Release / offline APK (no live server): unset live URL, `npm run cap:sync`, build APK.
+Release / offline APK (no live server): unset live URL, `npm run cap:sync`, then build a **universal** (fat) APK:
+
+```bat
+cd android
+gradlew.bat :app:assembleDebug
+```
+
+Output: `android/app/build/outputs/apk/debug/app-debug.apk`  
+Copy to Drive (and local `apks/`): `powershell -ExecutionPolicy Bypass -File scripts\publish-apk-to-drive.ps1`  
+(or pass `-Build` to assemble + publish). Destination: `G:\My Drive\apks\ArrsHubStatus-universal.apk`.

@@ -107,8 +107,16 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
     }
 
     if (service.id === "ytarr") {
-      const { status, latencyMs } = await httpGet(`${base}/api/health`);
-      const up = status >= 200 && status < 500;
+      const headers: Record<string, string> = {};
+      if (service.apiKey.trim()) {
+        headers["X-Api-Key"] = service.apiKey.trim();
+      }
+      // Prefer authenticated system status when a key is configured; health is public.
+      const path = service.apiKey.trim()
+        ? `${base}/api/system/status`
+        : `${base}/api/health`;
+      const { status, latencyMs } = await httpGet(path, headers);
+      const up = status >= 200 && status < 400;
       return {
         up,
         latencyMs,

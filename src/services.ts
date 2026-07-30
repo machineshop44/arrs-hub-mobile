@@ -171,7 +171,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     defaultUrl: `${REMOTE_HOST}:8199`,
     color: "#3fb950",
     probe: "http",
-    auth: "none",
+    auth: "apiKey",
     defaultEnabled: true,
   },
 ];

@@ -27,6 +27,7 @@ import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
+import { YtarrPanel } from "./YtarrPanel";
 import {
   getAppVersionInfo,
   shareInstalledApk,
@@ -50,6 +51,7 @@ type Screen =
   | "settings"
   | "arr"
   | "bazarr"
+  | "ytarr"
   | "tautulli"
   | "web";
 
@@ -343,6 +345,11 @@ export function App() {
       setScreen("bazarr");
       return;
     }
+    if (service.id === "ytarr") {
+      setActive(service);
+      setScreen("ytarr");
+      return;
+    }
     if (NATIVE_ARR_IDS.has(service.id)) {
       setActive(service);
       setScreen("arr");
@@ -425,6 +432,19 @@ export function App() {
   if (screen === "bazarr" && active) {
     return (
       <BazarrPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
+        onOpenSettings={() => setScreen("settings")}
+      />
+    );
+  }
+
+  if (screen === "ytarr" && active) {
+    return (
+      <YtarrPanel
         service={active}
         onBack={() => {
           setActive(null);

@@ -9,7 +9,7 @@ const seed: CredentialSeed = {
   // sonarr: { apiKey: "…" },
   // radarr: { apiKey: "…" },
   // qbittorrent: { username: "admin", password: "…" },
-  // ytarr: { url: "http://67.84.101.14:8199" },
+  // ytarr: { url: "http://67.84.101.14:8199", apiKey: "…" },
 };
 
 /** Optional WOL defaults (MAC is fine to keep locally; not a secret). */

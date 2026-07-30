@@ -35,6 +35,7 @@ import {
 } from "./arrApi";
 import type { ServiceConfig } from "./services";
 import { ServiceIcon } from "./icons";
+import { MediaImg, useMediaBackground } from "./mediaUrl";
 
 type Tab = "library" | "search" | "calendar" | "missing" | "queue";
 type DetailTab = "overview" | "episodes" | "albums" | "tracks" | "books";
@@ -115,6 +116,57 @@ function libraryProgressLabel(
     if (books != null) return `${files ?? 0}/${books} books`;
   }
   return item.hasFile ? "Downloaded" : "Missing";
+}
+
+function LibrarySeriesCard({
+  kind,
+  item,
+  onOpen,
+}: {
+  kind: ReturnType<typeof detectArrKind>;
+  item: ArrLibraryItem;
+  onOpen: (item: ArrLibraryItem) => void;
+}) {
+  const fanartStyle = useMediaBackground(item.fanartUrl);
+  const have = item.episodeFileCount ?? (item.hasFile ? 1 : 0);
+  const total = item.episodeCount ?? (item.hasFile ? 1 : 0);
+  const pct =
+    item.percentOfEpisodes ??
+    (total > 0 ? Math.round((have / total) * 100) : item.hasFile ? 100 : 0);
+
+  return (
+    <li>
+      <button
+        type="button"
+        className="series-card"
+        style={fanartStyle}
+        onClick={() => onOpen(item)}
+      >
+        <MediaImg src={item.posterUrl} />
+        <div className="series-meta">
+          <strong>{item.title}</strong>
+          <span>{libraryProgressLabel(kind, item)}</span>
+          <span>
+            {kind === "series" && item.seasonCount
+              ? `${item.seasonCount} Seasons`
+              : kind === "artist" && item.sizeOnDisk
+                ? formatBytes(item.sizeOnDisk)
+                : item.year || ""}
+            {kind !== "artist" && item.sizeOnDisk
+              ? ` · ${formatBytes(item.sizeOnDisk)}`
+              : ""}
+          </span>
+          <span>
+            {[item.qualityProfile || "Any", "Any"].filter(Boolean).join(" · ")}
+          </span>
+          <span>
+            {[item.network, item.status].filter(Boolean).join(" · ")}
+          </span>
+          {kind === "series" && <span className="sr-only">{pct}%</span>}
+        </div>
+      </button>
+    </li>
+  );
 }
 
 export function ArrPanel({ service, onBack }: ArrPanelProps) {
@@ -515,7 +567,7 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
 
         <div className="detail-hero">
           {heroPoster ? (
-            <img src={heroPoster} alt="" className="detail-poster" />
+            <MediaImg src={heroPoster} className="detail-poster" />
           ) : (
             <div className="detail-poster placeholder" />
           )}
@@ -1180,64 +1232,14 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
         <ul className="series-list">
           {loading && <p className="hint">Loading library…</p>}
           {!loading &&
-            filteredLibrary.map((item) => {
-              const have = item.episodeFileCount ?? (item.hasFile ? 1 : 0);
-              const total = item.episodeCount ?? (item.hasFile ? 1 : 0);
-              const pct =
-                item.percentOfEpisodes ??
-                (total > 0
-                  ? Math.round((have / total) * 100)
-                  : item.hasFile
-                    ? 100
-                    : 0);
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className="series-card"
-                    style={
-                      item.fanartUrl
-                        ? {
-                            backgroundImage: `linear-gradient(90deg, rgba(12,16,20,.92), rgba(12,16,20,.55)), url(${item.fanartUrl})`,
-                          }
-                        : undefined
-                    }
-                    onClick={() => void openLibraryItem(item)}
-                  >
-                    {item.posterUrl ? (
-                      <img src={item.posterUrl} alt="" />
-                    ) : (
-                      <div className="poster-fallback" />
-                    )}
-                    <div className="series-meta">
-                      <strong>{item.title}</strong>
-                      <span>{libraryProgressLabel(kind, item)}</span>
-                      <span>
-                        {kind === "series" && item.seasonCount
-                          ? `${item.seasonCount} Seasons`
-                          : kind === "artist" && item.sizeOnDisk
-                            ? formatBytes(item.sizeOnDisk)
-                            : item.year || ""}
-                        {kind !== "artist" && item.sizeOnDisk
-                          ? ` · ${formatBytes(item.sizeOnDisk)}`
-                          : ""}
-                      </span>
-                      <span>
-                        {[item.qualityProfile || "Any", "Any"]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                      <span>
-                        {[item.network, item.status].filter(Boolean).join(" · ")}
-                      </span>
-                      {kind === "series" && (
-                        <span className="sr-only">{pct}%</span>
-                      )}
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
+            filteredLibrary.map((item) => (
+              <LibrarySeriesCard
+                key={item.id}
+                kind={kind}
+                item={item}
+                onOpen={(next) => void openLibraryItem(next)}
+              />
+            ))}
         </ul>
       )}
 

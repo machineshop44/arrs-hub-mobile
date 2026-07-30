@@ -2,6 +2,7 @@ import { Browser } from "@capacitor/browser";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
+import { MediaImg } from "./mediaUrl";
 import {
   addYtarrSource,
   backfillYtarrSource,
@@ -234,13 +235,9 @@ export function YtarrPanel({
         </header>
 
         <div className="detail-hero">
-          <img
+          <MediaImg
             src={posterUrl(service, selected.id)}
-            alt=""
             className="detail-poster"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-            }}
           />
           <div>
             <strong>{selected.title}</strong>
@@ -586,17 +583,7 @@ export function YtarrPanel({
                       className="series-card"
                       onClick={() => void openChannel(item)}
                     >
-                      <img
-                        src={posterUrl(service, item.id)}
-                        alt=""
-                        onError={(e) => {
-                          const el = e.currentTarget;
-                          el.style.display = "none";
-                          const fallback = el.nextElementSibling as HTMLElement | null;
-                          if (fallback) fallback.style.display = "block";
-                        }}
-                      />
-                      <div className="poster-fallback" style={{ display: "none" }} />
+                      <MediaImg src={posterUrl(service, item.id)} />
                       <div className="series-meta">
                         <strong>{item.title}</strong>
                         <span>

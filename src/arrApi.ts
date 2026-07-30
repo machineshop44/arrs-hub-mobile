@@ -1,6 +1,14 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import type { ServiceConfig } from "./services";
 import { arrApiVersion } from "./services";
+import {
+  albumCoverUrl,
+  bookCoverUrl,
+  mediaCoverUrl,
+  pickArrImageUrl,
+} from "./mediaUrl";
+
+export { albumCoverUrl, bookCoverUrl, mediaCoverUrl } from "./mediaUrl";
 
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
@@ -784,31 +792,6 @@ export type ArrBookItem = {
   coverUrl?: string;
 };
 
-export function mediaCoverUrl(
-  service: ServiceConfig,
-  id: number,
-  kind: "poster" | "fanart" = "poster",
-): string {
-  const base = normalizeBase(service.url);
-  const key = encodeURIComponent(service.apiKey.trim());
-  const ver = arrApiVersion(service);
-  return `${base}/api/${ver}/MediaCover/${id}/${kind}-500.jpg?apikey=${key}`;
-}
-
-export function albumCoverUrl(service: ServiceConfig, albumId: number): string {
-  const base = normalizeBase(service.url);
-  const key = encodeURIComponent(service.apiKey.trim());
-  const ver = arrApiVersion(service);
-  return `${base}/api/${ver}/MediaCover/Albums/${albumId}/cover-500.jpg?apikey=${key}`;
-}
-
-export function bookCoverUrl(service: ServiceConfig, bookId: number): string {
-  const base = normalizeBase(service.url);
-  const key = encodeURIComponent(service.apiKey.trim());
-  const ver = arrApiVersion(service);
-  return `${base}/api/${ver}/MediaCover/Books/${bookId}/cover-500.jpg?apikey=${key}`;
-}
-
 export async function fetchLibrary(
   service: ServiceConfig,
 ): Promise<ArrLibraryItem[]> {
@@ -912,8 +895,22 @@ export async function fetchLibrary(
         certification: row.certification
           ? String(row.certification)
           : undefined,
-        posterUrl: id ? mediaCoverUrl(service, id, "poster") : undefined,
-        fanartUrl: id ? mediaCoverUrl(service, id, "fanart") : undefined,
+        posterUrl: id
+          ? pickArrImageUrl(
+              service,
+              row.images,
+              "poster",
+              mediaCoverUrl(service, id, "poster"),
+            )
+          : undefined,
+        fanartUrl: id
+          ? pickArrImageUrl(
+              service,
+              row.images,
+              "fanart",
+              mediaCoverUrl(service, id, "fanart"),
+            )
+          : undefined,
         added: row.added ? String(row.added) : undefined,
       } as ArrLibraryItem;
     })
@@ -1016,7 +1013,14 @@ export async function fetchArtistAlbums(
         sizeOnDisk: stats?.sizeOnDisk,
         releaseDate,
         albumType: row.albumType ? String(row.albumType) : undefined,
-        coverUrl: id ? albumCoverUrl(service, id) : undefined,
+        coverUrl: id
+          ? pickArrImageUrl(
+              service,
+              row.images,
+              "cover",
+              albumCoverUrl(service, id),
+            )
+          : undefined,
       } as ArrAlbumItem;
     })
     .sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
@@ -1101,7 +1105,14 @@ export async function fetchAuthorBooks(
         overview: row.overview ? String(row.overview) : undefined,
         hasFile: Boolean(row.grabbed) || (stats?.bookFileCount ?? 0) > 0,
         releaseDate,
-        coverUrl: id ? bookCoverUrl(service, id) : undefined,
+        coverUrl: id
+          ? pickArrImageUrl(
+              service,
+              row.images,
+              "cover",
+              bookCoverUrl(service, id),
+            )
+          : undefined,
       } as ArrBookItem;
     })
     .sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));

@@ -2,7 +2,11 @@ import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Network } from "@capacitor/network";
 import { Preferences } from "@capacitor/preferences";
 import { UdpSocket } from "capacitor-udp-socket";
-import { REMOTE_HOST } from "./services";
+import {
+  cidrFromHomeBase,
+  hostFromUrlOrHost,
+  isPrivateIpv4,
+} from "./pathing";
 
 const STORAGE_KEY = "arrs-mobile-wol-v1";
 
@@ -16,7 +20,7 @@ export type WolSettings = {
   port: number;
   /**
    * Home network CIDR (e.g. 192.168.1.0/24). Empty = derive /24 from
-   * targetHost or the configured remote service host.
+   * Settings → Home / LAN base, then WOL targetHost (private IPs only).
    */
   homeCidr: string;
   /** Optional Arrs Hub base URL for relay (e.g. http://192.168.1.10:3000) */
@@ -127,26 +131,33 @@ export function ipInCidr(ip: string, cidr: string): boolean {
 }
 
 export function hostFromUrl(url: string): string | null {
-  try {
-    const u = new URL(url.includes("://") ? url : `http://${url}`);
-    return u.hostname || null;
-  } catch {
-    return null;
-  }
+  return hostFromUrlOrHost(url);
 }
 
-export function resolveHomeCidr(settings: WolSettings): string {
+/**
+ * Resolve home LAN CIDR for “are we home?” detection.
+ * Prefers explicit CIDR, then Home/LAN base URL, then private targetHost.
+ * Never derives from the public remote WAN IP (that breaks LAN matching).
+ */
+export function resolveHomeCidr(
+  settings: WolSettings,
+  homeBaseUrl = "",
+): string {
   const explicit = settings.homeCidr.trim();
   if (explicit) return explicit.includes("/") ? explicit : `${explicit}/24`;
 
-  const host =
+  const fromHome = cidrFromHomeBase(homeBaseUrl);
+  if (fromHome) return fromHome;
+
+  const target =
     parseIpv4(settings.targetHost.trim())?.join(".") ||
-    hostFromUrl(settings.targetHost) ||
-    hostFromUrl(REMOTE_HOST) ||
-    "67.84.101.14";
-  const parts = parseIpv4(host);
-  if (!parts) return "67.84.101.0/24";
-  return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+    hostFromUrl(settings.targetHost);
+  if (target && isPrivateIpv4(target)) {
+    const parts = parseIpv4(target)!;
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+  }
+
+  return "";
 }
 
 function buildMagicPacketBase64(mac: string): string {
@@ -227,8 +238,9 @@ async function peekLocalIpv4(): Promise<string | null> {
  */
 export async function detectHomeNetwork(
   settings: WolSettings,
+  homeBaseUrl = "",
 ): Promise<HomeNetworkStatus> {
-  const homeCidr = resolveHomeCidr(settings);
+  const homeCidr = resolveHomeCidr(settings, homeBaseUrl);
   let connectionType = "unknown";
   try {
     const status = await Network.getStatus();
@@ -238,6 +250,18 @@ export async function detectHomeNetwork(
   }
 
   const localIp = await peekLocalIpv4();
+
+  if (!homeCidr) {
+    return {
+      onHomeNetwork: null,
+      connectionType,
+      localIp,
+      homeCidr: "",
+      message:
+        "Set Home / LAN base URL (or Home network CIDR) so we can detect your LAN. Public remote IPs are not used for this.",
+      warnRemote: true,
+    };
+  }
 
   if (localIp && ipInCidr(localIp, homeCidr)) {
     return {

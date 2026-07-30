@@ -23,6 +23,13 @@ import {
   saveServices,
   type ProbeResult,
 } from "./probe";
+import {
+  DEFAULT_PATHING,
+  loadPathSettings,
+  resolveServiceUrl,
+  savePathSettings,
+  type PathSettings,
+} from "./pathing";
 import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
@@ -173,6 +180,7 @@ export function App() {
     {},
   );
   const [wol, setWol] = useState<WolSettings>(DEFAULT_WOL);
+  const [pathing, setPathing] = useState<PathSettings>(DEFAULT_PATHING);
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
@@ -186,14 +194,16 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const [svc, wolSettings, order, version] = await Promise.all([
+      const [svc, wolSettings, pathSettings, order, version] = await Promise.all([
         loadServices(),
         loadWolSettings(),
+        loadPathSettings(),
         loadModuleOrder(),
         getAppVersionInfo(),
       ]);
       setServices(svc);
       setWol(wolSettings);
+      setPathing(pathSettings);
       setModuleOrder(order);
       setAppVersion(version);
       setReady(true);
@@ -251,31 +261,64 @@ export function App() {
     },
   };
 
-  const refreshHomeNet = useCallback(async (settings: WolSettings) => {
-    if (!settings.enabled) {
-      setHomeNet(null);
-      return;
-    }
-    setHomeNet(await detectHomeNetwork(settings));
-  }, []);
+  const refreshHomeNet = useCallback(
+    async (settings: WolSettings, homeBaseUrl: string) => {
+      if (!settings.enabled && !homeBaseUrl.trim()) {
+        setHomeNet(null);
+        return;
+      }
+      setHomeNet(await detectHomeNetwork(settings, homeBaseUrl));
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!ready || !wol.enabled) {
+    if (!ready) return;
+    const needDetect = wol.enabled || !!pathing.homeBaseUrl.trim();
+    if (!needDetect) {
       setHomeNet(null);
       return;
     }
-    void refreshHomeNet(wol);
-    const timer = setInterval(() => void refreshHomeNet(wol), 30000);
+    void refreshHomeNet(wol, pathing.homeBaseUrl);
+    const timer = setInterval(
+      () => void refreshHomeNet(wol, pathing.homeBaseUrl),
+      30000,
+    );
     return () => clearInterval(timer);
     // Re-check when home-matching inputs change; avoid every keystroke on MAC.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, wol.enabled, wol.homeCidr, wol.targetHost, refreshHomeNet]);
+  }, [
+    ready,
+    wol.enabled,
+    wol.homeCidr,
+    wol.targetHost,
+    pathing.homeBaseUrl,
+    refreshHomeNet,
+  ]);
 
   const persistWol = async (next: WolSettings) => {
     setWol(next);
     await saveWolSettings(next);
-    void refreshHomeNet(next);
+    void refreshHomeNet(next, pathing.homeBaseUrl);
   };
+
+  const persistPathing = async (next: PathSettings) => {
+    setPathing(next);
+    await savePathSettings(next);
+    void refreshHomeNet(wol, next.homeBaseUrl);
+  };
+
+  const withEffectiveUrl = useCallback(
+    (service: ServiceConfig): ServiceConfig => ({
+      ...service,
+      url: resolveServiceUrl(
+        service.url,
+        pathing.homeBaseUrl,
+        homeNet?.onHomeNetwork ?? null,
+      ),
+    }),
+    [pathing.homeBaseUrl, homeNet?.onHomeNetwork],
+  );
 
   const onWakePc = async () => {
     if (wakeBusy) return;
@@ -283,7 +326,8 @@ export function App() {
       setWakeMessage("Add a valid MAC in Settings → Wake-on-LAN.");
       return;
     }
-    const status = homeNet ?? (await detectHomeNetwork(wol));
+    const status =
+      homeNet ?? (await detectHomeNetwork(wol, pathing.homeBaseUrl));
     setHomeNet(status);
     if (status.warnRemote) {
       const proceed = window.confirm(
@@ -310,11 +354,11 @@ export function App() {
     const next: Record<string, ProbeResult> = {};
     await Promise.all(
       enabled.map(async (service) => {
-        next[service.id] = await probeService(service);
+        next[service.id] = await probeService(withEffectiveUrl(service));
       }),
     );
     setHealth(next);
-  }, [enabled]);
+  }, [enabled, withEffectiveUrl]);
 
   useEffect(() => {
     if (!ready) return;
@@ -335,27 +379,28 @@ export function App() {
   const openModule = (service: ServiceConfig) => {
     setDrawer(false);
     setReordering(false);
+    const resolved = withEffectiveUrl(service);
     if (service.id === "tautulli") {
-      setActive(service);
+      setActive(resolved);
       setScreen("tautulli");
       return;
     }
     if (service.id === "bazarr") {
-      setActive(service);
+      setActive(resolved);
       setScreen("bazarr");
       return;
     }
     if (service.id === "ytarr") {
-      setActive(service);
+      setActive(resolved);
       setScreen("ytarr");
       return;
     }
     if (NATIVE_ARR_IDS.has(service.id)) {
-      setActive(service);
+      setActive(resolved);
       setScreen("arr");
       return;
     }
-    setActive(service);
+    setActive(resolved);
     setScreen("web");
   };
 
@@ -485,6 +530,7 @@ export function App() {
             onClick={() => {
               void saveServices(services);
               void saveWolSettings(wol);
+              void savePathSettings(pathing);
               setScreen("modules");
             }}
           >
@@ -495,6 +541,55 @@ export function App() {
           URLs and API keys stay on this device. Tautulli needs its API key
           (Settings → Web Interface in Tautulli).
         </p>
+
+        <section className="card slim">
+          <strong>Network pathing</strong>
+          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
+            <strong>Remote</strong> URLs (per service below) work home or away
+            via port forward. <strong>Home / LAN</strong> is your server&apos;s
+            local address — used automatically when this device is on your home
+            Wi‑Fi for faster LAN access, and to derive the WOL home subnet so
+            Wake-on-LAN detection works.
+          </p>
+          <label className="field">
+            <span>Home / LAN base URL</span>
+            <input
+              type="url"
+              value={pathing.homeBaseUrl}
+              placeholder="http://192.168.1.50"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) =>
+                setPathing((prev) => ({
+                  ...prev,
+                  homeBaseUrl: e.target.value,
+                }))
+              }
+              onBlur={(e) =>
+                void persistPathing({
+                  ...pathing,
+                  homeBaseUrl: e.target.value.trim(),
+                })
+              }
+            />
+          </label>
+          <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+            Host only is enough (ports come from each remote URL). Example:{" "}
+            <code>http://192.168.1.50</code> → Sonarr becomes{" "}
+            <code>http://192.168.1.50:8989</code> while on home Wi‑Fi. Leave
+            blank to always use remote URLs.
+          </p>
+          {homeNet && pathing.homeBaseUrl.trim() && (
+            <p
+              className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}
+              style={{ padding: "0.35rem 0 0" }}
+            >
+              {homeNet.onHomeNetwork === true
+                ? `Using LAN host for probes/modules. ${homeNet.message}`
+                : `Using remote URLs. ${homeNet.message}`}
+            </p>
+          )}
+        </section>
 
         <section className="card slim">
           <div className="top-row">
@@ -655,15 +750,25 @@ export function App() {
             />
           </label>
           <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-            Your home Wi‑Fi subnet, written as CIDR (e.g.{" "}
-            <code>192.168.1.0/24</code>). Used only to detect “are we on home
-            Wi‑Fi?” so the Wake button can show on Home. If services use a
-            public IP like <code>67.84.101.14</code>, do{" "}
-            <strong>not</strong> use that public /24 — use the real LAN from
-            Arrs Hub or your router (often <code>192.168.x.0/24</code>). Leave
-            blank to fall back to{" "}
-            <code>{resolveHomeCidr({ ...wol, homeCidr: "" })}</code> (often
-            wrong when the host is public).
+            Your home Wi‑Fi subnet as CIDR (e.g. <code>192.168.1.0/24</code>).
+            Used to detect “are we on home Wi‑Fi?” for the Wake button and LAN
+            pathing. Leave blank to derive from Home / LAN base URL (preferred)
+            or a private PC host/IP above — never from the public remote IP.
+            {resolveHomeCidr({ ...wol, homeCidr: "" }, pathing.homeBaseUrl) ? (
+              <>
+                {" "}
+                Current fallback:{" "}
+                <code>
+                  {resolveHomeCidr(
+                    { ...wol, homeCidr: "" },
+                    pathing.homeBaseUrl,
+                  )}
+                </code>
+                .
+              </>
+            ) : (
+              <> Set a Home / LAN base URL to enable automatic detection.</>
+            )}
           </p>
           <label className="field">
             <span>Arrs Hub URL (optional relay)</span>
@@ -725,7 +830,7 @@ export function App() {
               </label>
             </div>
             <label className="field">
-              <span>URL</span>
+              <span>Remote URL</span>
               <input
                 type="url"
                 value={service.url}
@@ -739,6 +844,10 @@ export function App() {
                 onBlur={() => void saveServices(services)}
               />
             </label>
+            <p className="hint" style={{ padding: "0.15rem 0 0" }}>
+              Works everywhere via port forward. On home Wi‑Fi, host is swapped
+              to Home / LAN base when that is set.
+            </p>
             {(service.auth === "apiKey" || service.id === "tautulli") && (
               <SecretField
                 label="API key"
@@ -879,6 +988,12 @@ export function App() {
           {offlineCount} offline
           <span className="home-status-sep">·</span>
           {modules.length} modules
+          {pathing.homeBaseUrl.trim() && (
+            <>
+              <span className="home-status-sep">·</span>
+              {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
+            </>
+          )}
         </p>
         {showWakeControl && (
           <div className="wol-bar home-wol">

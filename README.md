@@ -39,4 +39,4 @@ gradlew.bat :app:assembleDebug
 
 Output: `android/app/build/outputs/apk/debug/app-debug.apk`  
 Copy to Drive (and local `apks/`): `powershell -ExecutionPolicy Bypass -File scripts\publish-apk-to-drive.ps1`  
-(or pass `-Build` to assemble + publish). Destination: `G:\My Drive\apks\ArrsHubStatus-universal.apk`.
+(or pass `-Build` to assemble + publish). Destination: `G:\My Drive\apks\ArrsHubStatus-<version>(<code>).apk` only (older copies removed).

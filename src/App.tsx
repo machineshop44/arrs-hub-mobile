@@ -42,6 +42,17 @@ import {
   type AppVersionInfo,
 } from "./apkShare";
 import {
+  applySettingsBundle,
+  buildSettingsBundle,
+  copySettingsToClipboard,
+  makeExportQrDataUrl,
+  parseSettingsBundle,
+  readSettingsFromClipboard,
+  serializeSettingsBundle,
+  shareSettingsJsonFile,
+  summarizeBundle,
+} from "./settingsTransfer";
+import {
   DEFAULT_WOL,
   detectHomeNetwork,
   formatMacInput,
@@ -193,6 +204,11 @@ export function App() {
   const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferMessage, setTransferMessage] = useState<string | null>(null);
+  const [exportQrUrl, setExportQrUrl] = useState<string | null>(null);
+  const [exportQrNote, setExportQrNote] = useState<string | null>(null);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
 
@@ -310,6 +326,102 @@ export function App() {
     setPathing(next);
     await savePathSettings(next);
     void refreshHomeNet(wol, next.homeBaseUrl);
+  };
+
+  const runExportConfig = async (mode: "qr" | "share" | "copy") => {
+    if (transferBusy) return;
+    setTransferBusy(true);
+    setTransferMessage(null);
+    if (mode === "qr") {
+      setExportQrUrl(null);
+      setExportQrNote(null);
+    }
+    try {
+      // Persist current form values before packaging.
+      await Promise.all([
+        saveServices(services),
+        saveWolSettings(wol),
+        savePathSettings(pathing),
+        saveModuleOrder(moduleOrder),
+      ]);
+      const bundle = await buildSettingsBundle({
+        services,
+        moduleOrder,
+        wol,
+        pathing,
+      });
+      const json = serializeSettingsBundle(bundle);
+      if (mode === "share") {
+        await shareSettingsJsonFile(json);
+        setTransferMessage(`Shared settings file (${summarizeBundle(bundle)}).`);
+      } else if (mode === "copy") {
+        await copySettingsToClipboard(json);
+        setTransferMessage(`Copied settings to clipboard (${summarizeBundle(bundle)}).`);
+      } else {
+        const qr = await makeExportQrDataUrl(json);
+        if (qr.tooLarge || !qr.dataUrl) {
+          setExportQrUrl(null);
+          setExportQrNote(
+            `Config is ${qr.chars} chars — too large for one QR. Use Share file or Copy instead.`,
+          );
+          setTransferMessage("QR skipped; use Share file / Copy.");
+        } else {
+          setExportQrUrl(qr.dataUrl);
+          setExportQrNote(null);
+          setTransferMessage(`QR ready (${summarizeBundle(bundle)}). Scan from the other device, or Share file.`);
+        }
+      }
+    } catch (err) {
+      setTransferMessage(
+        err instanceof Error ? err.message : "Could not export settings.",
+      );
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
+  const importFromRaw = async (raw: string) => {
+    const bundle = parseSettingsBundle(raw);
+    const applied = await applySettingsBundle(bundle, services);
+    setServices(applied.services);
+    setModuleOrder(applied.moduleOrder);
+    setWol(applied.wol);
+    setPathing(applied.pathing);
+    void refreshHomeNet(applied.wol, applied.pathing.homeBaseUrl);
+    setTransferMessage(`Imported (${summarizeBundle(bundle)}).`);
+  };
+
+  const runImportFile = async (file: File | null | undefined) => {
+    if (!file || transferBusy) return;
+    setTransferBusy(true);
+    setTransferMessage(null);
+    try {
+      const raw = await file.text();
+      await importFromRaw(raw);
+    } catch (err) {
+      setTransferMessage(
+        err instanceof Error ? err.message : "Could not import settings file.",
+      );
+    } finally {
+      setTransferBusy(false);
+      if (importFileRef.current) importFileRef.current.value = "";
+    }
+  };
+
+  const runImportClipboard = async () => {
+    if (transferBusy) return;
+    setTransferBusy(true);
+    setTransferMessage(null);
+    try {
+      const raw = await readSettingsFromClipboard();
+      await importFromRaw(raw);
+    } catch (err) {
+      setTransferMessage(
+        err instanceof Error ? err.message : "Could not import from clipboard.",
+      );
+    } finally {
+      setTransferBusy(false);
+    }
   };
 
   const withEffectiveUrl = useCallback(
@@ -576,6 +688,85 @@ export function App() {
           URLs and API keys stay on this device. Tautulli needs its API key
           (Settings → Web Interface in Tautulli).
         </p>
+
+        <section className="card slim">
+          <div className="top-row">
+            <strong>Export / Import settings</strong>
+          </div>
+          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
+            Move URLs, API keys, WOL, pathing, and module order to another
+            device. Prefer a settings file (or clipboard). QR works when the
+            payload is small enough for one code.
+          </p>
+          <div className="transfer-actions">
+            <button
+              type="button"
+              className="btn primary"
+              disabled={transferBusy}
+              onClick={() => void runExportConfig("share")}
+            >
+              {transferBusy ? "Working…" : "Share settings file"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => void runExportConfig("qr")}
+            >
+              Show QR
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => void runExportConfig("copy")}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => importFileRef.current?.click()}
+            >
+              Import file
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => void runImportClipboard()}
+            >
+              Paste import
+            </button>
+          </div>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json,text/plain"
+            style={{ display: "none" }}
+            onChange={(e) => void runImportFile(e.target.files?.[0])}
+          />
+          {exportQrUrl && (
+            <div className="export-qr">
+              <img src={exportQrUrl} alt="Settings export QR code" />
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                On the other device: Settings → Paste import (after scanning
+                into a notes app), or use the shared JSON file from Drive.
+              </p>
+            </div>
+          )}
+          {exportQrNote && (
+            <p className="hint wol-warn" style={{ padding: "0.45rem 0 0" }}>
+              {exportQrNote}
+            </p>
+          )}
+          {transferMessage && (
+            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
+              {transferMessage}
+            </p>
+          )}
+        </section>
 
         <section className="card slim">
           <div className="top-row">

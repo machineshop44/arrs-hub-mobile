@@ -1,5 +1,5 @@
-# Copy the latest Arrs Hub Status universal APK into Google Drive\apks.
-# Named with version so phones can grab a clear file from Drive (same pattern as Ava Bedtime).
+# Copy the latest Arrs Hub Status APK into Google Drive\apks (and local apks/).
+# Keeps only the current versioned file for this app (no -latest / -universal aliases).
 #
 # Usage:
 #   .\scripts\publish-apk-to-drive.ps1
@@ -17,6 +17,7 @@ $DriveApks = "G:\My Drive\apks"
 $ApkSource = Join-Path $Root "android\app\build\outputs\apk\debug\app-debug.apk"
 $GradleFile = Join-Path $Root "android\app\build.gradle"
 $LocalApks = Join-Path $Root "apks"
+$Prefix = "ArrsHubStatus-"
 
 if (-not (Test-Path "G:\My Drive")) {
     throw "Google Drive not available at G:\My Drive"
@@ -49,19 +50,14 @@ if ($gradleText -notmatch 'versionName\s+"([^"]+)"') {
 $versionName = $Matches[1]
 $code = if ($gradleText -match 'versionCode\s+(\d+)') { $Matches[1] } else { "0" }
 
-$versionedName = "ArrsHubStatus-$versionName($code).apk"
-$universalName = "ArrsHubStatus-universal.apk"
-$latestName = "ArrsHubStatus-latest.apk"
+$destName = "$Prefix$versionName($code).apk"
 
 foreach ($destRoot in @($DriveApks, $LocalApks)) {
-    Copy-Item -LiteralPath $ApkSource -Destination (Join-Path $destRoot $versionedName) -Force
-    Copy-Item -LiteralPath $ApkSource -Destination (Join-Path $destRoot $universalName) -Force
-    Copy-Item -LiteralPath $ApkSource -Destination (Join-Path $destRoot $latestName) -Force
+    Get-ChildItem -LiteralPath $destRoot -Filter "$Prefix*.apk" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $destName } |
+        Remove-Item -Force
+    Copy-Item -LiteralPath $ApkSource -Destination (Join-Path $destRoot $destName) -Force
 }
 
-Write-Host "Copied universal APK to Drive:"
-Write-Host "  $(Join-Path $DriveApks $versionedName)"
-Write-Host "  $(Join-Path $DriveApks $universalName)"
-Write-Host "  $(Join-Path $DriveApks $latestName)"
-Write-Host "Local copies (gitignored *.apk):"
-Write-Host "  $(Join-Path $LocalApks $universalName)"
+Write-Host "Drive apks (Arrs): $(Join-Path $DriveApks $destName)"
+Write-Host "Local copy: $(Join-Path $LocalApks $destName)"

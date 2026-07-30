@@ -125,6 +125,158 @@ body {
   font-size: 1.35rem;
   line-height: 1;
   color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.settings-nav-chevron.open {
+  transform: rotate(90deg);
+}
+
+.settings-hint {
+  padding: 0.15rem 0.85rem 0.35rem;
+  margin: 0;
+}
+
+.settings-group-label {
+  margin: 0.85rem 0.85rem 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-accordion {
+  margin: 0.45rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg1);
+  overflow: hidden;
+}
+
+.settings-accordion + .settings-accordion {
+  margin-top: 0.45rem;
+}
+
+.settings-accordion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.75rem 0.85rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-accordion-head:active {
+  opacity: 0.88;
+}
+
+.settings-accordion-head .settings-nav-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-accordion-body {
+  padding: 0 0.85rem 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.settings-accordion-body .field:first-child {
+  margin-top: 0.65rem;
+}
+
+.settings-accordion-body .hint {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settings-advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 0.65rem;
+  padding: 0.45rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.settings-advanced-toggle:active {
+  color: var(--text);
+}
+
+.settings-service-list {
+  margin: 0.35rem 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg1);
+  overflow: hidden;
+}
+
+.settings-service-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-service-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-service-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-service-head:active {
+  opacity: 0.88;
+}
+
+.settings-service-head .settings-nav-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-service-body {
+  padding: 0 0.85rem 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--bg2) 35%, transparent);
+}
+
+.settings-service-body .field:first-child {
+  margin-top: 0.65rem;
+}
+
+.settings-service-body .hint {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settings-service-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.settings-service-dot.on {
+  background: var(--ok);
 }
 
 .icon-btn {

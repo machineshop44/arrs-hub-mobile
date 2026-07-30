@@ -182,6 +182,25 @@ function SecretField({
   );
 }
 
+function hostSummary(url: string): string {
+  const raw = url.trim();
+  if (!raw) return "Not set";
+  try {
+    return new URL(raw).host || raw;
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").split("/")[0] || raw;
+  }
+}
+
+function serviceRowSummary(service: ServiceConfig, wolHubUrl: string): string {
+  const status = service.enabled ? "On" : "Off";
+  const url =
+    service.id === "workouts" && !service.url.trim()
+      ? wolHubUrl
+      : service.url;
+  return `${status} · ${hostSummary(url)}`;
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>("modules");
   const [services, setServices] = useState<ServiceConfig[]>([]);
@@ -207,6 +226,12 @@ export function App() {
   const [shareMessage, setShareMessage] = useState<string | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferMessage, setTransferMessage] = useState<string | null>(null);
+  const [settingsNetworkOpen, setSettingsNetworkOpen] = useState(false);
+  const [settingsWolOpen, setSettingsWolOpen] = useState(false);
+  const [settingsWolAdvanced, setSettingsWolAdvanced] = useState(false);
+  const [settingsServiceId, setSettingsServiceId] = useState<string | null>(
+    null,
+  );
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
@@ -760,6 +785,20 @@ export function App() {
   }
 
   if (screen === "settings") {
+    const networkSummary = pathing.homeBaseUrl.trim()
+      ? `LAN · ${hostSummary(pathing.homeBaseUrl)}`
+      : "Remote URLs only";
+    const wolMac = normalizeMac(wol.mac);
+    const wolSummary = wol.enabled
+      ? wolMac
+        ? `On · ${wolMac}`
+        : "On · MAC needed"
+      : "Off";
+    const derivedCidr = resolveHomeCidr(
+      { ...wol, homeCidr: "" },
+      pathing.homeBaseUrl,
+    );
+
     return (
       <div className="page luna-page">
         <header className="luna-top">
@@ -784,9 +823,8 @@ export function App() {
             ✓
           </button>
         </header>
-        <p className="hint">
-          URLs and API keys stay on this device. Tautulli needs its API key
-          (Settings → Web Interface in Tautulli).
+        <p className="hint settings-hint">
+          URLs and keys stay on this device.
         </p>
 
         <button
@@ -809,336 +847,430 @@ export function App() {
           </span>
         </button>
 
-        <section className="card slim">
-          <strong>Network pathing</strong>
-          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            <strong>Remote</strong> URLs (per service below) work home or away
-            via port forward. <strong>Home / LAN</strong> is your server&apos;s
-            local address — used automatically when this device is on your home
-            Wi‑Fi for faster LAN access, and to derive the WOL home subnet so
-            Wake-on-LAN detection works.
-          </p>
-          <label className="field">
-            <span>Home / LAN base URL</span>
-            <input
-              type="url"
-              value={pathing.homeBaseUrl}
-              placeholder="http://192.168.1.50"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setPathing((prev) => ({
-                  ...prev,
-                  homeBaseUrl: e.target.value,
-                }))
-              }
-              onBlur={(e) =>
-                void persistPathing({
-                  ...pathing,
-                  homeBaseUrl: e.target.value.trim(),
-                })
-              }
-            />
-          </label>
-          <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-            Host only is enough (ports come from each remote URL). Example:{" "}
-            <code>http://192.168.1.50</code> → Sonarr becomes{" "}
-            <code>http://192.168.1.50:8989</code> while on home Wi‑Fi. Leave
-            blank to always use remote URLs.
-          </p>
-          {homeNet && pathing.homeBaseUrl.trim() && (
-            <p
-              className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}
-              style={{ padding: "0.35rem 0 0" }}
+        <div className="settings-accordion">
+          <button
+            type="button"
+            className="settings-accordion-head"
+            aria-expanded={settingsNetworkOpen}
+            onClick={() => setSettingsNetworkOpen((open) => !open)}
+          >
+            <span className="settings-nav-copy">
+              <strong>Network</strong>
+              <span className="hint" style={{ padding: 0 }}>
+                {networkSummary}
+              </span>
+            </span>
+            <span
+              className={`settings-nav-chevron${settingsNetworkOpen ? " open" : ""}`}
+              aria-hidden="true"
             >
-              {homeNet.onHomeNetwork === true
-                ? `Using LAN host for probes/modules. ${homeNet.message}`
-                : `Using remote URLs. ${homeNet.message}`}
-            </p>
-          )}
-        </section>
-
-        <section className="card slim">
-          <div className="top-row">
-            <strong>Wake-on-LAN</strong>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={wol.enabled}
-                onChange={(e) => {
-                  void persistWol({ ...wol, enabled: e.target.checked });
-                }}
-              />
-              <span>On</span>
-            </label>
-          </div>
-          <p className="hint" style={{ padding: "0.35rem 0 0" }}>
-            Sends a UDP magic packet from this phone on the home LAN (or VPN).
-            Pure cellular / remote internet cannot wake a PC unless Arrs Hub
-            (already awake on the LAN) relays it. The Wake button appears on
-            Home only when you&apos;re on the home network.
-          </p>
-          <label className="field">
-            <span>Target MAC</span>
-            <input
-              value={wol.mac}
-              placeholder="AA:BB:CC:DD:EE:FF"
-              autoComplete="off"
-              spellCheck={false}
-              inputMode="text"
-              onChange={(e) => {
-                const mac = formatMacInput(e.target.value);
-                setWol((prev) => ({ ...prev, mac }));
-              }}
-              onBlur={(e) => {
-                const mac = formatMacInput(e.target.value);
-                void persistWol({ ...wol, mac });
-              }}
-            />
-          </label>
-          <p className="hint" style={{ padding: "0.15rem 0 0" }}>
-            Formats as AA:BB:CC:DD:EE:FF while typing. Paste bare hex or
-            dash-separated MACs — they normalize automatically.
-          </p>
-          <label className="field">
-            <span>PC host / IP (optional, for directed broadcast)</span>
-            <input
-              value={wol.targetHost}
-              placeholder="192.168.1.10"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setWol((prev) => ({ ...prev, targetHost: e.target.value }))
-              }
-              onBlur={(e) =>
-                void persistWol({ ...wol, targetHost: e.target.value })
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Broadcast IP</span>
-            <input
-              value={wol.broadcastIp}
-              placeholder="255.255.255.255"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setWol((prev) => ({ ...prev, broadcastIp: e.target.value }))
-              }
-              onBlur={(e) =>
-                void persistWol({
-                  ...wol,
-                  broadcastIp: e.target.value || "255.255.255.255",
-                })
-              }
-            />
-          </label>
-          <label className="field">
-            <span>UDP port</span>
-            <input
-              type="number"
-              inputMode="numeric"
-              value={wol.port}
-              onChange={(e) =>
-                setWol((prev) => ({
-                  ...prev,
-                  port: Number(e.target.value) || 9,
-                }))
-              }
-              onBlur={(e) =>
-                void persistWol({
-                  ...wol,
-                  port: Number(e.target.value) || 9,
-                })
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Home network CIDR (LAN subnet)</span>
-            <input
-              value={wol.homeCidr}
-              placeholder="192.168.1.0/24"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setWol((prev) => ({ ...prev, homeCidr: e.target.value }))
-              }
-              onBlur={(e) =>
-                void persistWol({ ...wol, homeCidr: e.target.value })
-              }
-            />
-          </label>
-          <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-            Your home Wi‑Fi subnet as CIDR (e.g. <code>192.168.1.0/24</code>).
-            Used to detect “are we on home Wi‑Fi?” for the Wake button and LAN
-            pathing. Leave blank to derive from Home / LAN base URL (preferred)
-            or a private PC host/IP above — never from the public remote IP.
-            {resolveHomeCidr({ ...wol, homeCidr: "" }, pathing.homeBaseUrl) ? (
-              <>
-                {" "}
-                Current fallback:{" "}
-                <code>
-                  {resolveHomeCidr(
-                    { ...wol, homeCidr: "" },
-                    pathing.homeBaseUrl,
-                  )}
-                </code>
-                .
-              </>
-            ) : (
-              <> Set a Home / LAN base URL to enable automatic detection.</>
-            )}
-          </p>
-          <label className="field">
-            <span>Arrs Hub URL (optional relay)</span>
-            <input
-              type="url"
-              value={wol.hubUrl}
-              placeholder="http://192.168.1.10:3000"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setWol((prev) => ({ ...prev, hubUrl: e.target.value }))
-              }
-              onBlur={(e) =>
-                void persistWol({ ...wol, hubUrl: e.target.value })
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Hub PC id (optional)</span>
-            <input
-              value={wol.hubPcId}
-              placeholder="pc-…"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) =>
-                setWol((prev) => ({ ...prev, hubPcId: e.target.value }))
-              }
-              onBlur={(e) =>
-                void persistWol({ ...wol, hubPcId: e.target.value })
-              }
-            />
-          </label>
-          {homeNet && (
-            <p className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}>
-              {homeNet.message}
-            </p>
-          )}
-        </section>
-
-        {services.map((service) => (
-          <section key={service.id} className="card slim">
-            <div className="top-row">
-              <strong style={{ color: service.color }}>{service.name}</strong>
-              <label className="toggle">
+              ›
+            </span>
+          </button>
+          {settingsNetworkOpen && (
+            <div className="settings-accordion-body">
+              <label className="field">
+                <span>Home / LAN base URL</span>
                 <input
-                  type="checkbox"
-                  checked={service.enabled}
+                  type="url"
+                  value={pathing.homeBaseUrl}
+                  placeholder="http://192.168.1.50"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setPathing((prev) => ({
+                      ...prev,
+                      homeBaseUrl: e.target.value,
+                    }))
+                  }
+                  onBlur={(e) =>
+                    void persistPathing({
+                      ...pathing,
+                      homeBaseUrl: e.target.value.trim(),
+                    })
+                  }
+                />
+              </label>
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                On home Wi‑Fi, remote hosts swap to this LAN base (ports stay).
+                Leave blank to always use remote URLs.
+              </p>
+              {homeNet && pathing.homeBaseUrl.trim() && (
+                <p
+                  className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}
+                  style={{ padding: "0.35rem 0 0" }}
+                >
+                  {homeNet.onHomeNetwork === true
+                    ? `Using LAN host. ${homeNet.message}`
+                    : `Using remote URLs. ${homeNet.message}`}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="settings-accordion">
+          <button
+            type="button"
+            className="settings-accordion-head"
+            aria-expanded={settingsWolOpen}
+            onClick={() => setSettingsWolOpen((open) => !open)}
+          >
+            <span className="settings-nav-copy">
+              <strong>Wake-on-LAN</strong>
+              <span className="hint" style={{ padding: 0 }}>
+                {wolSummary}
+              </span>
+            </span>
+            <span
+              className={`settings-nav-chevron${settingsWolOpen ? " open" : ""}`}
+              aria-hidden="true"
+            >
+              ›
+            </span>
+          </button>
+          {settingsWolOpen && (
+            <div className="settings-accordion-body">
+              <div className="top-row" style={{ marginTop: "0.65rem" }}>
+                <span className="hint" style={{ padding: 0 }}>
+                  Magic packet on home LAN / VPN
+                </span>
+                <label
+                  className="toggle"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="checkbox"
+                    checked={wol.enabled}
+                    onChange={(e) => {
+                      void persistWol({ ...wol, enabled: e.target.checked });
+                    }}
+                  />
+                  <span>On</span>
+                </label>
+              </div>
+              <label className="field">
+                <span>Target MAC</span>
+                <input
+                  value={wol.mac}
+                  placeholder="AA:BB:CC:DD:EE:FF"
+                  autoComplete="off"
+                  spellCheck={false}
+                  inputMode="text"
                   onChange={(e) => {
-                    void persist(
-                      services.map((s) =>
-                        s.id === service.id
-                          ? { ...s, enabled: e.target.checked }
-                          : s,
-                      ),
-                    );
+                    const mac = formatMacInput(e.target.value);
+                    setWol((prev) => ({ ...prev, mac }));
+                  }}
+                  onBlur={(e) => {
+                    const mac = formatMacInput(e.target.value);
+                    void persistWol({ ...wol, mac });
                   }}
                 />
-                <span>On</span>
               </label>
-            </div>
-            <label className="field">
-              <span>
-                {service.id === "workouts" ? "Arrs Hub URL" : "Remote URL"}
-              </span>
-              <input
-                type="url"
-                value={service.url}
-                placeholder={
-                  service.id === "workouts"
-                    ? wol.hubUrl.trim() || "http://192.168.1.10:3000"
-                    : undefined
-                }
-                onChange={(e) =>
-                  setServices((prev) =>
-                    prev.map((s) =>
-                      s.id === service.id ? { ...s, url: e.target.value } : s,
-                    ),
-                  )
-                }
-                onBlur={() => void saveServices(services)}
-              />
-            </label>
-            <p className="hint" style={{ padding: "0.15rem 0 0" }}>
-              {service.id === "workouts" ? (
+              <label className="field">
+                <span>PC host / IP (optional)</span>
+                <input
+                  value={wol.targetHost}
+                  placeholder="192.168.1.10"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setWol((prev) => ({ ...prev, targetHost: e.target.value }))
+                  }
+                  onBlur={(e) =>
+                    void persistWol({ ...wol, targetHost: e.target.value })
+                  }
+                />
+              </label>
+              <button
+                type="button"
+                className="settings-advanced-toggle"
+                aria-expanded={settingsWolAdvanced}
+                onClick={() => setSettingsWolAdvanced((open) => !open)}
+              >
+                <span>Advanced</span>
+                <span
+                  className={`settings-nav-chevron${settingsWolAdvanced ? " open" : ""}`}
+                  aria-hidden="true"
+                >
+                  ›
+                </span>
+              </button>
+              {settingsWolAdvanced && (
                 <>
-                  Points at Arrs Hub (not Plex). Plex token stays on the hub in
-                  workout-settings.json. Falls back to Wake-on-LAN → Arrs Hub URL
-                  when empty. Hub must be LAN-bound for the tablet (
-                  <code>start-hub-lan.bat</code>).
-                </>
-              ) : (
-                <>
-                  Works everywhere via port forward. On home Wi‑Fi, host is swapped
-                  to Home / LAN base when that is set.
+                  <label className="field">
+                    <span>Broadcast IP</span>
+                    <input
+                      value={wol.broadcastIp}
+                      placeholder="255.255.255.255"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setWol((prev) => ({
+                          ...prev,
+                          broadcastIp: e.target.value,
+                        }))
+                      }
+                      onBlur={(e) =>
+                        void persistWol({
+                          ...wol,
+                          broadcastIp: e.target.value || "255.255.255.255",
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>UDP port</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={wol.port}
+                      onChange={(e) =>
+                        setWol((prev) => ({
+                          ...prev,
+                          port: Number(e.target.value) || 9,
+                        }))
+                      }
+                      onBlur={(e) =>
+                        void persistWol({
+                          ...wol,
+                          port: Number(e.target.value) || 9,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Home network CIDR</span>
+                    <input
+                      value={wol.homeCidr}
+                      placeholder="192.168.1.0/24"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setWol((prev) => ({
+                          ...prev,
+                          homeCidr: e.target.value,
+                        }))
+                      }
+                      onBlur={(e) =>
+                        void persistWol({ ...wol, homeCidr: e.target.value })
+                      }
+                    />
+                  </label>
+                  <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                    Leave blank to derive from Home / LAN
+                    {derivedCidr ? (
+                      <>
+                        {" "}
+                        (now <code>{derivedCidr}</code>)
+                      </>
+                    ) : (
+                      <>.</>
+                    )}
+                  </p>
+                  <label className="field">
+                    <span>Arrs Hub URL (relay)</span>
+                    <input
+                      type="url"
+                      value={wol.hubUrl}
+                      placeholder="http://192.168.1.10:3000"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setWol((prev) => ({ ...prev, hubUrl: e.target.value }))
+                      }
+                      onBlur={(e) =>
+                        void persistWol({ ...wol, hubUrl: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Hub PC id</span>
+                    <input
+                      value={wol.hubPcId}
+                      placeholder="pc-…"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setWol((prev) => ({
+                          ...prev,
+                          hubPcId: e.target.value,
+                        }))
+                      }
+                      onBlur={(e) =>
+                        void persistWol({ ...wol, hubPcId: e.target.value })
+                      }
+                    />
+                  </label>
                 </>
               )}
-            </p>
-            {(service.auth === "apiKey" || service.id === "tautulli") && (
-              <SecretField
-                label="API key"
-                value={service.apiKey}
-                fieldKey={`${service.id}:apiKey`}
-                revealed={!!revealedSecrets[`${service.id}:apiKey`]}
-                onToggle={toggleSecret}
-                onChange={(apiKey) =>
-                  setServices((prev) =>
-                    prev.map((s) =>
-                      s.id === service.id ? { ...s, apiKey } : s,
-                    ),
-                  )
-                }
-                onBlur={() => void saveServices(services)}
-              />
-            )}
-            {service.auth === "userPass" && (
-              <>
-                <label className="field">
-                  <span>Username</span>
-                  <input
-                    value={service.username}
-                    onChange={(e) =>
-                      setServices((prev) =>
-                        prev.map((s) =>
-                          s.id === service.id
-                            ? { ...s, username: e.target.value }
-                            : s,
-                        ),
-                      )
-                    }
-                    onBlur={() => void saveServices(services)}
-                  />
-                </label>
-                <SecretField
-                  label="Password"
-                  value={service.password}
-                  fieldKey={`${service.id}:password`}
-                  revealed={!!revealedSecrets[`${service.id}:password`]}
-                  onToggle={toggleSecret}
-                  onChange={(password) =>
-                    setServices((prev) =>
-                      prev.map((s) =>
-                        s.id === service.id ? { ...s, password } : s,
-                      ),
+              {homeNet && (
+                <p
+                  className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}
+                  style={{ padding: "0.35rem 0 0" }}
+                >
+                  {homeNet.message}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <p className="settings-group-label">Services</p>
+        <div className="settings-service-list">
+          {services.map((service) => {
+            const expanded = settingsServiceId === service.id;
+            return (
+              <div key={service.id} className="settings-service-row">
+                <button
+                  type="button"
+                  className="settings-service-head"
+                  aria-expanded={expanded}
+                  onClick={() =>
+                    setSettingsServiceId((id) =>
+                      id === service.id ? null : service.id,
                     )
                   }
-                  onBlur={() => void saveServices(services)}
-                />
-              </>
-            )}
-          </section>
-        ))}
+                >
+                  <span
+                    className={`settings-service-dot${service.enabled ? " on" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <span className="settings-nav-copy">
+                    <strong style={{ color: service.color }}>
+                      {service.name}
+                    </strong>
+                    <span className="hint" style={{ padding: 0 }}>
+                      {serviceRowSummary(service, wol.hubUrl)}
+                    </span>
+                  </span>
+                  <span
+                    className={`settings-nav-chevron${expanded ? " open" : ""}`}
+                    aria-hidden="true"
+                  >
+                    ›
+                  </span>
+                </button>
+                {expanded && (
+                  <div className="settings-service-body">
+                    <div className="top-row" style={{ marginTop: "0.65rem" }}>
+                      <span className="hint" style={{ padding: 0 }}>
+                        Show on Home
+                      </span>
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={service.enabled}
+                          onChange={(e) => {
+                            void persist(
+                              services.map((s) =>
+                                s.id === service.id
+                                  ? { ...s, enabled: e.target.checked }
+                                  : s,
+                              ),
+                            );
+                          }}
+                        />
+                        <span>On</span>
+                      </label>
+                    </div>
+                    <label className="field">
+                      <span>
+                        {service.id === "workouts"
+                          ? "Arrs Hub URL"
+                          : "Remote URL"}
+                      </span>
+                      <input
+                        type="url"
+                        value={service.url}
+                        placeholder={
+                          service.id === "workouts"
+                            ? wol.hubUrl.trim() ||
+                              "http://192.168.1.10:3000"
+                            : undefined
+                        }
+                        onChange={(e) =>
+                          setServices((prev) =>
+                            prev.map((s) =>
+                              s.id === service.id
+                                ? { ...s, url: e.target.value }
+                                : s,
+                            ),
+                          )
+                        }
+                        onBlur={() => void saveServices(services)}
+                      />
+                    </label>
+                    {service.id === "workouts" ? (
+                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                        Falls back to Wake-on-LAN → Arrs Hub URL when empty.
+                      </p>
+                    ) : service.id === "tautulli" ? (
+                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                        Needs API key from Tautulli → Settings → Web Interface.
+                      </p>
+                    ) : null}
+                    {(service.auth === "apiKey" ||
+                      service.id === "tautulli") && (
+                      <SecretField
+                        label="API key"
+                        value={service.apiKey}
+                        fieldKey={`${service.id}:apiKey`}
+                        revealed={!!revealedSecrets[`${service.id}:apiKey`]}
+                        onToggle={toggleSecret}
+                        onChange={(apiKey) =>
+                          setServices((prev) =>
+                            prev.map((s) =>
+                              s.id === service.id ? { ...s, apiKey } : s,
+                            ),
+                          )
+                        }
+                        onBlur={() => void saveServices(services)}
+                      />
+                    )}
+                    {service.auth === "userPass" && (
+                      <>
+                        <label className="field">
+                          <span>Username</span>
+                          <input
+                            value={service.username}
+                            onChange={(e) =>
+                              setServices((prev) =>
+                                prev.map((s) =>
+                                  s.id === service.id
+                                    ? { ...s, username: e.target.value }
+                                    : s,
+                                ),
+                              )
+                            }
+                            onBlur={() => void saveServices(services)}
+                          />
+                        </label>
+                        <SecretField
+                          label="Password"
+                          value={service.password}
+                          fieldKey={`${service.id}:password`}
+                          revealed={
+                            !!revealedSecrets[`${service.id}:password`]
+                          }
+                          onToggle={toggleSecret}
+                          onChange={(password) =>
+                            setServices((prev) =>
+                              prev.map((s) =>
+                                s.id === service.id ? { ...s, password } : s,
+                              ),
+                            )
+                          }
+                          onBlur={() => void saveServices(services)}
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }

@@ -578,6 +578,54 @@ export function App() {
         </p>
 
         <section className="card slim">
+          <div className="top-row">
+            <strong>Share APK</strong>
+            {appVersion && (
+              <span className="hint" style={{ padding: 0 }}>
+                v{appVersion.version} ({appVersion.build})
+              </span>
+            )}
+          </div>
+          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
+            Install this build on another device. Shares the installed APK over
+            Nearby Share, Bluetooth, Files, or email. On the other device, open
+            the file and tap Install (allow installs from unknown apps if
+            asked).
+          </p>
+          <button
+            type="button"
+            className="btn primary"
+            style={{ width: "100%" }}
+            disabled={shareBusy}
+            onClick={() => {
+              void (async () => {
+                setShareBusy(true);
+                setShareMessage(null);
+                try {
+                  await shareInstalledApk();
+                  setShareMessage("Share sheet opened.");
+                } catch (err) {
+                  setShareMessage(
+                    err instanceof Error
+                      ? err.message
+                      : "Could not share APK.",
+                  );
+                } finally {
+                  setShareBusy(false);
+                }
+              })();
+            }}
+          >
+            {shareBusy ? "Preparing APK…" : "Send APK"}
+          </button>
+          {shareMessage && (
+            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
+              {shareMessage}
+            </p>
+          )}
+        </section>
+
+        <section className="card slim">
           <strong>Network pathing</strong>
           <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
             <strong>Remote</strong> URLs (per service below) work home or away
@@ -622,54 +670,6 @@ export function App() {
               {homeNet.onHomeNetwork === true
                 ? `Using LAN host for probes/modules. ${homeNet.message}`
                 : `Using remote URLs. ${homeNet.message}`}
-            </p>
-          )}
-        </section>
-
-        <section className="card slim">
-          <div className="top-row">
-            <strong>Share APK</strong>
-            {appVersion && (
-              <span className="hint" style={{ padding: 0 }}>
-                v{appVersion.version} ({appVersion.build})
-              </span>
-            )}
-          </div>
-          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            Install this build on another device. Shares the installed APK over
-            Nearby Share, Bluetooth, Files, or email. On the other device, open
-            the file and tap Install (allow installs from unknown apps if
-            asked).
-          </p>
-          <button
-            type="button"
-            className="btn primary"
-            style={{ width: "100%" }}
-            disabled={shareBusy}
-            onClick={() => {
-              void (async () => {
-                setShareBusy(true);
-                setShareMessage(null);
-                try {
-                  await shareInstalledApk();
-                  setShareMessage("Share sheet opened.");
-                } catch (err) {
-                  setShareMessage(
-                    err instanceof Error
-                      ? err.message
-                      : "Could not share APK.",
-                  );
-                } finally {
-                  setShareBusy(false);
-                }
-              })();
-            }}
-          >
-            {shareBusy ? "Preparing APK…" : "Send APK"}
-          </button>
-          {shareMessage && (
-            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
-              {shareMessage}
             </p>
           )}
         </section>

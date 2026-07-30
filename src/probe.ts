@@ -106,6 +106,16 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       };
     }
 
+    if (service.id === "ytarr") {
+      const { status, latencyMs } = await httpGet(`${base}/api/health`);
+      const up = status >= 200 && status < 500;
+      return {
+        up,
+        latencyMs,
+        message: up ? "Online" : `HTTP ${status}`,
+      };
+    }
+
     const { status, latencyMs } = await httpGet(base);
     const up = status >= 200 && status < 500;
     return {

@@ -165,6 +165,15 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     auth: "apiKey",
     defaultEnabled: false,
   },
+  {
+    id: "ytarr",
+    name: "Ytarr",
+    defaultUrl: `${REMOTE_HOST}:8199`,
+    color: "#3fb950",
+    probe: "http",
+    auth: "none",
+    defaultEnabled: true,
+  },
 ];
 
 export type CredentialSeed = Partial<

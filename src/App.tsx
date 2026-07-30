@@ -77,6 +77,7 @@ const DEFAULT_MODULE_ORDER = [
   "plex",
   "ombi",
   "overseerr",
+  "ytarr",
   "fileflows",
   "calibre",
 ];
@@ -110,6 +111,7 @@ const MODULE_COPY: Record<string, string> = {
   calibre: "Ebook Library",
   overseerr: "Media Requests",
   whisparr: "Manage Adult Movies",
+  ytarr: "YouTube Downloads",
 };
 
 function SecretField({

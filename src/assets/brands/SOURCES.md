@@ -19,5 +19,6 @@ Official (or official-derived) product marks used by `ServiceIcon`.
 | plex | plex.png | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/plex.png (classic Plex chevron app mark) |
 | calibre | calibre.svg | https://raw.githubusercontent.com/kovidgoyal/calibre/master/resources/images/calibre.svg |
 | overseerr | overseerr.svg | https://raw.githubusercontent.com/sct/overseerr/develop/public/os_icon.svg |
+| ytarr | ytarr.svg | ytarr repo `frontend/public/favicon.svg` (project brand mark) |
 
 Trademarks remain with their respective owners; used here only to identify connected services.

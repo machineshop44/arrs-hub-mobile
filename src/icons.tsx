@@ -15,6 +15,7 @@ import fileflowsLogo from "./assets/brands/fileflows.png";
 import plexLogo from "./assets/brands/plex.png";
 import calibreLogo from "./assets/brands/calibre.svg";
 import overseerrLogo from "./assets/brands/overseerr.svg";
+import ytarrLogo from "./assets/brands/ytarr.svg";
 
 type IconProps = {
   color?: string;
@@ -126,6 +127,7 @@ const BRAND_SRC: Record<string, string> = {
   plex: plexLogo,
   calibre: calibreLogo,
   overseerr: overseerrLogo,
+  ytarr: ytarrLogo,
 };
 
 export function ServiceIcon({

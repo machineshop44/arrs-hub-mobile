@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { ArrPanel } from "./ArrPanel";
 import {
   IconDashboard,
@@ -153,6 +161,9 @@ export function App() {
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
+  const [reordering, setReordering] = useState(false);
+  const longPressTimer = useRef<number | null>(null);
+  const suppressClick = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -167,6 +178,57 @@ export function App() {
       setReady(true);
     })();
   }, []);
+
+  useEffect(() => {
+    if (screen !== "modules" && screen !== "dashboard") {
+      setReordering(false);
+    }
+  }, [screen]);
+
+  const clearLongPress = () => {
+    if (longPressTimer.current != null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const toggleReorderFromLongPress = () => {
+    suppressClick.current = true;
+    setReordering((prev) => {
+      const next = !prev;
+      if (next) {
+        try {
+          navigator.vibrate?.(14);
+        } catch {
+          /* optional haptic */
+        }
+      }
+      return next;
+    });
+  };
+
+  const startLongPress = () => {
+    clearLongPress();
+    longPressTimer.current = window.setTimeout(() => {
+      longPressTimer.current = null;
+      toggleReorderFromLongPress();
+    }, 450);
+  };
+
+  useEffect(() => () => clearLongPress(), []);
+
+  const moduleRowPressHandlers = {
+    onPointerDown: (e: ReactPointerEvent) => {
+      if (e.button !== 0) return;
+      startLongPress();
+    },
+    onPointerUp: clearLongPress,
+    onPointerLeave: clearLongPress,
+    onPointerCancel: clearLongPress,
+    onContextMenu: (e: ReactMouseEvent) => {
+      e.preventDefault();
+    },
+  };
 
   const refreshHomeNet = useCallback(async (settings: WolSettings) => {
     if (!settings.enabled) {
@@ -251,6 +313,7 @@ export function App() {
 
   const openModule = (service: ServiceConfig) => {
     setDrawer(false);
+    setReordering(false);
     if (service.id === "tautulli") {
       setActive(service);
       setScreen("tautulli");
@@ -263,6 +326,15 @@ export function App() {
     }
     setActive(service);
     setScreen("web");
+  };
+
+  const onModuleRowClick = (service: ServiceConfig) => {
+    if (suppressClick.current) {
+      suppressClick.current = false;
+      return;
+    }
+    if (reordering) return;
+    openModule(service);
   };
 
   const modules = useMemo(() => {
@@ -655,35 +727,53 @@ export function App() {
             </small>
           </div>
         )}
-        <ul className="module-list">
+        {reordering && (
+          <div className="reorder-bar">
+            <span>Reorder modules</span>
+            <button
+              type="button"
+              className="btn reorder-done"
+              onClick={() => setReordering(false)}
+            >
+              Done
+            </button>
+          </div>
+        )}
+        <ul className={`module-list${reordering ? " is-reordering" : ""}`}>
           {modules.map((service, index) => {
             const upState = health[service.id]?.up;
             return (
-              <li key={service.id} className="module-item">
-                <div className="reorder-btns">
-                  <button
-                    type="button"
-                    className="reorder-btn"
-                    aria-label={`Move ${service.name} up`}
-                    disabled={index === 0}
-                    onClick={() => void moveModule(service.id, -1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="reorder-btn"
-                    aria-label={`Move ${service.name} down`}
-                    disabled={index === modules.length - 1}
-                    onClick={() => void moveModule(service.id, 1)}
-                  >
-                    ↓
-                  </button>
-                </div>
+              <li
+                key={service.id}
+                className={`module-item${reordering ? " reordering" : ""}`}
+              >
+                {reordering && (
+                  <div className="reorder-btns">
+                    <button
+                      type="button"
+                      className="reorder-btn"
+                      aria-label={`Move ${service.name} up`}
+                      disabled={index === 0}
+                      onClick={() => void moveModule(service.id, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="reorder-btn"
+                      aria-label={`Move ${service.name} down`}
+                      disabled={index === modules.length - 1}
+                      onClick={() => void moveModule(service.id, 1)}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   className="module-row"
-                  onClick={() => openModule(service)}
+                  {...moduleRowPressHandlers}
+                  onClick={() => onModuleRowClick(service)}
                 >
                   <span className={statusDotClass(upState)} aria-hidden="true" />
                   <span className="module-text">
@@ -780,12 +870,28 @@ export function App() {
         </button>
       </header>
 
-      <ul className="module-list home">
+      {reordering && (
+        <div className="reorder-bar">
+          <span>Reorder modules</span>
+          <button
+            type="button"
+            className="btn reorder-done"
+            onClick={() => setReordering(false)}
+          >
+            Done
+          </button>
+        </div>
+      )}
+
+      <ul className={`module-list home${reordering ? " is-reordering" : ""}`}>
         <li>
           <button
             type="button"
             className="module-row"
-            onClick={() => setScreen("dashboard")}
+            onClick={() => {
+              setReordering(false);
+              setScreen("dashboard");
+            }}
           >
             <span className="module-text">
               <strong>Dashboard</strong>
@@ -817,31 +923,37 @@ export function App() {
         {modules.map((service, index) => {
           const upState = health[service.id]?.up;
           return (
-            <li key={service.id} className="module-item">
-              <div className="reorder-btns">
-                <button
-                  type="button"
-                  className="reorder-btn"
-                  aria-label={`Move ${service.name} up`}
-                  disabled={index === 0}
-                  onClick={() => void moveModule(service.id, -1)}
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  className="reorder-btn"
-                  aria-label={`Move ${service.name} down`}
-                  disabled={index === modules.length - 1}
-                  onClick={() => void moveModule(service.id, 1)}
-                >
-                  ↓
-                </button>
-              </div>
+            <li
+              key={service.id}
+              className={`module-item${reordering ? " reordering" : ""}`}
+            >
+              {reordering && (
+                <div className="reorder-btns">
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label={`Move ${service.name} up`}
+                    disabled={index === 0}
+                    onClick={() => void moveModule(service.id, -1)}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label={`Move ${service.name} down`}
+                    disabled={index === modules.length - 1}
+                    onClick={() => void moveModule(service.id, 1)}
+                  >
+                    ↓
+                  </button>
+                </div>
+              )}
               <button
                 type="button"
                 className="module-row"
-                onClick={() => openModule(service)}
+                {...moduleRowPressHandlers}
+                onClick={() => onModuleRowClick(service)}
               >
                 <span className={statusDotClass(upState)} aria-hidden="true" />
                 <span className="module-text">
@@ -864,7 +976,10 @@ export function App() {
           <button
             type="button"
             className="module-row"
-            onClick={() => setScreen("settings")}
+            onClick={() => {
+              setReordering(false);
+              setScreen("settings");
+            }}
           >
             <span className="module-text">
               <strong>Settings</strong>

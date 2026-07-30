@@ -30,4 +30,20 @@ Then **Run** once on the tablet (USB). Keep Vite (`npm run dev`) running so UI
 changes hot-reload. `live:prepare` sets Capacitor to `http://localhost:5174`
 and runs `adb reverse`.
 
-Release / offline APK (no live server): unset live URL, `npm run cap:sync`, build APK.
+Release / offline APK (no live server): unset live URL, then:
+
+```bat
+npm run apk:debug
+```
+
+Universal debug APK (phones + tablets):
+
+`android/app/build/outputs/apk/debug/app-debug.apk`
+
+Install that file on a Pixel (Drive / email / USB). **Do not** rely on Share APK
+from an Android Studio “Run” install — that is often a split package other
+devices reject. Share APK works after the source device itself was installed
+from this universal APK.
+
+In Android Studio you can also **Build → Build Bundle(s) / APK(s) → Build APK(s)**.
+

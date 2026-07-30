@@ -54,14 +54,28 @@ export const DEFAULT_WOL: WolSettings = {
   hubPcId: "",
 };
 
-/** Normalize MAC to AA:BB:CC:DD:EE:FF */
-export function normalizeMac(mac: string): string | null {
-  const hex = String(mac || "")
-    .trim()
+/**
+ * Live-format a MAC as the user types / pastes.
+ * Strips non-hex, uppercases, inserts colons → AA:BB:CC:DD:EE:FF (max 6 octets).
+ * Accepts pasted aabbccddeeff, aa-bb-cc-dd-ee-ff, aa:bb:…, etc.
+ */
+export function formatMacInput(raw: string): string {
+  const hex = String(raw || "")
     .replace(/[^a-fA-F0-9]/g, "")
-    .toUpperCase();
-  if (hex.length !== 12) return null;
-  return hex.match(/.{2}/g)!.join(":");
+    .toUpperCase()
+    .slice(0, 12);
+  const parts: string[] = [];
+  for (let i = 0; i < hex.length; i += 2) {
+    parts.push(hex.slice(i, Math.min(i + 2, hex.length)));
+  }
+  return parts.join(":");
+}
+
+/** Normalize MAC to AA:BB:CC:DD:EE:FF (null if not exactly 6 octets). */
+export function normalizeMac(mac: string): string | null {
+  const formatted = formatMacInput(mac);
+  if (formatted.replace(/:/g, "").length !== 12) return null;
+  return formatted;
 }
 
 export function guessBroadcastAddress(host: string): string | null {

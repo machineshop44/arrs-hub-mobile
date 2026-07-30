@@ -92,6 +92,20 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       };
     }
 
+    if (service.id === "bazarr" && service.apiKey.trim()) {
+      const headers = { "X-API-KEY": service.apiKey.trim() };
+      const { status, latencyMs } = await httpGet(
+        `${base}/api/system/status`,
+        headers,
+      );
+      const up = status >= 200 && status < 400;
+      return {
+        up,
+        latencyMs,
+        message: up ? "Online" : `HTTP ${status}`,
+      };
+    }
+
     const { status, latencyMs } = await httpGet(base);
     const up = status >= 200 && status < 500;
     return {

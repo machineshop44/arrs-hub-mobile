@@ -27,9 +27,11 @@ import {
 import type { ServiceConfig } from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
+import { BazarrPanel } from "./BazarrPanel";
 import {
   DEFAULT_WOL,
   detectHomeNetwork,
+  formatMacInput,
   loadWolSettings,
   normalizeMac,
   resolveHomeCidr,
@@ -39,7 +41,14 @@ import {
   type WolSettings,
 } from "./wol";
 
-type Screen = "modules" | "settings" | "arr" | "tautulli" | "web" | "dashboard";
+type Screen =
+  | "modules"
+  | "settings"
+  | "arr"
+  | "bazarr"
+  | "tautulli"
+  | "web"
+  | "dashboard";
 
 /** *arr apps with a native ArrPanel (not Prowlarr — web UI only for now). */
 const NATIVE_ARR_IDS = new Set([
@@ -319,6 +328,11 @@ export function App() {
       setScreen("tautulli");
       return;
     }
+    if (service.id === "bazarr") {
+      setActive(service);
+      setScreen("bazarr");
+      return;
+    }
     if (NATIVE_ARR_IDS.has(service.id)) {
       setActive(service);
       setScreen("arr");
@@ -398,6 +412,19 @@ export function App() {
     );
   }
 
+  if (screen === "bazarr" && active) {
+    return (
+      <BazarrPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
+        onOpenSettings={() => setScreen("settings")}
+      />
+    );
+  }
+
   if (screen === "web" && active) {
     return (
       <WebPanel
@@ -466,12 +493,21 @@ export function App() {
               placeholder="AA:BB:CC:DD:EE:FF"
               autoComplete="off"
               spellCheck={false}
-              onChange={(e) => setWol((prev) => ({ ...prev, mac: e.target.value }))}
-              onBlur={(e) =>
-                void persistWol({ ...wol, mac: e.target.value })
-              }
+              inputMode="text"
+              onChange={(e) => {
+                const mac = formatMacInput(e.target.value);
+                setWol((prev) => ({ ...prev, mac }));
+              }}
+              onBlur={(e) => {
+                const mac = formatMacInput(e.target.value);
+                void persistWol({ ...wol, mac });
+              }}
             />
           </label>
+          <p className="hint" style={{ padding: "0.15rem 0 0" }}>
+            Formats as AA:BB:CC:DD:EE:FF while typing. Paste bare hex or
+            dash-separated MACs — they normalize automatically.
+          </p>
           <label className="field">
             <span>PC host / IP (optional, for directed broadcast)</span>
             <input
@@ -526,10 +562,10 @@ export function App() {
             />
           </label>
           <label className="field">
-            <span>Home network CIDR</span>
+            <span>Home network CIDR (LAN subnet)</span>
             <input
               value={wol.homeCidr}
-              placeholder={resolveHomeCidr(wol)}
+              placeholder="192.168.1.0/24"
               autoComplete="off"
               spellCheck={false}
               onChange={(e) =>
@@ -541,9 +577,15 @@ export function App() {
             />
           </label>
           <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-            Detection matches this phone&apos;s local IP to the CIDR (default
-            /24 of the service host). Set your real LAN subnet if services use
-            a public IP (e.g. 192.168.1.0/24).
+            Your home Wi‑Fi subnet, written as CIDR (e.g.{" "}
+            <code>192.168.1.0/24</code>). Used only to detect “are we on home
+            Wi‑Fi?” so the Wake button can show on Home. If services use a
+            public IP like <code>67.84.101.14</code>, do{" "}
+            <strong>not</strong> use that public /24 — use the real LAN from
+            Arrs Hub or your router (often <code>192.168.x.0/24</code>). Leave
+            blank to fall back to{" "}
+            <code>{resolveHomeCidr({ ...wol, homeCidr: "" })}</code> (often
+            wrong when the host is public).
           </p>
           <label className="field">
             <span>Arrs Hub URL (optional relay)</span>

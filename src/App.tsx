@@ -9,8 +9,10 @@ import {
   ServiceIcon,
 } from "./icons";
 import {
+  loadModuleOrder,
   loadServices,
   probeService,
+  saveModuleOrder,
   saveServices,
   type ProbeResult,
 } from "./probe";
@@ -40,10 +42,36 @@ const NATIVE_ARR_IDS = new Set([
   "whisparr",
 ]);
 
+/** Fallback order before the user customizes (arrs → downloaders → media). */
+const DEFAULT_MODULE_ORDER = [
+  "sonarr",
+  "radarr",
+  "lidarr",
+  "readarr",
+  "whisparr",
+  "prowlarr",
+  "bazarr",
+  "qbittorrent",
+  "sabnzbd",
+  "tautulli",
+  "plex",
+  "ombi",
+  "overseerr",
+  "fileflows",
+  "calibre",
+];
+
 function statusDotClass(up: boolean | null | undefined): string {
   if (up === true) return "status-dot status-up";
   if (up === false) return "status-dot status-down";
   return "status-dot status-unknown";
+}
+
+function orderIndex(id: string, moduleOrder: string[]): number {
+  const saved = moduleOrder.indexOf(id);
+  if (saved !== -1) return saved;
+  const fallback = DEFAULT_MODULE_ORDER.indexOf(id);
+  return 1000 + (fallback === -1 ? 99 : fallback);
 }
 
 const MODULE_COPY: Record<string, string> = {
@@ -124,15 +152,18 @@ export function App() {
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
+  const [moduleOrder, setModuleOrder] = useState<string[]>([]);
 
   useEffect(() => {
     void (async () => {
-      const [svc, wolSettings] = await Promise.all([
+      const [svc, wolSettings, order] = await Promise.all([
         loadServices(),
         loadWolSettings(),
+        loadModuleOrder(),
       ]);
       setServices(svc);
       setWol(wolSettings);
+      setModuleOrder(order);
       setReady(true);
     })();
   }, []);
@@ -235,22 +266,32 @@ export function App() {
   };
 
   const modules = useMemo(() => {
-    const preferred = [
-      "sonarr",
-      "radarr",
-      "lidarr",
-      "sabnzbd",
-      "tautulli",
-      "prowlarr",
-      "qbittorrent",
-    ];
-    const list = [...enabled].sort((a, b) => {
-      const ai = preferred.indexOf(a.id);
-      const bi = preferred.indexOf(b.id);
-      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-    });
-    return list;
-  }, [enabled]);
+    return [...enabled].sort(
+      (a, b) => orderIndex(a.id, moduleOrder) - orderIndex(b.id, moduleOrder),
+    );
+  }, [enabled, moduleOrder]);
+
+  /** Wake on Home only when on home LAN, or uncertain (with confirm). Hide off-home. */
+  const showWakeControl =
+    wol.enabled && homeNet != null && homeNet.onHomeNetwork !== false;
+
+  const persistModuleOrder = async (ids: string[]) => {
+    setModuleOrder(ids);
+    await saveModuleOrder(ids);
+  };
+
+  const moveModule = async (id: string, dir: -1 | 1) => {
+    const ids = modules.map((m) => m.id);
+    const i = ids.indexOf(id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    const swapped = [...ids];
+    const tmp = swapped[i]!;
+    swapped[i] = swapped[j]!;
+    swapped[j] = tmp;
+    const rest = moduleOrder.filter((x) => !swapped.includes(x));
+    await persistModuleOrder([...swapped, ...rest]);
+  };
 
   if (!ready) {
     return (
@@ -343,7 +384,8 @@ export function App() {
           <p className="hint" style={{ padding: "0.35rem 0 0" }}>
             Sends a UDP magic packet from this phone on the home LAN (or VPN).
             Pure cellular / remote internet cannot wake a PC unless Arrs Hub
-            (already awake on the LAN) relays it.
+            (already awake on the LAN) relays it. The Wake button appears on
+            Home only when you&apos;re on the home network.
           </p>
           <label className="field">
             <span>Target MAC</span>
@@ -595,7 +637,7 @@ export function App() {
             <span>Modules</span>
           </div>
         </div>
-        {wol.enabled && (
+        {showWakeControl && (
           <div className="wol-bar">
             <button
               type="button"
@@ -614,10 +656,30 @@ export function App() {
           </div>
         )}
         <ul className="module-list">
-          {modules.map((service) => {
+          {modules.map((service, index) => {
             const upState = health[service.id]?.up;
             return (
-              <li key={service.id}>
+              <li key={service.id} className="module-item">
+                <div className="reorder-btns">
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label={`Move ${service.name} up`}
+                    disabled={index === 0}
+                    onClick={() => void moveModule(service.id, -1)}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label={`Move ${service.name} down`}
+                    disabled={index === modules.length - 1}
+                    onClick={() => void moveModule(service.id, 1)}
+                  >
+                    ↓
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="module-row"
@@ -732,7 +794,7 @@ export function App() {
             <IconDashboard color="#5ad1c9" size={28} />
           </button>
         </li>
-        {wol.enabled && (
+        {showWakeControl && (
           <li>
             <button
               type="button"
@@ -752,10 +814,30 @@ export function App() {
             </button>
           </li>
         )}
-        {modules.map((service) => {
+        {modules.map((service, index) => {
           const upState = health[service.id]?.up;
           return (
-            <li key={service.id}>
+            <li key={service.id} className="module-item">
+              <div className="reorder-btns">
+                <button
+                  type="button"
+                  className="reorder-btn"
+                  aria-label={`Move ${service.name} up`}
+                  disabled={index === 0}
+                  onClick={() => void moveModule(service.id, -1)}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="reorder-btn"
+                  aria-label={`Move ${service.name} down`}
+                  disabled={index === modules.length - 1}
+                  onClick={() => void moveModule(service.id, 1)}
+                >
+                  ↓
+                </button>
+              </div>
               <button
                 type="button"
                 className="module-row"
@@ -792,23 +874,6 @@ export function App() {
           </button>
         </li>
       </ul>
-
-      <nav className="luna-bottom">
-        <button type="button" className="bottom-pill active">
-          Modules
-        </button>
-        <button
-          type="button"
-          className="bottom-icon"
-          onClick={() => {
-            const sonarr = services.find((s) => s.id === "sonarr" && s.enabled);
-            if (sonarr) openModule(sonarr);
-          }}
-          aria-label="Calendar"
-        >
-          📅
-        </button>
-      </nav>
     </div>
   );
 }

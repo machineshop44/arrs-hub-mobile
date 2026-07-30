@@ -8,6 +8,7 @@ import {
 } from "./services";
 
 const STORAGE_KEY = "arrs-mobile-services-v3";
+const ORDER_KEY = "arrs-mobile-module-order-v1";
 
 export type ProbeResult = {
   up: boolean | null;
@@ -142,5 +143,25 @@ export async function saveServices(services: ServiceConfig[]): Promise<void> {
   await Preferences.set({
     key: STORAGE_KEY,
     value: JSON.stringify(services),
+  });
+}
+
+/** User-defined module list order (service ids). */
+export async function loadModuleOrder(): Promise<string[]> {
+  try {
+    const { value } = await Preferences.get({ key: ORDER_KEY });
+    if (!value) return [];
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === "string");
+  } catch {
+    return [];
+  }
+}
+
+export async function saveModuleOrder(ids: string[]): Promise<void> {
+  await Preferences.set({
+    key: ORDER_KEY,
+    value: JSON.stringify(ids),
   });
 }

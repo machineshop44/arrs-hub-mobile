@@ -107,6 +107,18 @@ export function IconEyeOff(props: IconProps) {
   );
 }
 
+/** Workouts module mark (dumbbell) — not a third-party brand. */
+export function IconWorkouts(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        d="M3.2 9.2h1.6v5.6H3.2V9.2Zm2.4-.8h1.8v7.2H5.6V8.4Zm3 2.4h6.8v2.4H8.6v-2.4Zm7.2-2.4h1.8v7.2h-1.8V8.4Zm2.4.8H20.8v5.6h-1.6V9.2Z"
+      />
+    </Svg>
+  );
+}
+
 /**
  * Official product marks keyed by service id.
  * Sources recorded in src/assets/brands/SOURCES.md
@@ -132,12 +144,16 @@ const BRAND_SRC: Record<string, string> = {
 
 export function ServiceIcon({
   id,
+  color,
   size = 28,
 }: {
   id: string;
   color?: string;
   size?: number;
 }) {
+  if (id === "workouts") {
+    return <IconWorkouts color={color || "#2dd4bf"} size={size} />;
+  }
   const src = BRAND_SRC[id];
   if (!src) {
     return <IconDashboard size={size} />;

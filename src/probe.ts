@@ -124,6 +124,31 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       };
     }
 
+    if (service.id === "workouts") {
+      // Workouts URL is Arrs Hub base — probe health, then workouts settings.
+      try {
+        const health = await httpGet(`${base}/api/health`);
+        if (health.status >= 200 && health.status < 500) {
+          return {
+            up: true,
+            latencyMs: health.latencyMs,
+            message: "Online",
+          };
+        }
+      } catch {
+        // try workouts settings next
+      }
+      const { status, latencyMs } = await httpGet(
+        `${base}/api/workouts/settings`,
+      );
+      const up = status >= 200 && status < 500;
+      return {
+        up,
+        latencyMs,
+        message: up ? "Online" : `HTTP ${status}`,
+      };
+    }
+
     const { status, latencyMs } = await httpGet(base);
     const up = status >= 200 && status < 500;
     return {

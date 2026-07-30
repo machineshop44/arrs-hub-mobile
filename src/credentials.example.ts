@@ -11,6 +11,7 @@ const seed: CredentialSeed = {
   // radarr: { apiKey: "…" },
   // qbittorrent: { username: "admin", password: "…" },
   // ytarr: { url: "http://67.84.101.14:8199", apiKey: "…" },
+  // workouts: { url: "http://192.168.1.10:3000" }, // Arrs Hub base (Plex token stays on hub)
 };
 
 /** Optional WOL defaults (MAC is fine to keep locally; not a secret). */

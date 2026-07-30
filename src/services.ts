@@ -174,6 +174,16 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     auth: "apiKey",
     defaultEnabled: true,
   },
+  {
+    id: "workouts",
+    name: "Workouts",
+    /** Arrs Hub base (desktop :3000 / LAN sync :3847). Plex token stays on the hub. */
+    defaultUrl: `${REMOTE_HOST}:3000`,
+    color: "#2dd4bf",
+    probe: "http",
+    auth: "none",
+    defaultEnabled: true,
+  },
 ];
 
 export type CredentialSeed = Partial<

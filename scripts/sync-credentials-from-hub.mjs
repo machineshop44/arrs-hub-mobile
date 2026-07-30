@@ -126,6 +126,10 @@ for (const candidate of workoutCandidates) {
         .replace(/\/web\/?$/, ""),
       apiKey: workout.plexToken,
     };
+    // Workouts module talks to Arrs Hub (token stays server-side). Seed hub URL only.
+    if (!seed.workouts?.url) {
+      seed.workouts = { url: `${REMOTE_HOST}:3000` };
+    }
     break;
   }
 }

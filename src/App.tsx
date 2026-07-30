@@ -35,6 +35,7 @@ import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
 import { YtarrPanel } from "./YtarrPanel";
+import { WorkoutsPanel } from "./WorkoutsPanel";
 import {
   getAppVersionInfo,
   shareInstalledApk,
@@ -60,6 +61,7 @@ type Screen =
   | "bazarr"
   | "ytarr"
   | "tautulli"
+  | "workouts"
   | "web";
 
 /** *arr apps with a native ArrPanel (not Prowlarr — web UI only for now). */
@@ -87,6 +89,7 @@ const DEFAULT_MODULE_ORDER = [
   "ombi",
   "overseerr",
   "ytarr",
+  "workouts",
   "fileflows",
   "calibre",
 ];
@@ -121,6 +124,7 @@ const MODULE_COPY: Record<string, string> = {
   overseerr: "Media Requests",
   whisparr: "Manage Adult Movies",
   ytarr: "YouTube Downloads",
+  workouts: "Plex workout days",
 };
 
 function SecretField({
@@ -309,15 +313,21 @@ export function App() {
   };
 
   const withEffectiveUrl = useCallback(
-    (service: ServiceConfig): ServiceConfig => ({
-      ...service,
-      url: resolveServiceUrl(
-        service.url,
-        pathing.homeBaseUrl,
-        homeNet?.onHomeNetwork ?? null,
-      ),
-    }),
-    [pathing.homeBaseUrl, homeNet?.onHomeNetwork],
+    (service: ServiceConfig): ServiceConfig => {
+      const rawUrl =
+        service.id === "workouts" && !service.url.trim() && wol.hubUrl.trim()
+          ? wol.hubUrl.trim()
+          : service.url;
+      return {
+        ...service,
+        url: resolveServiceUrl(
+          rawUrl,
+          pathing.homeBaseUrl,
+          homeNet?.onHomeNetwork ?? null,
+        ),
+      };
+    },
+    [pathing.homeBaseUrl, homeNet?.onHomeNetwork, wol.hubUrl],
   );
 
   const onWakePc = async () => {
@@ -346,8 +356,15 @@ export function App() {
   };
 
   const enabled = useMemo(
-    () => services.filter((s) => s.enabled && s.url.trim()),
-    [services],
+    () =>
+      services.filter((s) => {
+        if (!s.enabled) return false;
+        if (s.id === "workouts") {
+          return Boolean(s.url.trim() || wol.hubUrl.trim());
+        }
+        return Boolean(s.url.trim());
+      }),
+    [services, wol.hubUrl],
   );
 
   const refresh = useCallback(async () => {
@@ -393,6 +410,11 @@ export function App() {
     if (service.id === "ytarr") {
       setActive(resolved);
       setScreen("ytarr");
+      return;
+    }
+    if (service.id === "workouts") {
+      setActive(resolved);
+      setScreen("workouts");
       return;
     }
     if (NATIVE_ARR_IDS.has(service.id)) {
@@ -490,6 +512,19 @@ export function App() {
   if (screen === "ytarr" && active) {
     return (
       <YtarrPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
+        onOpenSettings={() => setScreen("settings")}
+      />
+    );
+  }
+
+  if (screen === "workouts" && active) {
+    return (
+      <WorkoutsPanel
         service={active}
         onBack={() => {
           setActive(null);
@@ -830,10 +865,17 @@ export function App() {
               </label>
             </div>
             <label className="field">
-              <span>Remote URL</span>
+              <span>
+                {service.id === "workouts" ? "Arrs Hub URL" : "Remote URL"}
+              </span>
               <input
                 type="url"
                 value={service.url}
+                placeholder={
+                  service.id === "workouts"
+                    ? wol.hubUrl.trim() || "http://192.168.1.10:3000"
+                    : undefined
+                }
                 onChange={(e) =>
                   setServices((prev) =>
                     prev.map((s) =>
@@ -845,8 +887,19 @@ export function App() {
               />
             </label>
             <p className="hint" style={{ padding: "0.15rem 0 0" }}>
-              Works everywhere via port forward. On home Wi‑Fi, host is swapped
-              to Home / LAN base when that is set.
+              {service.id === "workouts" ? (
+                <>
+                  Points at Arrs Hub (not Plex). Plex token stays on the hub in
+                  workout-settings.json. Falls back to Wake-on-LAN → Arrs Hub URL
+                  when empty. Hub must be LAN-bound for the tablet (
+                  <code>start-hub-lan.bat</code>).
+                </>
+              ) : (
+                <>
+                  Works everywhere via port forward. On home Wi‑Fi, host is swapped
+                  to Home / LAN base when that is set.
+                </>
+              )}
             </p>
             {(service.auth === "apiKey" || service.id === "tautulli") && (
               <SecretField

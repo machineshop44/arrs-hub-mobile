@@ -872,3 +872,122 @@ input[type="text"] {
 .empty {
   padding: 0.75rem;
 }
+
+/* —— Workouts —— */
+.workouts-body {
+  padding: 0 0.85rem 1.25rem;
+}
+
+.workouts-play-on {
+  margin: 0.5rem 0 0.35rem;
+}
+
+.workouts-play-on select {
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.workout-day-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.4rem, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.workout-day-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  min-height: 3.5rem;
+  padding: 0.4rem 0.25rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workout-day-btn.found {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.workout-day-btn.found:active:not(:disabled),
+.workout-day-btn.playing {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg2));
+}
+
+.workout-day-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.workout-day-num {
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.workout-day-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.workout-player-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+}
+
+.workout-player {
+  width: min(960px, 100%);
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.workout-player-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.workout-player-video {
+  width: 100%;
+  max-height: min(56vh, 480px);
+  background: #000;
+  display: block;
+}
+
+.workout-player-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem 0.85rem;
+}
+
+.workout-scrub {
+  flex: 1 1 100%;
+  width: 100%;
+  accent-color: var(--accent);
+}

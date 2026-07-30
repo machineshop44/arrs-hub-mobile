@@ -628,6 +628,28 @@ input[type="text"] {
   margin-top: 0.35rem;
 }
 
+.arr-row-btn {
+  display: grid;
+  gap: 0.2rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.arr-row-btn strong {
+  font-size: 0.9rem;
+}
+
+.arr-row-btn span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .btn {
   border: 0;
   border-radius: 8px;

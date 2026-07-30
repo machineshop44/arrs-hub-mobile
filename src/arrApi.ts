@@ -101,6 +101,23 @@ export async function arrPost(
   });
 }
 
+export async function arrPut(
+  service: ServiceConfig,
+  apiPath: string,
+  data: unknown,
+) {
+  const base = normalizeBase(service.url);
+  const path = resolveArrPath(service, apiPath);
+  return httpRequest(`${base}${path}`, {
+    method: "PUT",
+    headers: {
+      ...arrHeaders(service),
+      "Content-Type": "application/json",
+    },
+    data,
+  });
+}
+
 export type ArrKind = "series" | "movie" | "artist" | "author" | "unknown";
 
 export function detectArrKind(service: ServiceConfig): ArrKind {
@@ -142,6 +159,14 @@ export type ArrCalendarItem = {
   hasFile?: boolean;
 };
 
+export type ArrLookupMediaType =
+  | "series"
+  | "movie"
+  | "artist"
+  | "album"
+  | "author"
+  | "book";
+
 export type ArrLookupItem = {
   key: string;
   title: string;
@@ -149,6 +174,8 @@ export type ArrLookupItem = {
   overview?: string;
   alreadyAdded: boolean;
   addedId?: number;
+  mediaType?: ArrLookupMediaType;
+  subtitle?: string;
   raw: Record<string, unknown>;
 };
 
@@ -322,6 +349,50 @@ export async function fetchAddProfiles(
   };
 }
 
+function mapLookupRow(
+  row: Record<string, unknown>,
+  index: number,
+  mediaType: ArrLookupMediaType,
+): ArrLookupItem {
+  const title = String(
+    row.title || row.artistName || row.authorName || "Result",
+  );
+  const year = typeof row.year === "number" ? row.year : undefined;
+  const id = Number(row.id) || 0;
+  const alreadyAdded = id > 0;
+  const artist = row.artist as { artistName?: string } | undefined;
+  const author = row.author as { authorName?: string } | undefined;
+  const subtitle =
+    mediaType === "album"
+      ? artist?.artistName
+        ? String(artist.artistName)
+        : row.artistName
+          ? String(row.artistName)
+          : "Album"
+      : mediaType === "book"
+        ? author?.authorName
+          ? String(author.authorName)
+          : row.authorName
+            ? String(row.authorName)
+            : "Book"
+        : mediaType === "artist"
+          ? "Artist"
+          : mediaType === "author"
+            ? "Author"
+            : undefined;
+  return {
+    key: `${mediaType}-${title}-${year || ""}-${row.tvdbId || row.tmdbId || row.foreignArtistId || row.foreignAlbumId || row.foreignBookId || index}`,
+    title,
+    year,
+    overview: row.overview ? String(row.overview) : undefined,
+    alreadyAdded,
+    addedId: alreadyAdded ? id : undefined,
+    mediaType,
+    subtitle,
+    raw: row,
+  };
+}
+
 export async function lookupMedia(
   service: ServiceConfig,
   term: string,
@@ -330,33 +401,67 @@ export async function lookupMedia(
   if (!q) return [];
   const kind = detectArrKind(service);
   const encoded = encodeURIComponent(q);
+
+  if (kind === "artist") {
+    const [artistRes, albumRes] = await Promise.all([
+      arrGet(service, `/api/v3/artist/lookup?term=${encoded}`),
+      arrGet(service, `/api/v3/album/lookup?term=${encoded}`).catch(() => ({
+        status: 404,
+        data: [],
+        latencyMs: 0,
+      })),
+    ]);
+    if (artistRes.status >= 400 && albumRes.status >= 400) {
+      throw new Error(`Lookup failed (${artistRes.status})`);
+    }
+    const albums = asList(albumRes.data).map((row, i) =>
+      mapLookupRow(row, i, "album"),
+    );
+    const artists = asList(artistRes.data).map((row, i) =>
+      mapLookupRow(row, i, "artist"),
+    );
+    return [...albums, ...artists].slice(0, 60);
+  }
+
+  if (kind === "author") {
+    const [authorRes, bookRes] = await Promise.all([
+      arrGet(service, `/api/v3/author/lookup?term=${encoded}`),
+      arrGet(service, `/api/v3/book/lookup?term=${encoded}`).catch(() => ({
+        status: 404,
+        data: [],
+        latencyMs: 0,
+      })),
+    ]);
+    if (authorRes.status >= 400 && bookRes.status >= 400) {
+      throw new Error(`Lookup failed (${authorRes.status})`);
+    }
+    const books = asList(bookRes.data).map((row, i) =>
+      mapLookupRow(row, i, "book"),
+    );
+    const authors = asList(authorRes.data).map((row, i) =>
+      mapLookupRow(row, i, "author"),
+    );
+    return [...books, ...authors].slice(0, 60);
+  }
+
   let path = "";
-  if (kind === "series") path = `/api/v3/series/lookup?term=${encoded}`;
-  else if (kind === "movie") path = `/api/v3/movie/lookup?term=${encoded}`;
-  else if (kind === "artist") path = `/api/v3/artist/lookup?term=${encoded}`;
-  else if (kind === "author") path = `/api/v3/author/lookup?term=${encoded}`;
-  else throw new Error("Search is not supported for this app yet.");
+  let mediaType: ArrLookupMediaType = "series";
+  if (kind === "series") {
+    path = `/api/v3/series/lookup?term=${encoded}`;
+    mediaType = "series";
+  } else if (kind === "movie") {
+    path = `/api/v3/movie/lookup?term=${encoded}`;
+    mediaType = "movie";
+  } else throw new Error("Search is not supported for this app yet.");
 
   const res = await arrGet(service, path);
   if (res.status >= 400) {
     throw new Error(`Lookup failed (${res.status})`);
   }
 
-  return asList(res.data).map((row, index) => {
-    const title = String(row.title || row.artistName || row.authorName || "Result");
-    const year = typeof row.year === "number" ? row.year : undefined;
-    const id = Number(row.id) || 0;
-    const alreadyAdded = id > 0;
-    return {
-      key: `${title}-${year || ""}-${row.tvdbId || row.tmdbId || row.foreignArtistId || index}`,
-      title,
-      year,
-      overview: row.overview ? String(row.overview) : undefined,
-      alreadyAdded,
-      addedId: alreadyAdded ? id : undefined,
-      raw: row,
-    };
-  });
+  return asList(res.data).map((row, index) =>
+    mapLookupRow(row, index, mediaType),
+  );
 }
 
 export async function addAndSearch(
@@ -414,6 +519,9 @@ export async function addAndSearch(
   }
 
   if (kind === "artist") {
+    if (item.mediaType === "album") {
+      return addAlbumAndSearch(service, item, profiles);
+    }
     const payload = {
       ...item.raw,
       qualityProfileId,
@@ -433,6 +541,9 @@ export async function addAndSearch(
   }
 
   if (kind === "author") {
+    if (item.mediaType === "book") {
+      return addBookAndSearch(service, item, profiles);
+    }
     const payload = {
       ...item.raw,
       qualityProfileId,
@@ -454,6 +565,108 @@ export async function addAndSearch(
   throw new Error("Unsupported *arr type.");
 }
 
+async function addAlbumAndSearch(
+  service: ServiceConfig,
+  item: ArrLookupItem,
+  profiles: ArrAddProfile,
+): Promise<string> {
+  const qualityProfileId = profiles.qualityProfiles[0]?.id;
+  const rootFolderPath = profiles.rootFolders[0]?.path;
+  const metadataProfileId = profiles.metadataProfiles?.[0]?.id;
+  if (!qualityProfileId || !rootFolderPath) {
+    throw new Error("No quality profile or root folder configured in the *arr app.");
+  }
+
+  const albumId = Number(item.raw.id) || item.addedId || 0;
+  const artistId = Number(item.raw.artistId) || 0;
+
+  if (albumId > 0 && artistId > 0) {
+    const res = await arrPut(service, `/api/v3/album/${albumId}`, {
+      ...item.raw,
+      monitored: true,
+    });
+    if (res.status >= 400) {
+      throw new Error(`Monitor album failed (${res.status})`);
+    }
+    await triggerArrCommand(service, "AlbumSearch", { albumIds: [albumId] });
+    return "Monitored album and started album search.";
+  }
+
+  const artistRaw =
+    (item.raw.artist as Record<string, unknown> | undefined) || {};
+  const album = { ...item.raw, monitored: true };
+  delete (album as { artist?: unknown }).artist;
+  const payload = {
+    ...artistRaw,
+    qualityProfileId,
+    metadataProfileId,
+    rootFolderPath,
+    monitored: true,
+    albums: [album],
+    addOptions: {
+      searchForMissingAlbums: true,
+      monitored: true,
+    },
+  };
+  delete (payload as { id?: number }).id;
+  const res = await arrPost(service, "/api/v3/artist", payload);
+  if (res.status >= 400) {
+    throw new Error(`Add album/artist failed (${res.status})`);
+  }
+  return "Added album (and artist if needed) and started search.";
+}
+
+async function addBookAndSearch(
+  service: ServiceConfig,
+  item: ArrLookupItem,
+  profiles: ArrAddProfile,
+): Promise<string> {
+  const qualityProfileId = profiles.qualityProfiles[0]?.id;
+  const rootFolderPath = profiles.rootFolders[0]?.path;
+  const metadataProfileId = profiles.metadataProfiles?.[0]?.id;
+  if (!qualityProfileId || !rootFolderPath) {
+    throw new Error("No quality profile or root folder configured in the *arr app.");
+  }
+
+  const bookId = Number(item.raw.id) || item.addedId || 0;
+  const authorId = Number(item.raw.authorId) || 0;
+
+  if (bookId > 0 && authorId > 0) {
+    const res = await arrPut(service, `/api/v3/book/${bookId}`, {
+      ...item.raw,
+      monitored: true,
+    });
+    if (res.status >= 400) {
+      throw new Error(`Monitor book failed (${res.status})`);
+    }
+    await triggerArrCommand(service, "BookSearch", { bookIds: [bookId] });
+    return "Monitored book and started book search.";
+  }
+
+  const authorRaw =
+    (item.raw.author as Record<string, unknown> | undefined) || {};
+  const book = { ...item.raw, monitored: true };
+  delete (book as { author?: unknown }).author;
+  const payload = {
+    ...authorRaw,
+    qualityProfileId,
+    metadataProfileId,
+    rootFolderPath,
+    monitored: true,
+    books: [book],
+    addOptions: {
+      searchForMissingBooks: true,
+      monitored: true,
+    },
+  };
+  delete (payload as { id?: number }).id;
+  const res = await arrPost(service, "/api/v3/author", payload);
+  if (res.status >= 400) {
+    throw new Error(`Add book/author failed (${res.status})`);
+  }
+  return "Added book (and author if needed) and started search.";
+}
+
 /** Search indexers for an already-added title and queue best effort via MoviesSearch/SeriesSearch. */
 export async function searchExisting(
   service: ServiceConfig,
@@ -472,10 +685,18 @@ export async function searchExisting(
     return "Movie search sent to indexers / download clients.";
   }
   if (kind === "artist") {
+    if (item.mediaType === "album") {
+      await triggerArrCommand(service, "AlbumSearch", { albumIds: [id] });
+      return "Album search sent to indexers / download clients.";
+    }
     await triggerArrCommand(service, "ArtistSearch", { artistId: id });
     return "Artist search sent to indexers / download clients.";
   }
   if (kind === "author") {
+    if (item.mediaType === "book") {
+      await triggerArrCommand(service, "BookSearch", { bookIds: [id] });
+      return "Book search sent to indexers / download clients.";
+    }
     await triggerArrCommand(service, "AuthorSearch", { authorId: id });
     return "Author search sent to indexers / download clients.";
   }
@@ -495,6 +716,12 @@ export type ArrLibraryItem = {
   percentOfEpisodes?: number;
   sizeOnDisk?: number;
   seasonCount?: number;
+  albumCount?: number;
+  trackCount?: number;
+  trackFileCount?: number;
+  percentOfTracks?: number;
+  bookCount?: number;
+  bookFileCount?: number;
   qualityProfile?: string;
   nextAiring?: string;
   overview?: string;
@@ -518,6 +745,45 @@ export type ArrEpisodeItem = {
   overview?: string;
 };
 
+export type ArrAlbumItem = {
+  id: number;
+  artistId: number;
+  title: string;
+  year?: number;
+  monitored: boolean;
+  overview?: string;
+  trackCount?: number;
+  trackFileCount?: number;
+  percentOfTracks?: number;
+  sizeOnDisk?: number;
+  releaseDate?: string;
+  albumType?: string;
+  coverUrl?: string;
+};
+
+export type ArrTrackItem = {
+  id: number;
+  albumId: number;
+  trackNumber: string;
+  absoluteTrackNumber?: number;
+  title: string;
+  hasFile: boolean;
+  durationMs?: number;
+  mediumNumber?: number;
+};
+
+export type ArrBookItem = {
+  id: number;
+  authorId: number;
+  title: string;
+  year?: number;
+  monitored: boolean;
+  overview?: string;
+  hasFile: boolean;
+  releaseDate?: string;
+  coverUrl?: string;
+};
+
 export function mediaCoverUrl(
   service: ServiceConfig,
   id: number,
@@ -527,6 +793,20 @@ export function mediaCoverUrl(
   const key = encodeURIComponent(service.apiKey.trim());
   const ver = arrApiVersion(service);
   return `${base}/api/${ver}/MediaCover/${id}/${kind}-500.jpg?apikey=${key}`;
+}
+
+export function albumCoverUrl(service: ServiceConfig, albumId: number): string {
+  const base = normalizeBase(service.url);
+  const key = encodeURIComponent(service.apiKey.trim());
+  const ver = arrApiVersion(service);
+  return `${base}/api/${ver}/MediaCover/Albums/${albumId}/cover-500.jpg?apikey=${key}`;
+}
+
+export function bookCoverUrl(service: ServiceConfig, bookId: number): string {
+  const base = normalizeBase(service.url);
+  const key = encodeURIComponent(service.apiKey.trim());
+  const ver = arrApiVersion(service);
+  return `${base}/api/${ver}/MediaCover/Books/${bookId}/cover-500.jpg?apikey=${key}`;
 }
 
 export async function fetchLibrary(
@@ -572,29 +852,55 @@ export async function fetchLibrary(
             percentOfEpisodes?: number;
             sizeOnDisk?: number;
             seasonCount?: number;
+            albumCount?: number;
+            trackCount?: number;
+            trackFileCount?: number;
+            percentOfTracks?: number;
+            bookCount?: number;
+            bookFileCount?: number;
+            percentOfBooks?: number;
           }
         | undefined;
       const id = Number(row.id) || 0;
       const qpId = Number(row.qualityProfileId) || 0;
+      const trackFileCount = stats?.trackFileCount;
+      const trackCount = stats?.trackCount;
+      const bookFileCount = stats?.bookFileCount;
+      const bookCount = stats?.bookCount;
       return {
         id,
         title,
         year: typeof row.year === "number" ? row.year : undefined,
         status: row.status ? String(row.status) : undefined,
         monitored: row.monitored !== false,
-        hasFile: Boolean(row.hasFile) || (stats?.movieFileCount ?? 0) > 0,
+        hasFile:
+          Boolean(row.hasFile) ||
+          (stats?.movieFileCount ?? 0) > 0 ||
+          (trackFileCount ?? 0) > 0 ||
+          (bookFileCount ?? 0) > 0,
         network: row.network ? String(row.network) : undefined,
-        episodeCount: stats?.episodeCount,
-        episodeFileCount: stats?.episodeFileCount,
-        percentOfEpisodes: stats?.percentOfEpisodes,
+        episodeCount: stats?.episodeCount ?? trackCount ?? bookCount,
+        episodeFileCount:
+          stats?.episodeFileCount ?? trackFileCount ?? bookFileCount,
+        percentOfEpisodes:
+          stats?.percentOfEpisodes ??
+          stats?.percentOfTracks ??
+          stats?.percentOfBooks,
         sizeOnDisk: stats?.sizeOnDisk,
         seasonCount:
           stats?.seasonCount ??
+          stats?.albumCount ??
           (Array.isArray(row.seasons)
             ? row.seasons.filter(
                 (s) => Number((s as { seasonNumber?: number }).seasonNumber) > 0,
               ).length
             : undefined),
+        albumCount: stats?.albumCount,
+        trackCount,
+        trackFileCount,
+        percentOfTracks: stats?.percentOfTracks,
+        bookCount,
+        bookFileCount,
         qualityProfile: profiles.get(qpId),
         nextAiring: row.nextAiring ? String(row.nextAiring) : undefined,
         overview: row.overview ? String(row.overview) : undefined,
@@ -651,15 +957,8 @@ export async function searchEpisode(
   return "Episode search sent to download clients.";
 }
 
-export async function fetchEpisodeReleases(
-  service: ServiceConfig,
-  episodeId: number,
-): Promise<ArrReleaseItem[]> {
-  const res = await arrGet(service, `/api/v3/release?episodeId=${episodeId}`);
-  if (res.status >= 400) {
-    throw new Error(`Release search failed (${res.status})`);
-  }
-  return asList(res.data)
+function mapReleases(data: unknown): ArrReleaseItem[] {
+  return asList(data)
     .slice(0, 40)
     .map((row, index) => {
       const quality = row.quality as
@@ -676,6 +975,166 @@ export async function fetchEpisodeReleases(
         raw: row,
       };
     });
+}
+
+export async function fetchArtistAlbums(
+  service: ServiceConfig,
+  artistId: number,
+): Promise<ArrAlbumItem[]> {
+  const res = await arrGet(service, `/api/v3/album?artistId=${artistId}`);
+  if (res.status >= 400) {
+    throw new Error(`Albums failed (${res.status})`);
+  }
+  return asList(res.data)
+    .map((row) => {
+      const stats = row.statistics as
+        | {
+            trackCount?: number;
+            trackFileCount?: number;
+            percentOfTracks?: number;
+            sizeOnDisk?: number;
+          }
+        | undefined;
+      const id = Number(row.id) || 0;
+      const releaseDate = row.releaseDate ? String(row.releaseDate) : undefined;
+      const year =
+        typeof row.year === "number"
+          ? row.year
+          : releaseDate
+            ? Number(releaseDate.slice(0, 4)) || undefined
+            : undefined;
+      return {
+        id,
+        artistId: Number(row.artistId) || artistId,
+        title: String(row.title || "Album"),
+        year,
+        monitored: row.monitored !== false,
+        overview: row.overview ? String(row.overview) : undefined,
+        trackCount: stats?.trackCount,
+        trackFileCount: stats?.trackFileCount,
+        percentOfTracks: stats?.percentOfTracks,
+        sizeOnDisk: stats?.sizeOnDisk,
+        releaseDate,
+        albumType: row.albumType ? String(row.albumType) : undefined,
+        coverUrl: id ? albumCoverUrl(service, id) : undefined,
+      } as ArrAlbumItem;
+    })
+    .sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
+}
+
+export async function fetchAlbumTracks(
+  service: ServiceConfig,
+  albumId: number,
+): Promise<ArrTrackItem[]> {
+  const res = await arrGet(service, `/api/v3/track?albumId=${albumId}`);
+  if (res.status >= 400) {
+    throw new Error(`Tracks failed (${res.status})`);
+  }
+  return asList(res.data)
+    .map((row) => ({
+      id: Number(row.id) || 0,
+      albumId: Number(row.albumId) || albumId,
+      trackNumber: String(row.trackNumber ?? row.absoluteTrackNumber ?? ""),
+      absoluteTrackNumber:
+        typeof row.absoluteTrackNumber === "number"
+          ? row.absoluteTrackNumber
+          : undefined,
+      title: String(row.title || "Track"),
+      hasFile: Boolean(row.hasFile) || Number(row.trackFileId) > 0,
+      durationMs: typeof row.duration === "number" ? row.duration : undefined,
+      mediumNumber:
+        typeof row.mediumNumber === "number" ? row.mediumNumber : undefined,
+    }))
+    .sort((a, b) => {
+      const am = a.mediumNumber ?? 0;
+      const bm = b.mediumNumber ?? 0;
+      if (am !== bm) return am - bm;
+      return (a.absoluteTrackNumber ?? 0) - (b.absoluteTrackNumber ?? 0);
+    });
+}
+
+export async function searchAlbum(
+  service: ServiceConfig,
+  albumIds: number[],
+): Promise<string> {
+  await triggerArrCommand(service, "AlbumSearch", { albumIds });
+  return "Album search sent to download clients.";
+}
+
+export async function fetchAlbumReleases(
+  service: ServiceConfig,
+  albumId: number,
+): Promise<ArrReleaseItem[]> {
+  const res = await arrGet(service, `/api/v3/release?albumId=${albumId}`);
+  if (res.status >= 400) {
+    throw new Error(`Release search failed (${res.status})`);
+  }
+  return mapReleases(res.data);
+}
+
+export async function fetchAuthorBooks(
+  service: ServiceConfig,
+  authorId: number,
+): Promise<ArrBookItem[]> {
+  const res = await arrGet(service, `/api/v3/book?authorId=${authorId}`);
+  if (res.status >= 400) {
+    throw new Error(`Books failed (${res.status})`);
+  }
+  return asList(res.data)
+    .map((row) => {
+      const stats = row.statistics as
+        | { bookFileCount?: number; sizeOnDisk?: number }
+        | undefined;
+      const id = Number(row.id) || 0;
+      const releaseDate = row.releaseDate ? String(row.releaseDate) : undefined;
+      return {
+        id,
+        authorId: Number(row.authorId) || authorId,
+        title: String(row.title || "Book"),
+        year:
+          typeof row.year === "number"
+            ? row.year
+            : releaseDate
+              ? Number(releaseDate.slice(0, 4)) || undefined
+              : undefined,
+        monitored: row.monitored !== false,
+        overview: row.overview ? String(row.overview) : undefined,
+        hasFile: Boolean(row.grabbed) || (stats?.bookFileCount ?? 0) > 0,
+        releaseDate,
+        coverUrl: id ? bookCoverUrl(service, id) : undefined,
+      } as ArrBookItem;
+    })
+    .sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
+}
+
+export async function searchBook(
+  service: ServiceConfig,
+  bookIds: number[],
+): Promise<string> {
+  await triggerArrCommand(service, "BookSearch", { bookIds });
+  return "Book search sent to download clients.";
+}
+
+export async function fetchBookReleases(
+  service: ServiceConfig,
+  bookId: number,
+): Promise<ArrReleaseItem[]> {
+  const res = await arrGet(service, `/api/v3/release?bookId=${bookId}`);
+  if (res.status >= 400) {
+    throw new Error(`Release search failed (${res.status})`);
+  }
+  return mapReleases(res.data);
+}
+
+export async function fetchEpisodeReleases(
+  service: ServiceConfig,
+  episodeId: number,
+): Promise<ArrReleaseItem[]> {
+  const res = await arrGet(service, `/api/v3/release?episodeId=${episodeId}`);
+  if (res.status >= 400) {
+    throw new Error(`Release search failed (${res.status})`);
+  }
+  return mapReleases(res.data);
 }
 
 /** Lookup payload often includes seasons — useful before the show is added. */
@@ -701,6 +1160,33 @@ export function seasonsFromLookup(
     .sort((a, b) => a.seasonNumber - b.seasonNumber);
 }
 
+export function albumsFromLookup(
+  item: ArrLookupItem,
+): { title: string; year?: number; monitored?: boolean }[] {
+  const albums = item.raw.albums;
+  if (!Array.isArray(albums)) return [];
+  return albums
+    .map((a) => {
+      const row = a as {
+        title?: string;
+        year?: number;
+        releaseDate?: string;
+        monitored?: boolean;
+      };
+      return {
+        title: String(row.title || "Album"),
+        year:
+          typeof row.year === "number"
+            ? row.year
+            : row.releaseDate
+              ? Number(String(row.releaseDate).slice(0, 4)) || undefined
+              : undefined,
+        monitored: row.monitored,
+      };
+    })
+    .slice(0, 40);
+}
+
 export async function fetchReleasesForLookup(
   service: ServiceConfig,
   item: ArrLookupItem,
@@ -719,8 +1205,22 @@ export async function fetchReleasesForLookup(
       throw new Error("Add the series first, then browse episodes to grab.");
     }
     path = `/api/v3/release?seriesId=${seriesId}`;
+  } else if (kind === "artist") {
+    const albumId =
+      item.mediaType === "album" ? item.addedId || Number(item.raw.id) || 0 : 0;
+    if (!albumId) {
+      throw new Error("Open an album, then use Grab releases.");
+    }
+    path = `/api/v3/release?albumId=${albumId}`;
+  } else if (kind === "author") {
+    const bookId =
+      item.mediaType === "book" ? item.addedId || Number(item.raw.id) || 0 : 0;
+    if (!bookId) {
+      throw new Error("Open a book, then use Grab releases.");
+    }
+    path = `/api/v3/release?bookId=${bookId}`;
   } else {
-    throw new Error("Interactive grab is available for Sonarr/Radarr first.");
+    throw new Error("Interactive grab is not available for this app.");
   }
 
   const res = await arrGet(service, path);
@@ -728,23 +1228,7 @@ export async function fetchReleasesForLookup(
     throw new Error(`Release search failed (${res.status})`);
   }
 
-  return asList(res.data)
-    .slice(0, 40)
-    .map((row, index) => {
-      const quality = row.quality as
-        | { quality?: { name?: string } }
-        | undefined;
-      return {
-        guid: String(row.guid || `${index}`),
-        title: String(row.title || "Release"),
-        indexer: row.indexer ? String(row.indexer) : undefined,
-        size: typeof row.size === "number" ? row.size : undefined,
-        seeders: typeof row.seeders === "number" ? row.seeders : undefined,
-        quality: quality?.quality?.name,
-        approved: row.approved !== false,
-        raw: row,
-      };
-    });
+  return mapReleases(res.data);
 }
 
 export async function grabRelease(

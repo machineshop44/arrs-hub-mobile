@@ -1,36 +1,120 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addAndSearch,
+  albumsFromLookup,
   detectArrKind,
   fetchAddProfiles,
+  fetchAlbumReleases,
+  fetchAlbumTracks,
   fetchArrOverview,
+  fetchArtistAlbums,
+  fetchAuthorBooks,
+  fetchBookReleases,
   fetchEpisodeReleases,
   fetchReleasesForLookup,
   fetchSeriesEpisodes,
   formatBytes,
   grabRelease,
   lookupMedia,
+  searchAlbum,
+  searchBook,
   searchEpisode,
   searchExisting,
   seasonsFromLookup,
   type ArrAddProfile,
+  type ArrAlbumItem,
+  type ArrBookItem,
   type ArrCalendarItem,
   type ArrEpisodeItem,
   type ArrLibraryItem,
   type ArrLookupItem,
   type ArrQueueItem,
   type ArrReleaseItem,
+  type ArrTrackItem,
   type ArrWantedItem,
 } from "./arrApi";
 import type { ServiceConfig } from "./services";
 import { ServiceIcon } from "./icons";
 
 type Tab = "library" | "search" | "calendar" | "missing" | "queue";
-type DetailTab = "overview" | "episodes";
+type DetailTab = "overview" | "episodes" | "albums" | "tracks" | "books";
 
 interface ArrPanelProps {
   service: ServiceConfig;
   onBack: () => void;
+}
+
+function libraryKindLabel(kind: ReturnType<typeof detectArrKind>): string {
+  switch (kind) {
+    case "series":
+      return "Series";
+    case "movie":
+      return "Movies";
+    case "artist":
+      return "Artists";
+    case "author":
+      return "Authors";
+    default:
+      return "Library";
+  }
+}
+
+function detailTitle(
+  kind: ReturnType<typeof detectArrKind>,
+  opts: { album?: boolean; book?: boolean; preview?: boolean },
+): string {
+  if (opts.album) return "Album Details";
+  if (opts.book) return "Book Details";
+  if (opts.preview) {
+    if (kind === "artist") return "Artist Details";
+    if (kind === "author") return "Author Details";
+    if (kind === "movie") return "Movie Details";
+    return "Series Details";
+  }
+  switch (kind) {
+    case "movie":
+      return "Movie Details";
+    case "artist":
+      return "Artist Details";
+    case "author":
+      return "Author Details";
+    default:
+      return "Series Details";
+  }
+}
+
+function formatDuration(ms?: number): string {
+  if (!ms || ms <= 0) return "";
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function libraryProgressLabel(
+  kind: ReturnType<typeof detectArrKind>,
+  item: ArrLibraryItem,
+): string {
+  const have = item.episodeFileCount ?? (item.hasFile ? 1 : 0);
+  const total = item.episodeCount ?? (item.hasFile ? 1 : 0);
+  const pct =
+    item.percentOfEpisodes ??
+    (total > 0 ? Math.round((have / total) * 100) : item.hasFile ? 100 : 0);
+
+  if (kind === "series") return `${have}/${total} (${pct}%)`;
+  if (kind === "artist") {
+    const albums = item.albumCount ?? item.seasonCount;
+    const tracks = item.trackCount ?? item.episodeCount;
+    if (albums != null || tracks != null) {
+      return `${albums ?? "—"} Albums · ${tracks ?? "—"} Tracks`;
+    }
+  }
+  if (kind === "author") {
+    const books = item.bookCount ?? item.episodeCount;
+    const files = item.bookFileCount ?? item.episodeFileCount;
+    if (books != null) return `${files ?? 0}/${books} books`;
+  }
+  return item.hasFile ? "Downloaded" : "Missing";
 }
 
 export function ArrPanel({ service, onBack }: ArrPanelProps) {
@@ -56,8 +140,13 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
   const [releases, setReleases] = useState<ArrReleaseItem[]>([]);
 
   const [selected, setSelected] = useState<ArrLibraryItem | null>(null);
+  const [selectedAlbum, setSelectedAlbum] = useState<ArrAlbumItem | null>(null);
+  const [selectedBook, setSelectedBook] = useState<ArrBookItem | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   const [episodes, setEpisodes] = useState<ArrEpisodeItem[]>([]);
+  const [albums, setAlbums] = useState<ArrAlbumItem[]>([]);
+  const [tracks, setTracks] = useState<ArrTrackItem[]>([]);
+  const [books, setBooks] = useState<ArrBookItem[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [seasonFilter, setSeasonFilter] = useState<number | "all">("all");
   const [lookupPreview, setLookupPreview] = useState<ArrLookupItem | null>(
@@ -98,23 +187,185 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
     void load();
   }, [load]);
 
+  const clearReleases = () => {
+    setReleases([]);
+    setReleasesFor(null);
+  };
+
+  const closeDetail = () => {
+    setSelected(null);
+    setSelectedAlbum(null);
+    setSelectedBook(null);
+    setLookupPreview(null);
+    setEpisodes([]);
+    setAlbums([]);
+    setTracks([]);
+    setBooks([]);
+    clearReleases();
+  };
+
+  const goBackFromDetail = () => {
+    if (selectedAlbum) {
+      setSelectedAlbum(null);
+      setTracks([]);
+      clearReleases();
+      setDetailTab("albums");
+      return;
+    }
+    if (selectedBook) {
+      setSelectedBook(null);
+      clearReleases();
+      setDetailTab("books");
+      return;
+    }
+    closeDetail();
+  };
+
   const openLibraryItem = async (item: ArrLibraryItem) => {
     setSelected(item);
+    setSelectedAlbum(null);
+    setSelectedBook(null);
     setLookupPreview(null);
     setDetailTab("overview");
     setSeasonFilter("all");
-    setReleases([]);
-    setReleasesFor(null);
-    if (kind !== "series") return;
+    clearReleases();
+    setEpisodes([]);
+    setAlbums([]);
+    setTracks([]);
+    setBooks([]);
+
+    if (kind === "series") {
+      setDetailLoading(true);
+      try {
+        setEpisodes(await fetchSeriesEpisodes(service, item.id));
+      } catch (err) {
+        setEpisodes([]);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDetailLoading(false);
+      }
+      return;
+    }
+
+    if (kind === "artist") {
+      setDetailLoading(true);
+      try {
+        setAlbums(await fetchArtistAlbums(service, item.id));
+      } catch (err) {
+        setAlbums([]);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDetailLoading(false);
+      }
+      return;
+    }
+
+    if (kind === "author") {
+      setDetailLoading(true);
+      try {
+        setBooks(await fetchAuthorBooks(service, item.id));
+      } catch (err) {
+        setBooks([]);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDetailLoading(false);
+      }
+    }
+  };
+
+  const openAlbum = async (album: ArrAlbumItem) => {
+    setSelectedAlbum(album);
+    setSelectedBook(null);
+    setDetailTab("overview");
+    clearReleases();
     setDetailLoading(true);
     try {
-      setEpisodes(await fetchSeriesEpisodes(service, item.id));
+      setTracks(await fetchAlbumTracks(service, album.id));
     } catch (err) {
-      setEpisodes([]);
+      setTracks([]);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDetailLoading(false);
     }
+  };
+
+  const openBook = async (book: ArrBookItem) => {
+    setSelectedBook(book);
+    setSelectedAlbum(null);
+    setDetailTab("overview");
+    clearReleases();
+  };
+
+  const openLookupDetails = async (item: ArrLookupItem) => {
+    if (item.alreadyAdded && item.addedId) {
+      if (item.mediaType === "album" && kind === "artist") {
+        const artistId = Number(item.raw.artistId) || 0;
+        const lib = artistId
+          ? library.find((l) => l.id === artistId)
+          : undefined;
+        if (lib) {
+          setSelected(lib);
+          setLookupPreview(null);
+          setSelectedBook(null);
+          setDetailTab("albums");
+          clearReleases();
+          setDetailLoading(true);
+          try {
+            const albumList = await fetchArtistAlbums(service, lib.id);
+            setAlbums(albumList);
+            const album = albumList.find((a) => a.id === item.addedId);
+            if (album) {
+              await openAlbum(album);
+            } else {
+              setSelectedAlbum(null);
+            }
+          } catch (err) {
+            setAlbums([]);
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setDetailLoading(false);
+          }
+          return;
+        }
+      }
+      if (item.mediaType === "book" && kind === "author") {
+        const authorId = Number(item.raw.authorId) || 0;
+        const lib = authorId
+          ? library.find((l) => l.id === authorId)
+          : undefined;
+        if (lib) {
+          setSelected(lib);
+          setLookupPreview(null);
+          setSelectedAlbum(null);
+          setDetailTab("books");
+          clearReleases();
+          setDetailLoading(true);
+          try {
+            const bookList = await fetchAuthorBooks(service, lib.id);
+            setBooks(bookList);
+            const book = bookList.find((b) => b.id === item.addedId);
+            if (book) await openBook(book);
+            else setSelectedBook(null);
+          } catch (err) {
+            setBooks([]);
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setDetailLoading(false);
+          }
+          return;
+        }
+      }
+      const lib = library.find((l) => l.id === item.addedId);
+      if (lib) {
+        await openLibraryItem(lib);
+        return;
+      }
+    }
+    setSelected(null);
+    setSelectedAlbum(null);
+    setSelectedBook(null);
+    setLookupPreview(item);
+    clearReleases();
   };
 
   const filteredLibrary = useMemo(() => {
@@ -161,6 +412,7 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
       setMessage(await addAndSearch(service, item, profiles));
       await load();
       setTab("library");
+      closeDetail();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -168,13 +420,13 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
     }
   };
 
-  const onGrab = async (release: { guid: string } & ArrReleaseItem) => {
+  const onGrab = async (release: ArrReleaseItem) => {
     setBusy(true);
     try {
       setMessage(await grabRelease(service, release));
       await load();
       setTab("queue");
-      setSelected(null);
+      closeDetail();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -182,48 +434,104 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
     }
   };
 
-  if (selected || lookupPreview) {
+  const runSearchExisting = async (
+    id: number,
+    title: string,
+    mediaType?: ArrLookupItem["mediaType"],
+  ) => {
+    setBusy(true);
+    try {
+      setMessage(
+        await searchExisting(service, {
+          key: String(id),
+          title,
+          alreadyAdded: true,
+          addedId: id,
+          mediaType,
+          raw: { id },
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const searchPlaceholder =
+    kind === "movie"
+      ? "Search movies…"
+      : kind === "artist"
+        ? "Search artists or albums…"
+        : kind === "author"
+          ? "Search authors or books…"
+          : "Search shows…";
+
+  if (selected || lookupPreview || selectedAlbum || selectedBook) {
     const item = selected;
+    const album = selectedAlbum;
+    const book = selectedBook;
     const previewSeasons = lookupPreview
       ? seasonsFromLookup(lookupPreview)
       : [];
+    const previewAlbums =
+      lookupPreview && lookupPreview.mediaType !== "album"
+        ? albumsFromLookup(lookupPreview)
+        : [];
+    const heroTitle =
+      album?.title ||
+      book?.title ||
+      item?.title ||
+      lookupPreview?.title ||
+      "";
+    const heroOverview =
+      album?.overview ||
+      book?.overview ||
+      item?.overview ||
+      lookupPreview?.overview ||
+      "";
+    const heroPoster =
+      album?.coverUrl || book?.coverUrl || item?.posterUrl || undefined;
+
     return (
       <div className="page luna-page">
         <header className="luna-top">
           <button
             type="button"
             className="icon-btn"
-            onClick={() => {
-              setSelected(null);
-              setLookupPreview(null);
-              setEpisodes([]);
-              setReleases([]);
-            }}
+            onClick={goBackFromDetail}
           >
             ←
           </button>
-          <h1>Series Details</h1>
+          <h1>
+            {detailTitle(kind, {
+              album: Boolean(album),
+              book: Boolean(book),
+              preview: Boolean(lookupPreview && !item && !album && !book),
+            })}
+          </h1>
           <span />
         </header>
 
         <div className="detail-hero">
-          {item?.posterUrl ? (
-            <img src={item.posterUrl} alt="" className="detail-poster" />
+          {heroPoster ? (
+            <img src={heroPoster} alt="" className="detail-poster" />
           ) : (
             <div className="detail-poster placeholder" />
           )}
           <div>
-            <strong>{item?.title || lookupPreview?.title}</strong>
+            <strong>{heroTitle}</strong>
+            {lookupPreview?.subtitle && !album && !book && (
+              <span className="meta">{lookupPreview.subtitle}</span>
+            )}
             <p>
-              {(item?.overview || lookupPreview?.overview || "").slice(0, 160)}
-              {(item?.overview || lookupPreview?.overview || "").length > 160
-                ? "…"
-                : ""}
+              {heroOverview.slice(0, 160)}
+              {heroOverview.length > 160 ? "…" : ""}
             </p>
           </div>
         </div>
 
-        {item && (
+        {item && !album && !book && (
           <div className="detail-tabs">
             <button
               type="button"
@@ -241,13 +549,50 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                 Episodes
               </button>
             )}
+            {kind === "artist" && (
+              <button
+                type="button"
+                className={detailTab === "albums" ? "active" : ""}
+                onClick={() => setDetailTab("albums")}
+              >
+                Albums
+              </button>
+            )}
+            {kind === "author" && (
+              <button
+                type="button"
+                className={detailTab === "books" ? "active" : ""}
+                onClick={() => setDetailTab("books")}
+              >
+                Books
+              </button>
+            )}
+          </div>
+        )}
+
+        {album && (
+          <div className="detail-tabs">
+            <button
+              type="button"
+              className={detailTab === "overview" ? "active" : ""}
+              onClick={() => setDetailTab("overview")}
+            >
+              Overview
+            </button>
+            <button
+              type="button"
+              className={detailTab === "tracks" ? "active" : ""}
+              onClick={() => setDetailTab("tracks")}
+            >
+              Tracks
+            </button>
           </div>
         )}
 
         {error && <p className="err banner">{error}</p>}
         {message && <p className="ok banner">{message}</p>}
 
-        {lookupPreview && !item && (
+        {lookupPreview && !item && !album && !book && (
           <>
             <div className="arr-item-actions">
               <button
@@ -277,10 +622,186 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                 ))}
               </ul>
             )}
+            {previewAlbums.length > 0 && (
+              <ul className="arr-list">
+                {previewAlbums.map((a, i) => (
+                  <li key={`${a.title}-${i}`} className="arr-item">
+                    <strong>{a.title}</strong>
+                    <span>{a.year || "—"}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </>
         )}
 
-        {item && detailTab === "overview" && (
+        {album && detailTab === "overview" && (
+          <div className="detail-grid">
+            <div>
+              <span>MONITORING</span>
+              <strong>{album.monitored ? "Yes" : "No"}</strong>
+            </div>
+            <div>
+              <span>YEAR</span>
+              <strong>{album.year || "—"}</strong>
+            </div>
+            <div>
+              <span>TYPE</span>
+              <strong>{album.albumType || "—"}</strong>
+            </div>
+            <div>
+              <span>TRACKS</span>
+              <strong>
+                {album.trackFileCount != null && album.trackCount != null
+                  ? `${album.trackFileCount}/${album.trackCount}`
+                  : album.trackCount ?? "—"}
+              </strong>
+            </div>
+            <div>
+              <span>SIZE</span>
+              <strong>{formatBytes(album.sizeOnDisk) || "—"}</strong>
+            </div>
+            <div>
+              <span>RELEASED</span>
+              <strong>
+                {album.releaseDate
+                  ? album.releaseDate.slice(0, 10)
+                  : "—"}
+              </strong>
+            </div>
+            <div className="arr-item-actions">
+              <button
+                type="button"
+                className="btn chip"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    setMessage(await searchAlbum(service, [album.id]));
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Search DL
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const list = await fetchAlbumReleases(service, album.id);
+                    setReleasesFor(album.title);
+                    setReleases(list);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Grab…
+              </button>
+            </div>
+          </div>
+        )}
+
+        {album && detailTab === "tracks" && (
+          <>
+            {detailLoading && <p className="hint">Loading tracks…</p>}
+            <ul className="arr-list">
+              {tracks.map((track) => (
+                <li key={track.id} className="arr-item">
+                  <strong>
+                    {track.trackNumber ? `${track.trackNumber}. ` : ""}
+                    {track.title}
+                  </strong>
+                  <span>
+                    {track.hasFile ? "Downloaded" : "Missing"}
+                    {track.durationMs
+                      ? ` · ${formatDuration(track.durationMs)}`
+                      : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {book && (
+          <div className="detail-grid">
+            <div>
+              <span>MONITORING</span>
+              <strong>{book.monitored ? "Yes" : "No"}</strong>
+            </div>
+            <div>
+              <span>YEAR</span>
+              <strong>{book.year || "—"}</strong>
+            </div>
+            <div>
+              <span>STATUS</span>
+              <strong>{book.hasFile ? "Downloaded" : "Missing"}</strong>
+            </div>
+            <div>
+              <span>RELEASED</span>
+              <strong>
+                {book.releaseDate ? book.releaseDate.slice(0, 10) : "—"}
+              </strong>
+            </div>
+            <div className="arr-item-actions">
+              <button
+                type="button"
+                className="btn chip"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    setMessage(await searchBook(service, [book.id]));
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Search DL
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const list = await fetchBookReleases(service, book.id);
+                    setReleasesFor(book.title);
+                    setReleases(list);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Grab…
+              </button>
+            </div>
+          </div>
+        )}
+
+        {item && !album && !book && detailTab === "overview" && (
           <div className="detail-grid">
             <div>
               <span>MONITORING</span>
@@ -298,29 +819,57 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
               <span>STATUS</span>
               <strong>{item.status || "—"}</strong>
             </div>
-            <div>
-              <span>NEXT AIRING</span>
-              <strong>
-                {item.nextAiring
-                  ? item.nextAiring.slice(0, 16).replace("T", " ")
-                  : item.status === "ended"
-                    ? "Series Ended"
-                    : "—"}
-              </strong>
-            </div>
+            {kind === "series" && (
+              <div>
+                <span>NEXT AIRING</span>
+                <strong>
+                  {item.nextAiring
+                    ? item.nextAiring.slice(0, 16).replace("T", " ")
+                    : item.status === "ended"
+                      ? "Series Ended"
+                      : "—"}
+                </strong>
+              </div>
+            )}
             <div>
               <span>YEAR</span>
               <strong>{item.year || "—"}</strong>
             </div>
-            <div>
-              <span>NETWORK</span>
-              <strong>{item.network || "—"}</strong>
-            </div>
+            {kind === "series" && (
+              <div>
+                <span>NETWORK</span>
+                <strong>{item.network || "—"}</strong>
+              </div>
+            )}
+            {kind === "artist" && (
+              <div>
+                <span>ALBUMS</span>
+                <strong>{item.albumCount ?? item.seasonCount ?? "—"}</strong>
+              </div>
+            )}
+            {kind === "artist" && (
+              <div>
+                <span>TRACKS</span>
+                <strong>
+                  {item.trackFileCount != null && item.trackCount != null
+                    ? `${item.trackFileCount}/${item.trackCount}`
+                    : item.trackCount ?? item.episodeCount ?? "—"}
+                </strong>
+              </div>
+            )}
+            {kind === "author" && (
+              <div>
+                <span>BOOKS</span>
+                <strong>
+                  {item.bookFileCount != null && item.bookCount != null
+                    ? `${item.bookFileCount}/${item.bookCount}`
+                    : item.bookCount ?? item.episodeCount ?? "—"}
+                </strong>
+              </div>
+            )}
             <div>
               <span>RUNTIME</span>
-              <strong>
-                {item.runtime ? `${item.runtime}m` : "—"}
-              </strong>
+              <strong>{item.runtime ? `${item.runtime}m` : "—"}</strong>
             </div>
             <div>
               <span>RATING</span>
@@ -338,65 +887,128 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                   : "—"}
               </strong>
             </div>
-            {kind === "movie" && (
+            {(kind === "movie" || kind === "artist" || kind === "author") && (
               <div className="arr-item-actions">
                 <button
                   type="button"
                   className="btn chip"
                   disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      setMessage(
-                        await searchExisting(service, {
+                  onClick={() =>
+                    void runSearchExisting(
+                      item.id,
+                      item.title,
+                      kind === "artist"
+                        ? "artist"
+                        : kind === "author"
+                          ? "author"
+                          : "movie",
+                    )
+                  }
+                >
+                  Search DL
+                </button>
+                {kind === "movie" && (
+                  <button
+                    type="button"
+                    className="btn chip"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        const list = await fetchReleasesForLookup(service, {
                           key: String(item.id),
                           title: item.title,
                           alreadyAdded: true,
                           addedId: item.id,
+                          mediaType: "movie",
                           raw: { id: item.id },
-                        }),
-                      );
-                    } catch (err) {
-                      setError(
-                        err instanceof Error ? err.message : String(err),
-                      );
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  Search DL
-                </button>
-                <button
-                  type="button"
-                  className="btn chip"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      const list = await fetchReleasesForLookup(service, {
-                        key: String(item.id),
-                        title: item.title,
-                        alreadyAdded: true,
-                        addedId: item.id,
-                        raw: { id: item.id },
-                      });
-                      setReleasesFor(item.title);
-                      setReleases(list);
-                    } catch (err) {
-                      setError(
-                        err instanceof Error ? err.message : String(err),
-                      );
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  Grab…
-                </button>
+                        });
+                        setReleasesFor(item.title);
+                        setReleases(list);
+                      } catch (err) {
+                        setError(
+                          err instanceof Error ? err.message : String(err),
+                        );
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Grab…
+                  </button>
+                )}
               </div>
             )}
           </div>
+        )}
+
+        {item && !album && detailTab === "albums" && (
+          <>
+            {detailLoading && <p className="hint">Loading albums…</p>}
+            <ul className="arr-list">
+              {albums.map((a) => (
+                <li key={a.id} className="arr-item">
+                  <button
+                    type="button"
+                    className="arr-row-btn"
+                    onClick={() => void openAlbum(a)}
+                  >
+                    <strong>{a.title}</strong>
+                    <span>
+                      {[
+                        a.trackCount != null ? `${a.trackCount} Tracks` : null,
+                        a.releaseDate
+                          ? a.releaseDate.slice(0, 10)
+                          : a.year
+                            ? String(a.year)
+                            : null,
+                        a.trackFileCount != null &&
+                        a.trackCount != null &&
+                        a.trackFileCount >= a.trackCount
+                          ? "Downloaded"
+                          : a.trackFileCount
+                            ? `${a.trackFileCount}/${a.trackCount}`
+                            : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {item && !book && detailTab === "books" && (
+          <>
+            {detailLoading && <p className="hint">Loading books…</p>}
+            <ul className="arr-list">
+              {books.map((b) => (
+                <li key={b.id} className="arr-item">
+                  <button
+                    type="button"
+                    className="arr-row-btn"
+                    onClick={() => void openBook(b)}
+                  >
+                    <strong>{b.title}</strong>
+                    <span>
+                      {[
+                        b.hasFile ? "Downloaded" : "Missing",
+                        b.releaseDate
+                          ? b.releaseDate.slice(0, 10)
+                          : b.year
+                            ? String(b.year)
+                            : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         {item && detailTab === "episodes" && (
@@ -521,6 +1133,9 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                   </div>
                 </li>
               ))}
+              {!releases.length && (
+                <p className="hint empty">No releases found.</p>
+              )}
             </ul>
           </div>
         )}
@@ -570,7 +1185,11 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
               const total = item.episodeCount ?? (item.hasFile ? 1 : 0);
               const pct =
                 item.percentOfEpisodes ??
-                (total > 0 ? Math.round((have / total) * 100) : item.hasFile ? 100 : 0);
+                (total > 0
+                  ? Math.round((have / total) * 100)
+                  : item.hasFile
+                    ? 100
+                    : 0);
               return (
                 <li key={item.id}>
                   <button
@@ -592,18 +1211,14 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                     )}
                     <div className="series-meta">
                       <strong>{item.title}</strong>
-                      <span>
-                        {kind === "series"
-                          ? `${have}/${total} (${pct}%)`
-                          : item.hasFile
-                            ? "Downloaded"
-                            : "Missing"}
-                      </span>
+                      <span>{libraryProgressLabel(kind, item)}</span>
                       <span>
                         {kind === "series" && item.seasonCount
                           ? `${item.seasonCount} Seasons`
-                          : item.year || ""}
-                        {item.sizeOnDisk
+                          : kind === "artist" && item.sizeOnDisk
+                            ? formatBytes(item.sizeOnDisk)
+                            : item.year || ""}
+                        {kind !== "artist" && item.sizeOnDisk
                           ? ` · ${formatBytes(item.sizeOnDisk)}`
                           : ""}
                       </span>
@@ -615,6 +1230,9 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                       <span>
                         {[item.network, item.status].filter(Boolean).join(" · ")}
                       </span>
+                      {kind === "series" && (
+                        <span className="sr-only">{pct}%</span>
+                      )}
                     </div>
                   </button>
                 </li>
@@ -634,11 +1252,15 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
           >
             <input
               type="search"
-              placeholder={kind === "movie" ? "Search movies…" : "Search shows…"}
+              placeholder={searchPlaceholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <button type="submit" className="btn primary tight" disabled={searching}>
+            <button
+              type="submit"
+              className="btn primary tight"
+              disabled={searching}
+            >
               Go
             </button>
           </form>
@@ -650,21 +1272,19 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                   {item.year ? ` (${item.year})` : ""}
                 </strong>
                 <span className="meta">
-                  {item.alreadyAdded ? "In library" : "Not in library"}
+                  {[
+                    item.subtitle,
+                    item.mediaType,
+                    item.alreadyAdded ? "In library" : "Not in library",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </span>
                 <div className="arr-item-actions">
                   <button
                     type="button"
                     className="btn chip"
-                    onClick={() => {
-                      if (item.alreadyAdded && item.addedId) {
-                        const lib = library.find((l) => l.id === item.addedId);
-                        if (lib) void openLibraryItem(lib);
-                        else setLookupPreview(item);
-                      } else {
-                        setLookupPreview(item);
-                      }
-                    }}
+                    onClick={() => void openLookupDetails(item)}
                   >
                     Details
                   </button>
@@ -678,6 +1298,27 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
                       Add + Search
                     </button>
                   )}
+                  {item.alreadyAdded &&
+                    (item.mediaType === "album" ||
+                      item.mediaType === "book" ||
+                      item.mediaType === "movie" ||
+                      item.mediaType === "artist" ||
+                      item.mediaType === "author") && (
+                      <button
+                        type="button"
+                        className="btn chip"
+                        disabled={busy}
+                        onClick={() =>
+                          void runSearchExisting(
+                            item.addedId!,
+                            item.title,
+                            item.mediaType,
+                          )
+                        }
+                      >
+                        Search DL
+                      </button>
+                    )}
                 </div>
               </li>
             ))}
@@ -734,7 +1375,7 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
           className={tab === "library" ? "bottom-pill active" : "bottom-icon"}
           onClick={() => setTab("library")}
         >
-          Series
+          {libraryKindLabel(kind)}
         </button>
         <button
           type="button"

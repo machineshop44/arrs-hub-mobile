@@ -587,10 +587,11 @@ export function App() {
             )}
           </div>
           <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            Install this build on another device. Shares the installed APK over
-            Nearby Share, Bluetooth, Files, or email. On the other device, open
-            the file and tap Install (allow installs from unknown apps if
-            asked).
+            Preferred: install from Google Drive → <strong>Phone APKs</strong> →{" "}
+            <code>ArrsHubStatus.apk</code> (agents keep that file updated). This
+            button still Quick Shares the build on this device when you need a
+            one-off copy. Use a universal APK install as the source — not an
+            Android Studio “Run” split deploy.
           </p>
           <button
             type="button"
@@ -602,8 +603,18 @@ export function App() {
                 setShareBusy(true);
                 setShareMessage(null);
                 try {
-                  await shareInstalledApk();
-                  setShareMessage("Share sheet opened.");
+                  const result = await shareInstalledApk();
+                  if (result.splitPackage) {
+                    setShareMessage(
+                      `Shared ${result.fileName} (${result.partCount ?? "?"} parts). ` +
+                        "This device has a split install — the other phone needs SAI / " +
+                        '"Install with Options", or use the universal APK from the GitHub release.',
+                    );
+                  } else {
+                    setShareMessage(
+                      `Share sheet opened with ${result.fileName}.`,
+                    );
+                  }
                 } catch (err) {
                   setShareMessage(
                     err instanceof Error

@@ -1,8 +1,15 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App } from "@capacitor/app";
 
+export type ApkShareResult = {
+  bytes: number;
+  fileName: string;
+  splitPackage?: boolean;
+  partCount?: number;
+};
+
 export type ApkSharePlugin = {
-  shareInstalledApk(): Promise<{ bytes: number; fileName: string }>;
+  shareInstalledApk(): Promise<ApkShareResult>;
 };
 
 const ApkShare = registerPlugin<ApkSharePlugin>("ApkShare");
@@ -22,9 +29,9 @@ export async function getAppVersionInfo(): Promise<AppVersionInfo | null> {
   }
 }
 
-export async function shareInstalledApk(): Promise<void> {
+export async function shareInstalledApk(): Promise<ApkShareResult> {
   if (!Capacitor.isNativePlatform()) {
     throw new Error("Share APK is only available in the Android app.");
   }
-  await ApkShare.shareInstalledApk();
+  return ApkShare.shareInstalledApk();
 }

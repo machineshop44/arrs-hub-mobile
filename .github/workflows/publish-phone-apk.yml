@@ -1,0 +1,60 @@
+# Build universal APK and publish to Google Drive (Phone APKs).
+# One-time repo secrets:
+#   GOOGLE_DRIVE_FOLDER_ID
+#   GOOGLE_SERVICE_ACCOUNT_JSON  (full service account JSON)
+# Share the Drive folder with the service account (Editor).
+name: Publish phone APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/mobile-status
+      - master
+      - cursor/universal-apk-share-fd08
+    paths:
+      - "android/**"
+      - "src/**"
+      - "package.json"
+      - "capacitor.config.ts"
+      - "scripts/publish-phone-apks.mjs"
+      - ".github/workflows/publish-phone-apk.yml"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install deps
+        run: npm ci
+      - name: Build universal debug APK
+        run: npm run apk:debug
+        env:
+          CAPACITOR_LIVE_RELOAD_URL: ""
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArrsHubStatus.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish ArrsHubStatus.apk to Drive
+        id: drive
+        continue-on-error: true
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_DRIVE_FOLDER_ID" ] || [ -z "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "Drive secrets not configured — APK artifact uploaded; skip Drive publish."
+            exit 0
+          fi
+          node scripts/publish-phone-apks.mjs

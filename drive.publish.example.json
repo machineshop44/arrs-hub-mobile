@@ -1,0 +1,18 @@
+{
+  "folderId": "PASTE_GOOGLE_DRIVE_FOLDER_ID_FOR_Phone_APKs",
+  "serviceAccount": {
+    "type": "service_account",
+    "project_id": "your-project",
+    "private_key_id": "...",
+    "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+    "client_email": "drive-publisher@your-project.iam.gserviceaccount.com",
+    "client_id": "...",
+    "token_uri": "https://oauth2.googleapis.com/token"
+  },
+  "_notes": [
+    "Copy this file to credentials.drive.json (gitignored).",
+    "Share the Phone APKs Drive folder with the service account email (Editor).",
+    "Stable uploads overwrite ArrsHubStatus.apk and AvaBedtime.apk in that folder.",
+    "On your Windows PC with Drive for Desktop, the script can also copy into G:\\My Drive\\Phone APKs\\ with no API setup."
+  ]
+}

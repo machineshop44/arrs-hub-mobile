@@ -12,8 +12,11 @@ android/local.properties
 android/captures/
 android/.idea/
 *.apk
+!releases/*.apk
 *.aab
+!releases/*.aab
 *.tsbuildinfo
 src/credentials.local.ts
 credentials.local.json
+credentials.drive.json
 

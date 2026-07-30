@@ -9,7 +9,6 @@ import {
 } from "react";
 import { ArrPanel } from "./ArrPanel";
 import {
-  IconDashboard,
   IconEye,
   IconEyeOff,
   IconPower,
@@ -47,8 +46,7 @@ type Screen =
   | "arr"
   | "bazarr"
   | "tautulli"
-  | "web"
-  | "dashboard";
+  | "web";
 
 /** *arr apps with a native ArrPanel (not Prowlarr — web UI only for now). */
 const NATIVE_ARR_IDS = new Set([
@@ -189,7 +187,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (screen !== "modules" && screen !== "dashboard") {
+    if (screen !== "modules") {
       setReordering(false);
     }
   }, [screen]);
@@ -719,118 +717,8 @@ export function App() {
     );
   }
 
-  if (screen === "dashboard") {
-    const up = modules.filter((m) => health[m.id]?.up === true).length;
-    const down = modules.filter((m) => health[m.id]?.up === false).length;
-    return (
-      <div className="page luna-page">
-        <header className="luna-top">
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => setScreen("modules")}
-          >
-            ←
-          </button>
-          <h1>Dashboard</h1>
-          <button type="button" className="icon-btn" onClick={() => void refresh()}>
-            ↻
-          </button>
-        </header>
-        <div className="dash-summary">
-          <div>
-            <strong>{up}</strong>
-            <span>Online</span>
-          </div>
-          <div>
-            <strong>{down}</strong>
-            <span>Down</span>
-          </div>
-          <div>
-            <strong>{modules.length}</strong>
-            <span>Modules</span>
-          </div>
-        </div>
-        {showWakeControl && (
-          <div className="wol-bar">
-            <button
-              type="button"
-              className="btn primary wol-btn"
-              disabled={wakeBusy}
-              onClick={() => void onWakePc()}
-            >
-              <IconPower size={18} color="currentColor" />
-              {wakeBusy ? "Sending…" : "Wake PC"}
-            </button>
-            <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
-              {wakeMessage ||
-                homeNet?.message ||
-                "UDP magic packet on home LAN / VPN"}
-            </small>
-          </div>
-        )}
-        {reordering && (
-          <div className="reorder-bar">
-            <span>Reorder modules</span>
-            <button
-              type="button"
-              className="btn reorder-done"
-              onClick={() => setReordering(false)}
-            >
-              Done
-            </button>
-          </div>
-        )}
-        <ul className={`module-list${reordering ? " is-reordering" : ""}`}>
-          {modules.map((service, index) => {
-            const upState = health[service.id]?.up;
-            return (
-              <li
-                key={service.id}
-                className={`module-item${reordering ? " reordering" : ""}`}
-              >
-                {reordering && (
-                  <div className="reorder-btns">
-                    <button
-                      type="button"
-                      className="reorder-btn"
-                      aria-label={`Move ${service.name} up`}
-                      disabled={index === 0}
-                      onClick={() => void moveModule(service.id, -1)}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      className="reorder-btn"
-                      aria-label={`Move ${service.name} down`}
-                      disabled={index === modules.length - 1}
-                      onClick={() => void moveModule(service.id, 1)}
-                    >
-                      ↓
-                    </button>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="module-row"
-                  {...moduleRowPressHandlers}
-                  onClick={() => onModuleRowClick(service)}
-                >
-                  <span className={statusDotClass(upState)} aria-hidden="true" />
-                  <span className="module-text">
-                    <strong>{service.name}</strong>
-                    <small>{health[service.id]?.message || "Checking…"}</small>
-                  </span>
-                  <ServiceIcon id={service.id} color={service.color} size={26} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    );
-  }
+  const onlineCount = modules.filter((m) => health[m.id]?.up === true).length;
+  const offlineCount = modules.filter((m) => health[m.id]?.up === false).length;
 
   return (
     <div className="page luna-page">
@@ -857,16 +745,6 @@ export function App() {
             <IconSettings size={22} color="currentColor" />
           </button>
         </div>
-        <button
-          type="button"
-          className="drawer-item"
-          onClick={() => {
-            setDrawer(false);
-            setScreen("dashboard");
-          }}
-        >
-          Dashboard
-        </button>
         {modules.map((service) => (
           <button
             key={service.id}
@@ -912,6 +790,36 @@ export function App() {
         </button>
       </header>
 
+      <div className="home-status">
+        <p className="home-status-line" aria-live="polite">
+          <span className="status-dot status-up" aria-hidden="true" />
+          {onlineCount} online
+          <span className="home-status-sep">·</span>
+          <span className="status-dot status-down" aria-hidden="true" />
+          {offlineCount} offline
+          <span className="home-status-sep">·</span>
+          {modules.length} modules
+        </p>
+        {showWakeControl && (
+          <div className="wol-bar home-wol">
+            <button
+              type="button"
+              className="btn primary wol-btn"
+              disabled={wakeBusy}
+              onClick={() => void onWakePc()}
+            >
+              <IconPower size={18} color="currentColor" />
+              {wakeBusy ? "Sending…" : "Wake PC"}
+            </button>
+            <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
+              {wakeMessage ||
+                homeNet?.message ||
+                "UDP magic packet on home LAN / VPN"}
+            </small>
+          </div>
+        )}
+      </div>
+
       {reordering && (
         <div className="reorder-bar">
           <span>Reorder modules</span>
@@ -926,42 +834,6 @@ export function App() {
       )}
 
       <ul className={`module-list home${reordering ? " is-reordering" : ""}`}>
-        <li>
-          <button
-            type="button"
-            className="module-row"
-            onClick={() => {
-              setReordering(false);
-              setScreen("dashboard");
-            }}
-          >
-            <span className="module-text">
-              <strong>Dashboard</strong>
-              <small>Status of all modules</small>
-            </span>
-            <IconDashboard color="#5ad1c9" size={28} />
-          </button>
-        </li>
-        {showWakeControl && (
-          <li>
-            <button
-              type="button"
-              className="module-row"
-              disabled={wakeBusy}
-              onClick={() => void onWakePc()}
-            >
-              <span className="module-text">
-                <strong>{wakeBusy ? "Waking…" : "Wake PC"}</strong>
-                <small>
-                  {wakeMessage ||
-                    homeNet?.message ||
-                    "Wake-on-LAN · home Wi‑Fi / VPN"}
-                </small>
-              </span>
-              <IconPower color="#f0b429" size={28} />
-            </button>
-          </li>
-        )}
         {modules.map((service, index) => {
           const upState = health[service.id]?.up;
           return (

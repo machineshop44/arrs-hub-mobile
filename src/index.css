@@ -400,30 +400,32 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-.dash-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
-  padding: 0.85rem;
+.home-status {
+  padding: 0.55rem 0.85rem 0.35rem;
+  border-bottom: 1px solid var(--line);
 }
 
-.dash-summary div {
-  background: var(--bg1);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0.75rem;
-  display: grid;
-  gap: 0.2rem;
-  text-align: center;
-}
-
-.dash-summary strong {
-  font-size: 1.35rem;
-}
-
-.dash-summary span {
+.home-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.88rem;
+}
+
+.home-status-line .status-dot {
+  margin-right: 0.1rem;
+}
+
+.home-status-sep {
+  opacity: 0.55;
+  margin: 0 0.1rem;
+}
+
+.home-wol {
+  margin: 0.55rem 0 0.15rem;
 }
 
 .library-toolbar {

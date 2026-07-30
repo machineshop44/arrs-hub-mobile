@@ -698,11 +698,6 @@ export function App() {
         <section className="card slim">
           <div className="top-row">
             <strong>Send APK</strong>
-            {appVersion && (
-              <span className="hint" style={{ padding: 0 }}>
-                v{appVersion.version} ({appVersion.build})
-              </span>
-            )}
           </div>
           <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
             Share the installed APK over Nearby Share, Bluetooth, Files, or
@@ -1271,6 +1266,12 @@ export function App() {
             );
           })}
         </div>
+
+        {appVersion && (
+          <p className="settings-version" aria-label="App version">
+            v{appVersion.version} ({appVersion.build})
+          </p>
+        )}
       </div>
     );
   }
@@ -1291,17 +1292,6 @@ export function App() {
       <aside className={`drawer ${drawer ? "open" : ""}`}>
         <div className="drawer-head">
           <strong>Arrs</strong>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => {
-              setDrawer(false);
-              setScreen("settings");
-            }}
-            aria-label="Settings"
-          >
-            <IconSettings size={22} color="currentColor" />
-          </button>
         </div>
         {modules.map((service) => (
           <button
@@ -1488,22 +1478,6 @@ export function App() {
                 </li>
               );
             })}
-            <li>
-              <button
-                type="button"
-                className="module-row"
-                onClick={() => {
-                  setReordering(false);
-                  setScreen("settings");
-                }}
-              >
-                <span className="module-text">
-                  <strong>Settings</strong>
-                  <small>Configure Arrs</small>
-                </span>
-                <IconSettings color="#7ddea0" size={28} />
-              </button>
-            </li>
           </ul>
         </>
       )}

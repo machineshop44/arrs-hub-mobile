@@ -1,6 +1,7 @@
 import { Preferences } from "@capacitor/preferences";
 
-const STORAGE_KEY = "arrs-mobile-pathing-v1";
+/** Capacitor Preferences key for home/LAN pathing. */
+export const PATHING_STORAGE_KEY = "arrs-mobile-pathing-v1";
 
 export type PathSettings = {
   /**
@@ -93,7 +94,7 @@ export async function loadPathSettings(): Promise<PathSettings> {
   const seed = modules["./credentials.local.ts"]?.pathingDefaults ?? {};
   const base: PathSettings = { ...DEFAULT_PATHING, ...seed };
   try {
-    const { value } = await Preferences.get({ key: STORAGE_KEY });
+    const { value } = await Preferences.get({ key: PATHING_STORAGE_KEY });
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<PathSettings>;
     return {
@@ -106,7 +107,7 @@ export async function loadPathSettings(): Promise<PathSettings> {
 
 export async function savePathSettings(settings: PathSettings): Promise<void> {
   await Preferences.set({
-    key: STORAGE_KEY,
+    key: PATHING_STORAGE_KEY,
     value: JSON.stringify(settings),
   });
 }

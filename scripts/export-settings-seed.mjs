@@ -29,6 +29,14 @@ const DEFAULTS = [
   ["workouts", `${REMOTE}:3000`, true],
 ];
 
+/** Must match PERSISTED_STORAGE_KEYS in src/settingsTransfer.ts */
+const STORAGE_KEYS = {
+  services: "arrs-mobile-services-v3",
+  moduleOrder: "arrs-mobile-module-order-v1",
+  wol: "arrs-mobile-wol-v1",
+  pathing: "arrs-mobile-pathing-v1",
+};
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outPath =
   process.argv[2] ||
@@ -97,6 +105,7 @@ const bundle = {
   kind: "arrs-hub-status-settings",
   v: 1,
   exportedAt: new Date().toISOString(),
+  storageKeys: STORAGE_KEYS,
   services,
   moduleOrder: [],
   wol,
@@ -112,10 +121,21 @@ const localOut = path.join(root, "apks", "ArrsHubStatus-settings.json");
 fs.mkdirSync(path.dirname(localOut), { recursive: true });
 fs.writeFileSync(localOut, json, "utf8");
 
+const wolFilled = Boolean(
+  wol.mac || wol.targetHost || wol.homeCidr || wol.hubUrl || wol.enabled,
+);
+
 console.log("Wrote", outPath);
 console.log("Local", localOut);
 console.log(
   "With API keys:",
   services.filter((s) => s.apiKey).map((s) => s.id).join(", ") || "(none)",
 );
-console.log("JSON chars:", json.length, json.length > 1800 ? "(file preferred over QR)" : "(QR-sized)");
+console.log(
+  "WOL fields:",
+  wolFilled
+    ? `enabled=${wol.enabled} mac=${wol.mac || "(empty)"} hub=${wol.hubUrl || "(empty)"}`
+    : "present but empty (not configured on this seed)",
+);
+console.log("storageKeys:", Object.values(STORAGE_KEYS).join(", "));
+console.log("JSON chars:", json.length);

@@ -1,32 +1,45 @@
-import QRCode from "qrcode";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import {
   loadModuleOrder,
   loadServices,
+  MODULE_ORDER_STORAGE_KEY,
   saveModuleOrder,
   saveServices,
+  SERVICES_STORAGE_KEY,
 } from "./probe";
 import {
+  DEFAULT_PATHING,
   loadPathSettings,
+  PATHING_STORAGE_KEY,
   savePathSettings,
   type PathSettings,
 } from "./pathing";
 import type { ServiceConfig } from "./services";
 import {
+  DEFAULT_WOL,
   loadWolSettings,
   saveWolSettings,
+  WOL_STORAGE_KEY,
   type WolSettings,
 } from "./wol";
 
 const CONFIG_KIND = "arrs-hub-status-settings";
 const CONFIG_VERSION = 1;
-/** Soft limit for a single scannable QR (bytes of payload string). */
-export const QR_MAX_CHARS = 1800;
+
+/** Every Capacitor Preferences key this app persists (full backup set). */
+export const PERSISTED_STORAGE_KEYS = {
+  services: SERVICES_STORAGE_KEY,
+  moduleOrder: MODULE_ORDER_STORAGE_KEY,
+  wol: WOL_STORAGE_KEY,
+  pathing: PATHING_STORAGE_KEY,
+} as const;
 
 export type SettingsBundle = {
   kind: typeof CONFIG_KIND;
   v: typeof CONFIG_VERSION;
   exportedAt: string;
+  /** Maps logical sections → Preferences keys (documentation + future importers). */
+  storageKeys: typeof PERSISTED_STORAGE_KEYS;
   services: Array<{
     id: string;
     url: string;
@@ -60,6 +73,27 @@ function pickServiceFields(services: ServiceConfig[]): SettingsBundle["services"
   }));
 }
 
+function normalizeWol(raw: Partial<WolSettings> | undefined): WolSettings {
+  const wolRaw = raw ?? {};
+  return {
+    enabled: Boolean(wolRaw.enabled),
+    mac: String(wolRaw.mac ?? ""),
+    targetHost: String(wolRaw.targetHost ?? ""),
+    broadcastIp: String(wolRaw.broadcastIp || DEFAULT_WOL.broadcastIp),
+    port: Number(wolRaw.port) || DEFAULT_WOL.port,
+    homeCidr: String(wolRaw.homeCidr ?? ""),
+    hubUrl: String(wolRaw.hubUrl ?? ""),
+    hubPcId: String(wolRaw.hubPcId ?? ""),
+  };
+}
+
+function normalizePathing(raw: Partial<PathSettings> | undefined): PathSettings {
+  const pathRaw = raw ?? {};
+  return {
+    homeBaseUrl: String(pathRaw.homeBaseUrl ?? DEFAULT_PATHING.homeBaseUrl),
+  };
+}
+
 export async function buildSettingsBundle(
   overrides?: Partial<{
     services: ServiceConfig[];
@@ -85,10 +119,11 @@ export async function buildSettingsBundle(
     kind: CONFIG_KIND,
     v: CONFIG_VERSION,
     exportedAt: new Date().toISOString(),
+    storageKeys: { ...PERSISTED_STORAGE_KEYS },
     services: pickServiceFields(services),
-    moduleOrder,
-    wol,
-    pathing,
+    moduleOrder: [...moduleOrder],
+    wol: normalizeWol(wol),
+    pathing: normalizePathing(pathing),
   };
 }
 
@@ -160,21 +195,11 @@ export function parseSettingsBundle(raw: string): SettingsBundle {
       typeof obj.exportedAt === "string"
         ? obj.exportedAt
         : new Date().toISOString(),
+    storageKeys: { ...PERSISTED_STORAGE_KEYS },
     services,
     moduleOrder,
-    wol: {
-      enabled: Boolean(wolRaw.enabled),
-      mac: String(wolRaw.mac ?? ""),
-      targetHost: String(wolRaw.targetHost ?? ""),
-      broadcastIp: String(wolRaw.broadcastIp || "255.255.255.255"),
-      port: Number(wolRaw.port) || 9,
-      homeCidr: String(wolRaw.homeCidr ?? ""),
-      hubUrl: String(wolRaw.hubUrl ?? ""),
-      hubPcId: String(wolRaw.hubPcId ?? ""),
-    },
-    pathing: {
-      homeBaseUrl: String(pathRaw.homeBaseUrl ?? ""),
-    },
+    wol: normalizeWol(wolRaw),
+    pathing: normalizePathing(pathRaw),
   };
 }
 
@@ -191,45 +216,33 @@ export async function applySettingsBundle(
   const merged = currentServices.map((def) => {
     const saved = byId.get(def.id);
     if (!saved) return def;
+    // Restore exported snapshot fields exactly (including empty strings).
     return {
       ...def,
-      url: saved.url || def.url,
-      apiKey: saved.apiKey || def.apiKey,
-      username: saved.username || def.username,
-      password: saved.password || def.password,
+      url: saved.url,
+      apiKey: saved.apiKey,
+      username: saved.username,
+      password: saved.password,
       enabled: saved.enabled,
     };
   });
 
+  const wol = normalizeWol(bundle.wol);
+  const pathing = normalizePathing(bundle.pathing);
+
   await Promise.all([
     saveServices(merged),
     saveModuleOrder(bundle.moduleOrder),
-    saveWolSettings(bundle.wol),
-    savePathSettings(bundle.pathing),
+    saveWolSettings(wol),
+    savePathSettings(pathing),
   ]);
 
   return {
     services: merged,
     moduleOrder: bundle.moduleOrder,
-    wol: bundle.wol,
-    pathing: bundle.pathing,
+    wol,
+    pathing,
   };
-}
-
-export async function makeExportQrDataUrl(
-  json: string,
-): Promise<{ dataUrl: string | null; tooLarge: boolean; chars: number }> {
-  const chars = json.length;
-  if (chars > QR_MAX_CHARS) {
-    return { dataUrl: null, tooLarge: true, chars };
-  }
-  const dataUrl = await QRCode.toDataURL(json, {
-    errorCorrectionLevel: "M",
-    margin: 1,
-    width: 280,
-    color: { dark: "#12141c", light: "#ffffff" },
-  });
-  return { dataUrl, tooLarge: false, chars };
 }
 
 export async function shareSettingsJsonFile(
@@ -261,28 +274,15 @@ export async function shareSettingsJsonFile(
   URL.revokeObjectURL(url);
 }
 
-export async function copySettingsToClipboard(json: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(json);
-    return;
-  }
-  throw new Error("Clipboard not available.");
-}
-
-export async function readSettingsFromClipboard(): Promise<string> {
-  if (navigator.clipboard?.readText) {
-    return navigator.clipboard.readText();
-  }
-  throw new Error("Clipboard not available.");
-}
-
 export function summarizeBundle(bundle: SettingsBundle): string {
   const withKeys = bundle.services.filter(
     (s) => s.apiKey.trim() || s.password.trim() || s.url.trim(),
   ).length;
   const wol = bundle.wol.mac.trim()
     ? `WOL ${bundle.wol.mac}`
-    : "WOL off/empty";
+    : bundle.wol.enabled
+      ? "WOL on (no MAC)"
+      : "WOL off/empty";
   const home = bundle.pathing.homeBaseUrl.trim() || "no LAN base";
   return `${withKeys} services · ${wol} · ${home}`;
 }

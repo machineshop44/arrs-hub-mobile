@@ -7,8 +7,10 @@ import {
   type ServiceConfig,
 } from "./services";
 
-const STORAGE_KEY = "arrs-mobile-services-v3";
-const ORDER_KEY = "arrs-mobile-module-order-v1";
+/** Capacitor Preferences key for the services snapshot (URLs, keys, creds). */
+export const SERVICES_STORAGE_KEY = "arrs-mobile-services-v3";
+/** Capacitor Preferences key for module list order. */
+export const MODULE_ORDER_STORAGE_KEY = "arrs-mobile-module-order-v1";
 
 export type ProbeResult = {
   up: boolean | null;
@@ -169,7 +171,7 @@ export async function loadServices(): Promise<ServiceConfig[]> {
   const seed = await loadSeed();
   const defaults = buildDefaultConfigs(seed);
   try {
-    const { value } = await Preferences.get({ key: STORAGE_KEY });
+    const { value } = await Preferences.get({ key: SERVICES_STORAGE_KEY });
     if (!value) return defaults;
     const parsed = JSON.parse(value) as ServiceConfig[];
     if (!Array.isArray(parsed) || parsed.length === 0) return defaults;
@@ -198,7 +200,7 @@ export async function loadServices(): Promise<ServiceConfig[]> {
 
 export async function saveServices(services: ServiceConfig[]): Promise<void> {
   await Preferences.set({
-    key: STORAGE_KEY,
+    key: SERVICES_STORAGE_KEY,
     value: JSON.stringify(services),
   });
 }
@@ -206,7 +208,7 @@ export async function saveServices(services: ServiceConfig[]): Promise<void> {
 /** User-defined module list order (service ids). */
 export async function loadModuleOrder(): Promise<string[]> {
   try {
-    const { value } = await Preferences.get({ key: ORDER_KEY });
+    const { value } = await Preferences.get({ key: MODULE_ORDER_STORAGE_KEY });
     if (!value) return [];
     const parsed = JSON.parse(value) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -218,7 +220,7 @@ export async function loadModuleOrder(): Promise<string[]> {
 
 export async function saveModuleOrder(ids: string[]): Promise<void> {
   await Preferences.set({
-    key: ORDER_KEY,
+    key: MODULE_ORDER_STORAGE_KEY,
     value: JSON.stringify(ids),
   });
 }

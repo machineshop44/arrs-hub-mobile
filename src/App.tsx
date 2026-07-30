@@ -44,10 +44,7 @@ import {
 import {
   applySettingsBundle,
   buildSettingsBundle,
-  copySettingsToClipboard,
-  makeExportQrDataUrl,
   parseSettingsBundle,
-  readSettingsFromClipboard,
   serializeSettingsBundle,
   shareSettingsJsonFile,
   summarizeBundle,
@@ -68,6 +65,7 @@ import {
 type Screen =
   | "modules"
   | "settings"
+  | "backup"
   | "arr"
   | "bazarr"
   | "ytarr"
@@ -206,8 +204,6 @@ export function App() {
   const [shareMessage, setShareMessage] = useState<string | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferMessage, setTransferMessage] = useState<string | null>(null);
-  const [exportQrUrl, setExportQrUrl] = useState<string | null>(null);
-  const [exportQrNote, setExportQrNote] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
@@ -328,16 +324,12 @@ export function App() {
     void refreshHomeNet(wol, next.homeBaseUrl);
   };
 
-  const runExportConfig = async (mode: "qr" | "share" | "copy") => {
+  const runExportConfig = async () => {
     if (transferBusy) return;
     setTransferBusy(true);
     setTransferMessage(null);
-    if (mode === "qr") {
-      setExportQrUrl(null);
-      setExportQrNote(null);
-    }
     try {
-      // Persist current form values before packaging.
+      // Persist current form values before packaging (full snapshot).
       await Promise.all([
         saveServices(services),
         saveWolSettings(wol),
@@ -351,26 +343,8 @@ export function App() {
         pathing,
       });
       const json = serializeSettingsBundle(bundle);
-      if (mode === "share") {
-        await shareSettingsJsonFile(json);
-        setTransferMessage(`Shared settings file (${summarizeBundle(bundle)}).`);
-      } else if (mode === "copy") {
-        await copySettingsToClipboard(json);
-        setTransferMessage(`Copied settings to clipboard (${summarizeBundle(bundle)}).`);
-      } else {
-        const qr = await makeExportQrDataUrl(json);
-        if (qr.tooLarge || !qr.dataUrl) {
-          setExportQrUrl(null);
-          setExportQrNote(
-            `Config is ${qr.chars} chars — too large for one QR. Use Share file or Copy instead.`,
-          );
-          setTransferMessage("QR skipped; use Share file / Copy.");
-        } else {
-          setExportQrUrl(qr.dataUrl);
-          setExportQrNote(null);
-          setTransferMessage(`QR ready (${summarizeBundle(bundle)}). Scan from the other device, or Share file.`);
-        }
-      }
+      await shareSettingsJsonFile(json);
+      setTransferMessage(`Shared settings file (${summarizeBundle(bundle)}).`);
     } catch (err) {
       setTransferMessage(
         err instanceof Error ? err.message : "Could not export settings.",
@@ -405,22 +379,6 @@ export function App() {
     } finally {
       setTransferBusy(false);
       if (importFileRef.current) importFileRef.current.value = "";
-    }
-  };
-
-  const runImportClipboard = async () => {
-    if (transferBusy) return;
-    setTransferBusy(true);
-    setTransferMessage(null);
-    try {
-      const raw = await readSettingsFromClipboard();
-      await importFromRaw(raw);
-    } catch (err) {
-      setTransferMessage(
-        err instanceof Error ? err.message : "Could not import from clipboard.",
-      );
-    } finally {
-      setTransferBusy(false);
     }
   };
 
@@ -659,118 +617,33 @@ export function App() {
     );
   }
 
-  if (screen === "settings") {
+  if (screen === "backup") {
     return (
       <div className="page luna-page">
         <header className="luna-top">
           <button
             type="button"
             className="icon-btn"
-            onClick={() => setScreen("modules")}
+            onClick={() => {
+              setTransferMessage(null);
+              setShareMessage(null);
+              setScreen("settings");
+            }}
           >
             ←
           </button>
-          <h1>Settings</h1>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => {
-              void saveServices(services);
-              void saveWolSettings(wol);
-              void savePathSettings(pathing);
-              setScreen("modules");
-            }}
-          >
-            ✓
-          </button>
+          <h1>Backup &amp; transfer</h1>
+          <div className="icon-btn" aria-hidden="true" />
         </header>
         <p className="hint">
-          URLs and API keys stay on this device. Tautulli needs its API key
-          (Settings → Web Interface in Tautulli).
+          Move this install to another device: send the APK, or export/import
+          the full settings snapshot (services, keys, WOL, LAN pathing, module
+          order).
         </p>
 
         <section className="card slim">
           <div className="top-row">
-            <strong>Export / Import settings</strong>
-          </div>
-          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            Move URLs, API keys, WOL, pathing, and module order to another
-            device. Prefer a settings file (or clipboard). QR works when the
-            payload is small enough for one code.
-          </p>
-          <div className="transfer-actions">
-            <button
-              type="button"
-              className="btn primary"
-              disabled={transferBusy}
-              onClick={() => void runExportConfig("share")}
-            >
-              {transferBusy ? "Working…" : "Share settings file"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={transferBusy}
-              onClick={() => void runExportConfig("qr")}
-            >
-              Show QR
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={transferBusy}
-              onClick={() => void runExportConfig("copy")}
-            >
-              Copy
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={transferBusy}
-              onClick={() => importFileRef.current?.click()}
-            >
-              Import file
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={transferBusy}
-              onClick={() => void runImportClipboard()}
-            >
-              Paste import
-            </button>
-          </div>
-          <input
-            ref={importFileRef}
-            type="file"
-            accept="application/json,.json,text/plain"
-            style={{ display: "none" }}
-            onChange={(e) => void runImportFile(e.target.files?.[0])}
-          />
-          {exportQrUrl && (
-            <div className="export-qr">
-              <img src={exportQrUrl} alt="Settings export QR code" />
-              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
-                On the other device: Settings → Paste import (after scanning
-                into a notes app), or use the shared JSON file from Drive.
-              </p>
-            </div>
-          )}
-          {exportQrNote && (
-            <p className="hint wol-warn" style={{ padding: "0.45rem 0 0" }}>
-              {exportQrNote}
-            </p>
-          )}
-          {transferMessage && (
-            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
-              {transferMessage}
-            </p>
-          )}
-        </section>
-
-        <section className="card slim">
-          <div className="top-row">
-            <strong>Share APK</strong>
+            <strong>Send APK</strong>
             {appVersion && (
               <span className="hint" style={{ padding: 0 }}>
                 v{appVersion.version} ({appVersion.build})
@@ -778,10 +651,8 @@ export function App() {
             )}
           </div>
           <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            Install this build on another device. Shares the installed APK over
-            Nearby Share, Bluetooth, Files, or email. On the other device, open
-            the file and tap Install (allow installs from unknown apps if
-            asked).
+            Share the installed APK over Nearby Share, Bluetooth, Files, or
+            email. On the other device, open the file and tap Install.
           </p>
           <button
             type="button"
@@ -815,6 +686,99 @@ export function App() {
             </p>
           )}
         </section>
+
+        <section className="card slim">
+          <div className="top-row">
+            <strong>Settings file</strong>
+          </div>
+          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
+            Export writes a JSON file with every persisted preference. Import
+            restores it and refreshes Settings immediately.
+          </p>
+          <div className="transfer-actions">
+            <button
+              type="button"
+              className="btn primary"
+              disabled={transferBusy}
+              onClick={() => void runExportConfig()}
+            >
+              {transferBusy ? "Working…" : "Export / share settings"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => importFileRef.current?.click()}
+            >
+              Import settings file
+            </button>
+          </div>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json,text/plain"
+            style={{ display: "none" }}
+            onChange={(e) => void runImportFile(e.target.files?.[0])}
+          />
+          {transferMessage && (
+            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
+              {transferMessage}
+            </p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  if (screen === "settings") {
+    return (
+      <div className="page luna-page">
+        <header className="luna-top">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setScreen("modules")}
+          >
+            ←
+          </button>
+          <h1>Settings</h1>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => {
+              void saveServices(services);
+              void saveWolSettings(wol);
+              void savePathSettings(pathing);
+              setScreen("modules");
+            }}
+          >
+            ✓
+          </button>
+        </header>
+        <p className="hint">
+          URLs and API keys stay on this device. Tautulli needs its API key
+          (Settings → Web Interface in Tautulli).
+        </p>
+
+        <button
+          type="button"
+          className="settings-nav-row"
+          onClick={() => {
+            setTransferMessage(null);
+            setShareMessage(null);
+            setScreen("backup");
+          }}
+        >
+          <span className="settings-nav-copy">
+            <strong>Backup &amp; transfer</strong>
+            <span className="hint" style={{ padding: 0 }}>
+              Send APK · export / import settings
+            </span>
+          </span>
+          <span className="settings-nav-chevron" aria-hidden="true">
+            ›
+          </span>
+        </button>
 
         <section className="card slim">
           <strong>Network pathing</strong>

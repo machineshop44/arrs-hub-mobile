@@ -8,7 +8,8 @@ import {
   isPrivateIpv4,
 } from "./pathing";
 
-const STORAGE_KEY = "arrs-mobile-wol-v1";
+/** Capacitor Preferences key for Wake-on-LAN settings. */
+export const WOL_STORAGE_KEY = "arrs-mobile-wol-v1";
 
 export type WolSettings = {
   enabled: boolean;
@@ -189,7 +190,7 @@ export async function loadWolSettings(): Promise<WolSettings> {
   const seed = await loadWolSeed();
   const base: WolSettings = { ...DEFAULT_WOL, ...seed };
   try {
-    const { value } = await Preferences.get({ key: STORAGE_KEY });
+    const { value } = await Preferences.get({ key: WOL_STORAGE_KEY });
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<WolSettings>;
     return {
@@ -209,7 +210,7 @@ export async function loadWolSettings(): Promise<WolSettings> {
 
 export async function saveWolSettings(settings: WolSettings): Promise<void> {
   await Preferences.set({
-    key: STORAGE_KEY,
+    key: WOL_STORAGE_KEY,
     value: JSON.stringify(settings),
   });
 }

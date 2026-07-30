@@ -587,11 +587,11 @@ export function App() {
             )}
           </div>
           <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
-            Send a phone/tablet‑installable build over Quick Share, Bluetooth,
-            Files, email, or Drive. Prefer sharing after installing a{" "}
-            <strong>universal APK</strong> (Build APK / GitHub release) — not an
-            Android Studio “Run” split deploy. On the other device, open the file
-            and tap Install (allow unknown apps if asked).
+            Preferred: install from Google Drive → <strong>Phone APKs</strong> →{" "}
+            <code>ArrsHubStatus.apk</code> (agents keep that file updated). This
+            button still Quick Shares the build on this device when you need a
+            one-off copy. Use a universal APK install as the source — not an
+            Android Studio “Run” split deploy.
           </p>
           <button
             type="button"

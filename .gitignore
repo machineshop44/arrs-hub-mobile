@@ -18,4 +18,5 @@ android/.idea/
 *.tsbuildinfo
 src/credentials.local.ts
 credentials.local.json
+credentials.drive.json
 

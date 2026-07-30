@@ -9,6 +9,28 @@ You do **not** run `npm` / `cap sync`. Cursor makes the edits; with live reload 
 USB, the tablet updates like Ava’s bedtime app. Just leave Android Studio open
 and the app running on the tablet.
 
+### Install / update on Pixel (preferred)
+
+APKs are published to Google Drive folder **Phone APKs** with stable names:
+
+| App | Drive file |
+| --- | --- |
+| Arrs Hub Status | `ArrsHubStatus.apk` |
+| Ava Bedtime | `AvaBedtime.apk` |
+
+On the phone: **Drive → Phone APKs → file → Install** (allow unknown apps if asked).
+Agents / builds should overwrite those files whenever the app changes — no Quick Share needed.
+
+Local publish (PC with Drive Desktop):
+
+```bat
+npm run apk:publish
+npm run apk:publish:all
+```
+
+Cloud agents need `credentials.drive.json` (see `drive.publish.example.json`).
+
+
 ## What it does
 
 1. **Status** — polls each enabled service (native HTTP in the APK)

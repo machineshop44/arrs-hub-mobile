@@ -28,6 +28,11 @@ import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
 import {
+  getAppVersionInfo,
+  shareInstalledApk,
+  type AppVersionInfo,
+} from "./apkShare";
+import {
   DEFAULT_WOL,
   detectHomeNetwork,
   formatMacInput,
@@ -169,19 +174,24 @@ export function App() {
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
   const [reordering, setReordering] = useState(false);
+  const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareMessage, setShareMessage] = useState<string | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
 
   useEffect(() => {
     void (async () => {
-      const [svc, wolSettings, order] = await Promise.all([
+      const [svc, wolSettings, order, version] = await Promise.all([
         loadServices(),
         loadWolSettings(),
         loadModuleOrder(),
+        getAppVersionInfo(),
       ]);
       setServices(svc);
       setWol(wolSettings);
       setModuleOrder(order);
+      setAppVersion(version);
       setReady(true);
     })();
   }, []);
@@ -463,6 +473,54 @@ export function App() {
           URLs and API keys stay on this device. Tautulli needs its API key
           (Settings → Web Interface in Tautulli).
         </p>
+
+        <section className="card slim">
+          <div className="top-row">
+            <strong>Share APK</strong>
+            {appVersion && (
+              <span className="hint" style={{ padding: 0 }}>
+                v{appVersion.version} ({appVersion.build})
+              </span>
+            )}
+          </div>
+          <p className="hint" style={{ padding: "0.35rem 0 0.55rem" }}>
+            Install this build on another device. Shares the installed APK over
+            Nearby Share, Bluetooth, Files, or email. On the other device, open
+            the file and tap Install (allow installs from unknown apps if
+            asked).
+          </p>
+          <button
+            type="button"
+            className="btn primary"
+            style={{ width: "100%" }}
+            disabled={shareBusy}
+            onClick={() => {
+              void (async () => {
+                setShareBusy(true);
+                setShareMessage(null);
+                try {
+                  await shareInstalledApk();
+                  setShareMessage("Share sheet opened.");
+                } catch (err) {
+                  setShareMessage(
+                    err instanceof Error
+                      ? err.message
+                      : "Could not share APK.",
+                  );
+                } finally {
+                  setShareBusy(false);
+                }
+              })();
+            }}
+          >
+            {shareBusy ? "Preparing APK…" : "Send APK"}
+          </button>
+          {shareMessage && (
+            <p className="hint" style={{ padding: "0.45rem 0 0" }}>
+              {shareMessage}
+            </p>
+          )}
+        </section>
 
         <section className="card slim">
           <div className="top-row">

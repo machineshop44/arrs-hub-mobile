@@ -20,5 +20,6 @@ Official (or official-derived) product marks used by `ServiceIcon`.
 | calibre | calibre.svg | https://raw.githubusercontent.com/kovidgoyal/calibre/master/resources/images/calibre.svg |
 | overseerr | overseerr.svg | https://raw.githubusercontent.com/sct/overseerr/develop/public/os_icon.svg |
 | ytarr | ytarr.svg | ytarr repo `frontend/public/favicon.svg` (project brand mark) |
+| flaresolverr | flaresolverr.png | https://raw.githubusercontent.com/FlareSolverr/FlareSolverr/master/resources/flaresolverr_logo.png |
 
 Trademarks remain with their respective owners; used here only to identify connected services.

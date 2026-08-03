@@ -11,6 +11,7 @@ const seed: CredentialSeed = {
   // radarr: { apiKey: "…" },
   // qbittorrent: { username: "admin", password: "…" },
   // ytarr: { url: "http://67.84.101.14:8199", apiKey: "…" },
+  // flaresolverr: { url: "http://67.84.101.14:8191" },
   // workouts: { url: "http://192.168.1.10" }, // Arrs Hub host; port via Settings → Network
 };
 

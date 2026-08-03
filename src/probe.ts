@@ -108,6 +108,17 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       };
     }
 
+    if (service.id === "flaresolverr") {
+      // Official lightweight health endpoint (GET /health on :8191).
+      const { status, latencyMs } = await httpGet(`${base}/health`);
+      const up = status >= 200 && status < 400;
+      return {
+        up,
+        latencyMs,
+        message: up ? "Online" : `HTTP ${status}`,
+      };
+    }
+
     if (service.id === "ytarr") {
       const headers: Record<string, string> = {};
       if (service.apiKey.trim()) {

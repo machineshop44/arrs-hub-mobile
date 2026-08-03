@@ -117,6 +117,11 @@ if (sync.ytarr?.apiKey || sync.ytarr?.api_key) {
   };
 }
 
+// FlareSolverr has no API key — seed remote URL so Settings/Home match hub.
+if (!seed.flaresolverr?.url) {
+  seed.flaresolverr = { url: `${REMOTE_HOST}:8191` };
+}
+
 for (const candidate of workoutCandidates) {
   const workout = readJson(candidate);
   if (workout?.plexToken) {

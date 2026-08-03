@@ -76,6 +76,15 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     defaultEnabled: true,
   },
   {
+    id: "flaresolverr",
+    name: "FlareSolverr",
+    defaultUrl: `${REMOTE_HOST}:8191`,
+    color: "#f97316",
+    probe: "http",
+    auth: "none",
+    defaultEnabled: true,
+  },
+  {
     id: "bazarr",
     name: "Bazarr",
     defaultUrl: `${REMOTE_HOST}:6767`,

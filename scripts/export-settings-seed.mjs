@@ -15,6 +15,7 @@ const DEFAULTS = [
   ["lidarr", `${REMOTE}:8686`, true],
   ["readarr", `${REMOTE}:8787`, true],
   ["prowlarr", `${REMOTE}:9696`, true],
+  ["flaresolverr", `${REMOTE}:8191`, true],
   ["bazarr", `${REMOTE}:6767`, true],
   ["qbittorrent", `${REMOTE}:8079`, true],
   ["sabnzbd", `${REMOTE}:6789/sabnzbd/`, true],

@@ -11,6 +11,9 @@ import {
 /** Capacitor Preferences key for Wake-on-LAN settings. */
 export const WOL_STORAGE_KEY = "arrs-mobile-wol-v1";
 
+/** Default TCP port Arrs Hub listens on (desktop). */
+export const DEFAULT_HUB_PORT = 3000;
+
 export type WolSettings = {
   enabled: boolean;
   /** Target NIC MAC, e.g. AA:BB:CC:DD:EE:FF */
@@ -24,8 +27,13 @@ export type WolSettings = {
    * Settings → Home / LAN base, then WOL targetHost (private IPs only).
    */
   homeCidr: string;
-  /** Optional Arrs Hub base URL for relay (e.g. http://192.168.1.10:3000) */
+  /**
+   * Arrs Hub host / base (protocol + host, port optional).
+   * Effective URL uses hubPort — e.g. http://192.168.1.10
+   */
   hubUrl: string;
+  /** TCP port Arrs Hub listens on (default 3000). Overrides any port in hubUrl. */
+  hubPort: number;
   /** Optional watchdog PC id when waking via hub */
   hubPcId: string;
 };
@@ -56,8 +64,69 @@ export const DEFAULT_WOL: WolSettings = {
   port: 9,
   homeCidr: "",
   hubUrl: "",
+  hubPort: DEFAULT_HUB_PORT,
   hubPcId: "",
 };
+
+export function normalizeHubPort(port: unknown): number {
+  const n = Number(port);
+  if (!Number.isFinite(n) || n <= 0 || n > 65535) return DEFAULT_HUB_PORT;
+  return Math.floor(n);
+}
+
+/**
+ * Split a hub host/URL into host (no port) + optional port from the string.
+ * Accepts bare hosts, IPs, or full URLs.
+ */
+export function splitHubHostAndPort(raw: string): {
+  host: string;
+  port: number | null;
+} {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return { host: "", port: null };
+  try {
+    const u = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
+    const port = u.port ? Number(u.port) : null;
+    u.port = "";
+    let host = u.toString();
+    if (host.endsWith("/") && u.pathname === "/") {
+      host = host.slice(0, -1);
+    }
+    return {
+      host,
+      port: port && Number.isFinite(port) && port > 0 ? port : null,
+    };
+  } catch {
+    const m = trimmed.match(/^(.*):(\d{1,5})\/?$/);
+    if (m) {
+      return { host: m[1]!, port: Number(m[2]) };
+    }
+    return { host: trimmed, port: null };
+  }
+}
+
+/** Build `http(s)://host:port` for Workouts / WOL hub relay. */
+export function buildHubBaseUrl(
+  hubUrl: string,
+  hubPort: number = DEFAULT_HUB_PORT,
+): string {
+  const trimmed = String(hubUrl || "").trim();
+  if (!trimmed) return "";
+  const port = normalizeHubPort(hubPort);
+  try {
+    const u = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
+    u.port = String(port);
+    let out = u.toString();
+    if (out.endsWith("/") && u.pathname === "/") {
+      out = out.slice(0, -1);
+    }
+    return out;
+  } catch {
+    const base = trimmed.replace(/\/+$/, "").replace(/:\d+$/, "");
+    const withProto = /^https?:\/\//i.test(base) ? base : `http://${base}`;
+    return `${withProto}:${port}`;
+  }
+}
 
 /**
  * Live-format a MAC as the user types / pastes.
@@ -193,6 +262,12 @@ export async function loadWolSettings(): Promise<WolSettings> {
     const { value } = await Preferences.get({ key: WOL_STORAGE_KEY });
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<WolSettings>;
+    const rawHubUrl = parsed.hubUrl ?? base.hubUrl;
+    const hubParts = splitHubHostAndPort(rawHubUrl);
+    const hubPort =
+      parsed.hubPort != null
+        ? normalizeHubPort(parsed.hubPort)
+        : hubParts.port ?? normalizeHubPort(base.hubPort);
     return {
       enabled: parsed.enabled ?? base.enabled,
       mac: parsed.mac ?? base.mac,
@@ -200,7 +275,8 @@ export async function loadWolSettings(): Promise<WolSettings> {
       broadcastIp: parsed.broadcastIp || base.broadcastIp || "255.255.255.255",
       port: Number(parsed.port) || base.port || 9,
       homeCidr: parsed.homeCidr ?? base.homeCidr,
-      hubUrl: parsed.hubUrl ?? base.hubUrl,
+      hubUrl: hubParts.host || rawHubUrl,
+      hubPort,
       hubPcId: parsed.hubPcId ?? base.hubPcId,
     };
   } catch {
@@ -423,7 +499,7 @@ async function resolveHubPcId(
 export async function sendHubWakeOnLan(
   settings: WolSettings,
 ): Promise<WakeResult> {
-  const hubBase = settings.hubUrl.trim().replace(/\/+$/, "");
+  const hubBase = buildHubBaseUrl(settings.hubUrl, settings.hubPort);
   if (!hubBase) {
     return {
       ok: false,

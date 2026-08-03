@@ -15,7 +15,10 @@ and the app running on the tablet.
 2. **Open & edit** — tap a service to open it in-app; use **Browser** if embed is blocked
 3. **Settings** — URLs / optional API keys on the device
 
-Defaults use `http://67.84.101.14` (same remote host as Arrs Hub).
+Defaults use `http://67.84.101.14` (same remote host as Arrs Hub). Workouts / hub
+relay use **Settings → Network → Arrs Hub host + port** (default port `3000`).
+If desktop Arrs Hub can’t bind 3000, set `ARRS_HUB_PORT` / `PORT` on the PC and
+match that port in the mobile Network settings.
 
 ## Agent / first-time setup
 

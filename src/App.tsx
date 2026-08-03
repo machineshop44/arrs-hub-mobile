@@ -51,13 +51,17 @@ import {
   summarizeBundle,
 } from "./settingsTransfer";
 import {
+  DEFAULT_HUB_PORT,
   DEFAULT_WOL,
+  buildHubBaseUrl,
   detectHomeNetwork,
   formatMacInput,
   loadWolSettings,
+  normalizeHubPort,
   normalizeMac,
   resolveHomeCidr,
   saveWolSettings,
+  splitHubHostAndPort,
   wakePc,
   type HomeNetworkStatus,
   type WolSettings,
@@ -193,12 +197,19 @@ function hostSummary(url: string): string {
   }
 }
 
-function serviceRowSummary(service: ServiceConfig, wolHubUrl: string): string {
+function serviceRowSummary(
+  service: ServiceConfig,
+  wolHubUrl: string,
+  wolHubPort: number,
+): string {
   const status = service.enabled ? "On" : "Off";
-  const url =
+  let url =
     service.id === "workouts" && !service.url.trim()
       ? wolHubUrl
       : service.url;
+  if (service.id === "workouts" && url.trim()) {
+    url = buildHubBaseUrl(url, wolHubPort);
+  }
   return `${status} · ${hostSummary(url)}`;
 }
 
@@ -413,10 +424,15 @@ export function App() {
 
   const withEffectiveUrl = useCallback(
     (service: ServiceConfig): ServiceConfig => {
-      const rawUrl =
-        service.id === "workouts" && !service.url.trim() && wol.hubUrl.trim()
-          ? wol.hubUrl.trim()
-          : service.url;
+      let rawUrl = service.url;
+      if (service.id === "workouts") {
+        if (!rawUrl.trim() && wol.hubUrl.trim()) {
+          rawUrl = wol.hubUrl.trim();
+        }
+        if (rawUrl.trim()) {
+          rawUrl = buildHubBaseUrl(rawUrl, wol.hubPort);
+        }
+      }
       return {
         ...service,
         url: resolveServiceUrl(
@@ -426,7 +442,7 @@ export function App() {
         ),
       };
     },
-    [pathing.homeBaseUrl, homeNet?.onHomeNetwork, wol.hubUrl],
+    [pathing.homeBaseUrl, homeNet?.onHomeNetwork, wol.hubUrl, wol.hubPort],
   );
 
   const onWakePc = async () => {
@@ -781,9 +797,17 @@ export function App() {
   }
 
   if (screen === "settings") {
-    const networkSummary = pathing.homeBaseUrl.trim()
-      ? `LAN · ${hostSummary(pathing.homeBaseUrl)}`
-      : "Remote URLs only";
+    const networkSummary = (() => {
+      const hub = wol.hubUrl.trim()
+        ? hostSummary(buildHubBaseUrl(wol.hubUrl, wol.hubPort))
+        : "";
+      if (pathing.homeBaseUrl.trim()) {
+        return hub
+          ? `LAN · ${hostSummary(pathing.homeBaseUrl)} · Hub ${hub}`
+          : `LAN · ${hostSummary(pathing.homeBaseUrl)}`;
+      }
+      return hub ? `Hub ${hub}` : "Remote URLs only";
+    })();
     const wolMac = normalizeMac(wol.mac);
     const wolSummary = wol.enabled
       ? wolMac
@@ -890,6 +914,65 @@ export function App() {
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
                 On home Wi‑Fi, remote hosts swap to this LAN base (ports stay).
                 Leave blank to always use remote URLs.
+              </p>
+              <label className="field">
+                <span>Arrs Hub host</span>
+                <input
+                  type="url"
+                  value={wol.hubUrl}
+                  placeholder="http://192.168.1.10"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setWol((prev) => ({ ...prev, hubUrl: e.target.value }))
+                  }
+                  onBlur={(e) => {
+                    const { host, port } = splitHubHostAndPort(e.target.value);
+                    void persistWol({
+                      ...wol,
+                      hubUrl: host,
+                      hubPort: port ?? wol.hubPort,
+                    });
+                  }}
+                />
+              </label>
+              <label className="field">
+                <span>Arrs Hub port</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={65535}
+                  value={wol.hubPort}
+                  placeholder={String(DEFAULT_HUB_PORT)}
+                  onChange={(e) =>
+                    setWol((prev) => ({
+                      ...prev,
+                      hubPort: normalizeHubPort(
+                        e.target.value || DEFAULT_HUB_PORT,
+                      ),
+                    }))
+                  }
+                  onBlur={(e) =>
+                    void persistWol({
+                      ...wol,
+                      hubPort: normalizeHubPort(
+                        e.target.value || DEFAULT_HUB_PORT,
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                Port Arrs Hub listens on (default {DEFAULT_HUB_PORT}). Change if
+                another app uses that port. Used by Workouts and WOL hub relay.
+                {wol.hubUrl.trim() ? (
+                  <>
+                    {" "}
+                    Effective:{" "}
+                    <code>{buildHubBaseUrl(wol.hubUrl, wol.hubPort)}</code>
+                  </>
+                ) : null}
               </p>
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
@@ -1065,21 +1148,59 @@ export function App() {
                     )}
                   </p>
                   <label className="field">
-                    <span>Arrs Hub URL (relay)</span>
+                    <span>Arrs Hub host (relay)</span>
                     <input
                       type="url"
                       value={wol.hubUrl}
-                      placeholder="http://192.168.1.10:3000"
+                      placeholder="http://192.168.1.10"
                       autoComplete="off"
                       spellCheck={false}
                       onChange={(e) =>
                         setWol((prev) => ({ ...prev, hubUrl: e.target.value }))
                       }
+                      onBlur={(e) => {
+                        const { host, port } = splitHubHostAndPort(
+                          e.target.value,
+                        );
+                        void persistWol({
+                          ...wol,
+                          hubUrl: host,
+                          hubPort: port ?? wol.hubPort,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Arrs Hub port</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={65535}
+                      value={wol.hubPort}
+                      placeholder={String(DEFAULT_HUB_PORT)}
+                      onChange={(e) =>
+                        setWol((prev) => ({
+                          ...prev,
+                          hubPort: normalizeHubPort(
+                            e.target.value || DEFAULT_HUB_PORT,
+                          ),
+                        }))
+                      }
                       onBlur={(e) =>
-                        void persistWol({ ...wol, hubUrl: e.target.value })
+                        void persistWol({
+                          ...wol,
+                          hubPort: normalizeHubPort(
+                            e.target.value || DEFAULT_HUB_PORT,
+                          ),
+                        })
                       }
                     />
                   </label>
+                  <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                    Same as Network → Arrs Hub. Port Arrs Hub listens on
+                    (default {DEFAULT_HUB_PORT}).
+                  </p>
                   <label className="field">
                     <span>Hub PC id</span>
                     <input
@@ -1137,7 +1258,7 @@ export function App() {
                       {service.name}
                     </strong>
                     <span className="hint" style={{ padding: 0 }}>
-                      {serviceRowSummary(service, wol.hubUrl)}
+                      {serviceRowSummary(service, wol.hubUrl, wol.hubPort)}
                     </span>
                   </span>
                   <span
@@ -1173,7 +1294,7 @@ export function App() {
                     <label className="field">
                       <span>
                         {service.id === "workouts"
-                          ? "Arrs Hub URL"
+                          ? "Arrs Hub host"
                           : "Remote URL"}
                       </span>
                       <input
@@ -1181,8 +1302,8 @@ export function App() {
                         value={service.url}
                         placeholder={
                           service.id === "workouts"
-                            ? wol.hubUrl.trim() ||
-                              "http://192.168.1.10:3000"
+                            ? buildHubBaseUrl(wol.hubUrl, wol.hubPort) ||
+                              `http://192.168.1.10:${wol.hubPort || DEFAULT_HUB_PORT}`
                             : undefined
                         }
                         onChange={(e) =>
@@ -1194,13 +1315,75 @@ export function App() {
                             ),
                           )
                         }
-                        onBlur={() => void saveServices(services)}
+                        onBlur={(e) => {
+                          if (service.id === "workouts") {
+                            const { host, port } = splitHubHostAndPort(
+                              e.target.value,
+                            );
+                            const nextServices = services.map((s) =>
+                              s.id === service.id
+                                ? { ...s, url: host || e.target.value.trim() }
+                                : s,
+                            );
+                            setServices(nextServices);
+                            void saveServices(nextServices);
+                            if (port != null) {
+                              void persistWol({ ...wol, hubPort: port });
+                            }
+                            return;
+                          }
+                          void saveServices(services);
+                        }}
                       />
                     </label>
                     {service.id === "workouts" ? (
-                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-                        Falls back to Wake-on-LAN → Arrs Hub URL when empty.
-                      </p>
+                      <>
+                        <label className="field">
+                          <span>Arrs Hub port</span>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={65535}
+                            value={wol.hubPort}
+                            placeholder={String(DEFAULT_HUB_PORT)}
+                            onChange={(e) =>
+                              setWol((prev) => ({
+                                ...prev,
+                                hubPort: normalizeHubPort(
+                                  e.target.value || DEFAULT_HUB_PORT,
+                                ),
+                              }))
+                            }
+                            onBlur={(e) =>
+                              void persistWol({
+                                ...wol,
+                                hubPort: normalizeHubPort(
+                                  e.target.value || DEFAULT_HUB_PORT,
+                                ),
+                              })
+                            }
+                          />
+                        </label>
+                        <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                          Port Arrs Hub listens on (default {DEFAULT_HUB_PORT}).
+                          Change if another app uses that port. Empty host falls
+                          back to Network → Arrs Hub host.
+                          {(() => {
+                            const base =
+                              service.url.trim() || wol.hubUrl.trim();
+                            return base ? (
+                              <>
+                                {" "}
+                                Effective:{" "}
+                                <code>
+                                  {buildHubBaseUrl(base, wol.hubPort)}
+                                </code>
+                              </>
+                            ) : null;
+                          })()}
+                        </p>
+                      </>
                     ) : service.id === "tautulli" ? (
                       <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                         Needs API key from Tautulli → Settings → Web Interface.

@@ -28,7 +28,13 @@ New-Item -ItemType Directory -Force -Path $DriveApks | Out-Null
 New-Item -ItemType Directory -Force -Path $LocalApks | Out-Null
 
 if ($Build) {
-    $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+    $env:JAVA_HOME = if (Test-Path "C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot") {
+        "C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot"
+    } elseif (Test-Path "C:\Program Files\Android\Android Studio\jbr") {
+        "C:\Program Files\Android\Android Studio\jbr"
+    } else {
+        $env:JAVA_HOME
+    }
     Push-Location (Join-Path $Root "android")
     try {
         & .\gradlew.bat :app:assembleDebug

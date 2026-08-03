@@ -11,7 +11,7 @@ const seed: CredentialSeed = {
   // radarr: { apiKey: "…" },
   // qbittorrent: { username: "admin", password: "…" },
   // ytarr: { url: "http://67.84.101.14:8199", apiKey: "…" },
-  // workouts: { url: "http://192.168.1.10:3000" }, // Arrs Hub base (Plex token stays on hub)
+  // workouts: { url: "http://192.168.1.10" }, // Arrs Hub host; port via Settings → Network
 };
 
 /** Optional WOL defaults (MAC is fine to keep locally; not a secret). */
@@ -20,7 +20,8 @@ export const wolDefaults: Partial<WolSettings> = {
   // mac: "AA:BB:CC:DD:EE:FF",
   // targetHost: "192.168.1.10",
   // homeCidr: "192.168.1.0/24",
-  // hubUrl: "http://192.168.1.10:3000",
+  // hubUrl: "http://192.168.1.10",
+  // hubPort: 3000,
 };
 
 /** Optional dual-path defaults (LAN host for home Wi‑Fi). */

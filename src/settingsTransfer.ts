@@ -20,6 +20,8 @@ import {
   loadWolSettings,
   saveWolSettings,
   WOL_STORAGE_KEY,
+  normalizeHubPort,
+  splitHubHostAndPort,
   type WolSettings,
 } from "./wol";
 
@@ -75,6 +77,12 @@ function pickServiceFields(services: ServiceConfig[]): SettingsBundle["services"
 
 function normalizeWol(raw: Partial<WolSettings> | undefined): WolSettings {
   const wolRaw = raw ?? {};
+  const rawHubUrl = String(wolRaw.hubUrl ?? "");
+  const hubParts = splitHubHostAndPort(rawHubUrl);
+  const hubPort =
+    wolRaw.hubPort != null
+      ? normalizeHubPort(wolRaw.hubPort)
+      : hubParts.port ?? DEFAULT_WOL.hubPort;
   return {
     enabled: Boolean(wolRaw.enabled),
     mac: String(wolRaw.mac ?? ""),
@@ -82,7 +90,8 @@ function normalizeWol(raw: Partial<WolSettings> | undefined): WolSettings {
     broadcastIp: String(wolRaw.broadcastIp || DEFAULT_WOL.broadcastIp),
     port: Number(wolRaw.port) || DEFAULT_WOL.port,
     homeCidr: String(wolRaw.homeCidr ?? ""),
-    hubUrl: String(wolRaw.hubUrl ?? ""),
+    hubUrl: hubParts.host || rawHubUrl,
+    hubPort,
     hubPcId: String(wolRaw.hubPcId ?? ""),
   };
 }
@@ -284,5 +293,8 @@ export function summarizeBundle(bundle: SettingsBundle): string {
       ? "WOL on (no MAC)"
       : "WOL off/empty";
   const home = bundle.pathing.homeBaseUrl.trim() || "no LAN base";
-  return `${withKeys} services · ${wol} · ${home}`;
+  const hub = bundle.wol.hubUrl.trim()
+    ? `hub :${bundle.wol.hubPort || DEFAULT_WOL.hubPort}`
+    : "no hub";
+  return `${withKeys} services · ${wol} · ${home} · ${hub}`;
 }

@@ -26,7 +26,7 @@ const DEFAULTS = [
   ["overseerr", `${REMOTE}:5055`, false],
   ["whisparr", `${REMOTE}:6969`, false],
   ["ytarr", `${REMOTE}:8199`, true],
-  ["workouts", `${REMOTE}:3000`, true],
+  ["workouts", `${REMOTE}`, true],
 ];
 
 /** Must match PERSISTED_STORAGE_KEYS in src/settingsTransfer.ts */
@@ -64,6 +64,7 @@ let wol = {
   port: 9,
   homeCidr: "",
   hubUrl: "",
+  hubPort: 3000,
   hubPcId: "",
 };
 const wolMatch = raw.match(
@@ -134,7 +135,7 @@ console.log(
 console.log(
   "WOL fields:",
   wolFilled
-    ? `enabled=${wol.enabled} mac=${wol.mac || "(empty)"} hub=${wol.hubUrl || "(empty)"}`
+    ? `enabled=${wol.enabled} mac=${wol.mac || "(empty)"} hub=${wol.hubUrl || "(empty)"}:${wol.hubPort || 3000}`
     : "present but empty (not configured on this seed)",
 );
 console.log("storageKeys:", Object.values(STORAGE_KEYS).join(", "));

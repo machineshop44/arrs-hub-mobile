@@ -17,7 +17,6 @@ import {
 } from "./icons";
 import {
   fetchHubWatchdogServices,
-  isDirectUnreachable,
   loadModuleOrder,
   loadServices,
   probeService,
@@ -488,20 +487,9 @@ export function App() {
 
   const refresh = useCallback(async () => {
     const next: Record<string, ProbeResult> = {};
-    await Promise.all(
-      enabled.map(async (service) => {
-        next[service.id] = await probeService(withEffectiveUrl(service));
-      }),
-    );
 
-    // Optional hub fill-in: when this device can't reach a service, use the
-    // hub watchdog board (direct probes stay primary; panels still open direct).
-    const needHub = enabled.filter(
-      (s) =>
-        s.id !== "workouts" &&
-        next[s.id] &&
-        isDirectUnreachable(next[s.id]!),
-    );
+    // Hub primary: one watchdog board fetch when configured. Direct probes
+    // fill anything still unknown / missing / hub unreachable. Panels open direct.
     const hubRaw = wol.hubUrl.trim()
       ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
       : "";
@@ -512,21 +500,31 @@ export function App() {
           homeNet?.onHomeNetwork ?? null,
         )
       : "";
-    if (needHub.length > 0 && hubBase) {
-      const hubServices = await fetchHubWatchdogServices(hubBase);
-      if (hubServices) {
-        for (const service of needHub) {
-          const hub = hubServices[service.id];
-          if (!hub || hub.up === null) continue;
-          next[service.id] = {
-            up: hub.up,
-            latencyMs: hub.latencyMs,
-            message: hub.up ? "Online (via Hub)" : "Offline (via Hub)",
-            viaHub: true,
-          };
-        }
+    const hubServices = hubBase
+      ? await fetchHubWatchdogServices(hubBase)
+      : null;
+
+    if (hubServices) {
+      for (const service of enabled) {
+        const hub = hubServices[service.id];
+        if (!hub || hub.up === null) continue;
+        next[service.id] = {
+          up: hub.up,
+          latencyMs: hub.latencyMs,
+          message: hub.up ? "Online (via Hub)" : "Offline (via Hub)",
+          viaHub: true,
+        };
       }
     }
+
+    const needDirect = enabled.filter(
+      (s) => !next[s.id] || next[s.id]!.up === null,
+    );
+    await Promise.all(
+      needDirect.map(async (service) => {
+        next[service.id] = await probeService(withEffectiveUrl(service));
+      }),
+    );
 
     setHealth(next);
     setHealthSettled(true);
@@ -1021,9 +1019,11 @@ export function App() {
                 ) : null}
               </p>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
-                Hub is optional. Used for Workouts and as status fallback when a
-                service isn’t reachable from this device. Opening Sonarr, Radarr,
-                and other panels still goes direct — never through the hub.
+                Hub is optional. Used for Workouts and as the primary status
+                source when configured; direct probes are backup if Hub is
+                unreachable or a service is missing from the watchdog board.
+                Opening Sonarr, Radarr, and other panels still goes direct —
+                never through the hub.
               </p>
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
@@ -1438,9 +1438,9 @@ export function App() {
                       </>
                     ) : service.id === "flaresolverr" ? (
                       <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-                        Needs port 8191 reachable (forward or LAN). If this device
-                        can’t reach it, Hub status fallback can still show
-                        up/down when Arrs Hub can see FlareSolverr locally.
+                        Status prefers Arrs Hub watchdog; direct probe on port
+                        8191 is backup if Hub can’t see it. Opening the panel
+                        still needs 8191 reachable (forward or LAN).
                       </p>
                     ) : service.id === "tautulli" ? (
                       <p className="hint" style={{ padding: "0.25rem 0 0" }}>

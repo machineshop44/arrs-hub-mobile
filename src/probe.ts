@@ -25,18 +25,9 @@ export type HubWatchdogServiceMap = Record<
   { up: boolean | null; latencyMs: number | null; message: string }
 >;
 
-/** Direct probe failed because the host was unreachable (not an HTTP error). */
-export function isDirectUnreachable(result: ProbeResult): boolean {
-  if (result.viaHub) return false;
-  if (result.up === true) return false;
-  if (result.up === null) return result.message !== "No URL";
-  // probeService sets latencyMs only when an HTTP response arrived
-  return result.latencyMs == null;
-}
-
 /**
- * Fetch Arrs Hub watchdog board once. Returns per-service up/down as seen
- * from the hub machine (useful when the phone cannot reach a port directly).
+ * Fetch Arrs Hub watchdog board once. Primary status source when Hub is
+ * configured; callers fall back to direct probes for missing/unknown rows.
  */
 export async function fetchHubWatchdogServices(
   hubBaseUrl: string,

@@ -1524,53 +1524,45 @@ export function App() {
         </button>
       </header>
 
-      <div className="home-status">
-        {!healthSettled ? (
-          <div
-            className="home-status-connecting"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="boot-spinner boot-spinner-sm" aria-hidden="true" />
-            <p className="home-status-line">Connecting…</p>
-            <p className="hint home-status-checking">{checkingLabel}</p>
-          </div>
-        ) : (
-          <p className="home-status-line" aria-live="polite">
-            <span className="status-dot status-up" aria-hidden="true" />
-            {onlineCount} online
-            <span className="home-status-sep">·</span>
-            <span className="status-dot status-down" aria-hidden="true" />
-            {offlineCount} offline
-            <span className="home-status-sep">·</span>
-            {modules.length} modules
-            {pathing.homeBaseUrl.trim() && (
-              <>
-                <span className="home-status-sep">·</span>
-                {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
-              </>
-            )}
-          </p>
-        )}
-        {showWakeControl && (
-          <div className="wol-bar home-wol">
-            <button
-              type="button"
-              className="btn primary wol-btn"
-              disabled={wakeBusy}
-              onClick={() => void onWakePc()}
-            >
-              <IconPower size={18} color="currentColor" />
-              {wakeBusy ? "Sending…" : "Wake PC"}
-            </button>
-            <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
-              {wakeMessage ||
-                homeNet?.message ||
-                "UDP magic packet on home LAN / VPN"}
-            </small>
-          </div>
-        )}
-      </div>
+      {(healthSettled || showWakeControl) && (
+        <div className="home-status">
+          {healthSettled && (
+            <p className="home-status-line" aria-live="polite">
+              <span className="status-dot status-up" aria-hidden="true" />
+              {onlineCount} online
+              <span className="home-status-sep">·</span>
+              <span className="status-dot status-down" aria-hidden="true" />
+              {offlineCount} offline
+              <span className="home-status-sep">·</span>
+              {modules.length} modules
+              {pathing.homeBaseUrl.trim() && (
+                <>
+                  <span className="home-status-sep">·</span>
+                  {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
+                </>
+              )}
+            </p>
+          )}
+          {showWakeControl && (
+            <div className="wol-bar home-wol">
+              <button
+                type="button"
+                className="btn primary wol-btn"
+                disabled={wakeBusy}
+                onClick={() => void onWakePc()}
+              >
+                <IconPower size={18} color="currentColor" />
+                {wakeBusy ? "Sending…" : "Wake PC"}
+              </button>
+              <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
+                {wakeMessage ||
+                  homeNet?.message ||
+                  "UDP magic packet on home LAN / VPN"}
+              </small>
+            </div>
+          )}
+        </div>
+      )}
 
       {!healthSettled ? (
         <div className="home-connecting" role="status" aria-live="polite">

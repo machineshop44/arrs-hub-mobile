@@ -16,7 +16,115 @@ export type ProbeResult = {
   up: boolean | null;
   latencyMs: number | null;
   message: string;
+  /** True when status came from Arrs Hub watchdog instead of a direct probe. */
+  viaHub?: boolean;
 };
+
+export type HubWatchdogServiceMap = Record<
+  string,
+  { up: boolean | null; latencyMs: number | null; message: string }
+>;
+
+/** Direct probe failed because the host was unreachable (not an HTTP error). */
+export function isDirectUnreachable(result: ProbeResult): boolean {
+  if (result.viaHub) return false;
+  if (result.up === true) return false;
+  if (result.up === null) return result.message !== "No URL";
+  // probeService sets latencyMs only when an HTTP response arrived
+  return result.latencyMs == null;
+}
+
+/**
+ * Fetch Arrs Hub watchdog board once. Returns per-service up/down as seen
+ * from the hub machine (useful when the phone cannot reach a port directly).
+ */
+export async function fetchHubWatchdogServices(
+  hubBaseUrl: string,
+  timeoutMs = 6000,
+): Promise<HubWatchdogServiceMap | null> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) return null;
+
+  try {
+    const started = performance.now();
+    let status = 0;
+    let data: unknown = null;
+
+    if (Capacitor.isNativePlatform()) {
+      const res = await CapacitorHttp.get({
+        url: `${base}/api/watchdog/status`,
+        headers: { Accept: "application/json" },
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
+      });
+      status = res.status;
+      data =
+        typeof res.data === "string"
+          ? (() => {
+              try {
+                return JSON.parse(res.data);
+              } catch {
+                return null;
+              }
+            })()
+          : res.data;
+    } else {
+      const res = await fetch(`${base}/api/watchdog/status`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+      status = res.status;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+    }
+
+    if (status < 200 || status >= 400 || !data || typeof data !== "object") {
+      return null;
+    }
+
+    const services = (data as { services?: unknown }).services;
+    if (!services || typeof services !== "object" || Array.isArray(services)) {
+      return null;
+    }
+
+    const out: HubWatchdogServiceMap = {};
+    for (const [id, raw] of Object.entries(
+      services as Record<string, unknown>,
+    )) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as {
+        up?: unknown;
+        latencyMs?: unknown;
+        message?: unknown;
+      };
+      const up =
+        row.up === true ? true : row.up === false ? false : null;
+      out[id] = {
+        up,
+        latencyMs:
+          typeof row.latencyMs === "number"
+            ? row.latencyMs
+            : Math.round(performance.now() - started),
+        message:
+          typeof row.message === "string" && row.message.trim()
+            ? row.message
+            : up === true
+              ? "Up"
+              : up === false
+                ? "Down"
+                : "Unknown",
+      };
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
 
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");

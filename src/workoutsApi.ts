@@ -25,7 +25,7 @@ async function workoutsGet(hubUrl: string, path: string) {
   const base = normalizeBase(hubUrl);
   if (!base) {
     throw new Error(
-      "Arrs Hub URL is not set. Add it under Workouts (or Wake-on-LAN → Arrs Hub URL) in Settings.",
+      "Arrs Hub URL is not set. Add it under Settings → Network (Arrs Hub host + port) or Workouts.",
     );
   }
   const res = await httpRequest(`${base}${path}`, {
@@ -46,7 +46,7 @@ async function workoutsPost(hubUrl: string, path: string, body: unknown) {
   const base = normalizeBase(hubUrl);
   if (!base) {
     throw new Error(
-      "Arrs Hub URL is not set. Add it under Workouts (or Wake-on-LAN → Arrs Hub URL) in Settings.",
+      "Arrs Hub URL is not set. Add it under Settings → Network (Arrs Hub host + port) or Workouts.",
     );
   }
   const res = await httpRequest(`${base}${path}`, {

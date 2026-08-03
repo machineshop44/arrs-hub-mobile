@@ -16,6 +16,8 @@ import {
   ServiceIcon,
 } from "./icons";
 import {
+  fetchHubWatchdogServices,
+  isDirectUnreachable,
   loadModuleOrder,
   loadServices,
   probeService,
@@ -128,7 +130,7 @@ const MODULE_COPY: Record<string, string> = {
   lidarr: "Manage Music",
   readarr: "Manage Books",
   prowlarr: "Manage Indexers",
-  flaresolverr: "Cloudflare / anti-bot proxy",
+  flaresolverr: "Cloudflare proxy · needs :8191",
   sabnzbd: "Manage Usenet Downloads",
   qbittorrent: "Manage Torrent Downloads",
   tautulli: "View Plex Activity",
@@ -491,9 +493,51 @@ export function App() {
         next[service.id] = await probeService(withEffectiveUrl(service));
       }),
     );
+
+    // Optional hub fill-in: when this device can't reach a service, use the
+    // hub watchdog board (direct probes stay primary; panels still open direct).
+    const needHub = enabled.filter(
+      (s) =>
+        s.id !== "workouts" &&
+        next[s.id] &&
+        isDirectUnreachable(next[s.id]!),
+    );
+    const hubRaw = wol.hubUrl.trim()
+      ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
+      : "";
+    const hubBase = hubRaw
+      ? resolveServiceUrl(
+          hubRaw,
+          pathing.homeBaseUrl,
+          homeNet?.onHomeNetwork ?? null,
+        )
+      : "";
+    if (needHub.length > 0 && hubBase) {
+      const hubServices = await fetchHubWatchdogServices(hubBase);
+      if (hubServices) {
+        for (const service of needHub) {
+          const hub = hubServices[service.id];
+          if (!hub || hub.up === null) continue;
+          next[service.id] = {
+            up: hub.up,
+            latencyMs: hub.latencyMs,
+            message: hub.up ? "Online (via Hub)" : "Offline (via Hub)",
+            viaHub: true,
+          };
+        }
+      }
+    }
+
     setHealth(next);
     setHealthSettled(true);
-  }, [enabled, withEffectiveUrl]);
+  }, [
+    enabled,
+    withEffectiveUrl,
+    wol.hubUrl,
+    wol.hubPort,
+    pathing.homeBaseUrl,
+    homeNet?.onHomeNetwork,
+  ]);
 
   useEffect(() => {
     if (!ready) return;
@@ -967,7 +1011,7 @@ export function App() {
               </label>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
                 Port Arrs Hub listens on (default {DEFAULT_HUB_PORT}). Change if
-                another app uses that port. Used by Workouts and WOL hub relay.
+                another app uses that port.
                 {wol.hubUrl.trim() ? (
                   <>
                     {" "}
@@ -975,6 +1019,11 @@ export function App() {
                     <code>{buildHubBaseUrl(wol.hubUrl, wol.hubPort)}</code>
                   </>
                 ) : null}
+              </p>
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                Hub is optional. Used for Workouts and as status fallback when a
+                service isn’t reachable from this device. Opening Sonarr, Radarr,
+                and other panels still goes direct — never through the hub.
               </p>
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
@@ -1369,8 +1418,9 @@ export function App() {
                         </label>
                         <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                           Port Arrs Hub listens on (default {DEFAULT_HUB_PORT}).
-                          Change if another app uses that port. Empty host falls
-                          back to Network → Arrs Hub host.
+                          Workouts need the hub online at this host/port (home LAN
+                          or forwarded remote / VPN). Empty host falls back to
+                          Network → Arrs Hub host.
                           {(() => {
                             const base =
                               service.url.trim() || wol.hubUrl.trim();
@@ -1386,6 +1436,12 @@ export function App() {
                           })()}
                         </p>
                       </>
+                    ) : service.id === "flaresolverr" ? (
+                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                        Needs port 8191 reachable (forward or LAN). If this device
+                        can’t reach it, Hub status fallback can still show
+                        up/down when Arrs Hub can see FlareSolverr locally.
+                      </p>
                     ) : service.id === "tautulli" ? (
                       <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                         Needs API key from Tautulli → Settings → Web Interface.
@@ -1598,7 +1654,9 @@ export function App() {
             className={`module-list home${reordering ? " is-reordering" : ""}`}
           >
             {modules.map((service, index) => {
-              const upState = health[service.id]?.up;
+              const probe = health[service.id];
+              const upState = probe?.up;
+              const viaHub = Boolean(probe?.viaHub);
               return (
                 <li
                   key={service.id}
@@ -1641,9 +1699,13 @@ export function App() {
                       <small>
                         {MODULE_COPY[service.id] || "Open module"}
                         {upState === true
-                          ? " · Online"
+                          ? viaHub
+                            ? " · Online · via Hub"
+                            : " · Online"
                           : upState === false
-                            ? " · Offline"
+                            ? viaHub
+                              ? " · Offline · via Hub"
+                              : " · Offline"
                             : ""}
                       </small>
                     </span>

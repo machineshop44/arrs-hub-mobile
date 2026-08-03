@@ -207,7 +207,7 @@ export function WorkoutsPanel({
         setWarmup(null);
         setClients([]);
         setError(
-          "Arrs Hub URL is not set. Open Settings and set the Workouts URL (or Wake-on-LAN → Arrs Hub URL).",
+          "Arrs Hub URL is not set. Open Settings → Network and set Arrs Hub host + port (default 3000), or set them under Workouts.",
         );
         return;
       }
@@ -220,7 +220,7 @@ export function WorkoutsPanel({
         setWarmup(null);
         setClients([]);
         setError(
-          "Arrs Hub is offline or unreachable. Workouts need the hub online (start-hub-lan.bat / desktop hub on your LAN).",
+          "Arrs Hub is offline or unreachable. Workouts need the hub running and reachable on its port (default 3000) — forward that port (or use VPN) when remote, or use the LAN host when on home Wi‑Fi. The phone talks to hub /api/workouts/*, not Plex directly.",
         );
         return;
       }
@@ -395,8 +395,10 @@ export function WorkoutsPanel({
             <div className="empty-card">
               <strong>Hub needs workout setup</strong>
               <p>
-                On the PC running Arrs Hub, open Workouts → sign in to Plex and
-                pick the library. Then tap refresh here.
+                Workouts are not home-only: they need Arrs Hub online at the host
+                and port in Settings → Network (default 3000). On the PC running
+                the hub, open Workouts → sign in to Plex and pick the library.
+                Then tap refresh here.
               </p>
             </div>
           )}
@@ -406,7 +408,8 @@ export function WorkoutsPanel({
               <strong>No day videos found</strong>
               <p>
                 Hub can’t match days in the selected Plex library. Check show
-                title / naming on the desktop hub, then refresh.
+                title / naming on the desktop hub, then refresh. If this stays
+                empty, confirm hub host/port (home LAN or forwarded remote).
               </p>
             </div>
           )}

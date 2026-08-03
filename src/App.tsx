@@ -41,6 +41,7 @@ import {
   shareInstalledApk,
   type AppVersionInfo,
 } from "./apkShare";
+import { APP_VERSION_LABEL } from "./version";
 import {
   applySettingsBundle,
   buildSettingsBundle,
@@ -1267,11 +1268,11 @@ export function App() {
           })}
         </div>
 
-        {appVersion && (
-          <p className="settings-version" aria-label="App version">
-            v{appVersion.version} ({appVersion.build})
-          </p>
-        )}
+        <p className="settings-version" aria-label="App version">
+          {appVersion
+            ? `${APP_VERSION_LABEL} · build ${appVersion.build}`
+            : APP_VERSION_LABEL}
+        </p>
       </div>
     );
   }

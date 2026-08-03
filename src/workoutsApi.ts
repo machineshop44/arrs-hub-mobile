@@ -21,6 +21,19 @@ function asObject(data: unknown): Record<string, unknown> {
   return {};
 }
 
+function formatHubHttpError(
+  url: string,
+  status: number,
+  json: Record<string, unknown>,
+  fallback: string,
+): string {
+  const detail =
+    typeof json.error === "string" && json.error.trim()
+      ? json.error.trim()
+      : fallback;
+  return `${detail}\nTried: ${url}${status ? ` (HTTP ${status})` : ""}`;
+}
+
 async function workoutsGet(hubUrl: string, path: string) {
   const base = normalizeBase(hubUrl);
   if (!base) {
@@ -28,18 +41,30 @@ async function workoutsGet(hubUrl: string, path: string) {
       "Arrs Hub URL is not set. Add it under Settings → Network (Arrs Hub host + port) or Workouts.",
     );
   }
-  const res = await httpRequest(`${base}${path}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-    timeoutMs: 15000,
-  });
-  const json = asObject(res.data);
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(
-      String(json.error || `Hub returned HTTP ${res.status}. Is Arrs Hub online?`),
-    );
+  const url = `${base}${path}`;
+  try {
+    const res = await httpRequest(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      timeoutMs: 15000,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(
+        formatHubHttpError(
+          url,
+          res.status,
+          json,
+          `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
+        ),
+      );
+    }
+    return json;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
   }
-  return json;
 }
 
 async function workoutsPost(hubUrl: string, path: string, body: unknown) {
@@ -49,22 +74,34 @@ async function workoutsPost(hubUrl: string, path: string, body: unknown) {
       "Arrs Hub URL is not set. Add it under Settings → Network (Arrs Hub host + port) or Workouts.",
     );
   }
-  const res = await httpRequest(`${base}${path}`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    data: body,
-    timeoutMs: 30000,
-  });
-  const json = asObject(res.data);
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(
-      String(json.error || `Hub returned HTTP ${res.status}. Is Arrs Hub online?`),
-    );
+  const url = `${base}${path}`;
+  try {
+    const res = await httpRequest(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      data: body,
+      timeoutMs: 30000,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(
+        formatHubHttpError(
+          url,
+          res.status,
+          json,
+          `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
+        ),
+      );
+    }
+    return json;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
   }
-  return json;
 }
 
 export type WorkoutSettings = {
@@ -137,28 +174,98 @@ export type PlayResult = {
 
 export const LOCAL_CLIENT_ID = "arrs-hub-local";
 
-export async function checkHubReachable(hubUrl: string): Promise<boolean> {
+export type HubReachability = {
+  ok: boolean;
+  triedUrl: string;
+  detail: string;
+};
+
+/** Probe hub health (then workouts settings). Always reports the URL tried. */
+export async function probeHubReachable(
+  hubUrl: string,
+): Promise<HubReachability> {
   const base = normalizeBase(hubUrl);
-  if (!base) return false;
+  if (!base) {
+    return {
+      ok: false,
+      triedUrl: "",
+      detail:
+        "Arrs Hub URL is not set. Open Settings → Network and set host + port 3000.",
+    };
+  }
+
+  const healthUrl = `${base}/api/health`;
   try {
-    const res = await httpRequest(`${base}/api/health`, {
+    const res = await httpRequest(healthUrl, {
       method: "GET",
       timeoutMs: 8000,
     });
-    if (res.status >= 200 && res.status < 500) return true;
-  } catch {
-    // fall through to workouts settings probe
+    if (res.status >= 200 && res.status < 500) {
+      return {
+        ok: true,
+        triedUrl: healthUrl,
+        detail: `HTTP ${res.status}`,
+      };
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    // try settings next, but keep health failure for final message
+    try {
+      const settingsUrl = `${base}/api/workouts/settings`;
+      const res = await httpRequest(settingsUrl, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        timeoutMs: 8000,
+      });
+      if (res.status >= 200 && res.status < 500) {
+        return {
+          ok: true,
+          triedUrl: settingsUrl,
+          detail: `HTTP ${res.status} (via workouts settings)`,
+        };
+      }
+      return {
+        ok: false,
+        triedUrl: settingsUrl,
+        detail: `HTTP ${res.status} after health failed: ${reason}`,
+      };
+    } catch (err2) {
+      const reason2 = err2 instanceof Error ? err2.message : String(err2);
+      return {
+        ok: false,
+        triedUrl: healthUrl,
+        detail: `${reason} · settings: ${reason2}`,
+      };
+    }
   }
+
   try {
-    const res = await httpRequest(`${base}/api/workouts/settings`, {
+    const settingsUrl = `${base}/api/workouts/settings`;
+    const res = await httpRequest(settingsUrl, {
       method: "GET",
       headers: { Accept: "application/json" },
       timeoutMs: 8000,
     });
-    return res.status >= 200 && res.status < 500;
-  } catch {
-    return false;
+    if (res.status >= 200 && res.status < 500) {
+      return {
+        ok: true,
+        triedUrl: settingsUrl,
+        detail: `HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: false,
+      triedUrl: settingsUrl,
+      detail: `HTTP ${res.status}`,
+    };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { ok: false, triedUrl: healthUrl, detail: reason };
   }
+}
+
+export async function checkHubReachable(hubUrl: string): Promise<boolean> {
+  return (await probeHubReachable(hubUrl)).ok;
 }
 
 export async function fetchWorkoutSettings(

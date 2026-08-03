@@ -26,6 +26,46 @@ export type HubWatchdogServiceMap = Record<
 >;
 
 /**
+ * Hub watchdog ids that may differ from mobile catalog ids.
+ * Lookup is applied both directions when merging hub-first status.
+ */
+const HUB_SERVICE_ID_ALIASES: Record<string, string[]> = {
+  ytarr: ["ytarr", "yt-arr", "yt_arr"],
+  flaresolverr: ["flaresolverr", "flare-solverr", "flaresolver"],
+  qbittorrent: ["qbittorrent", "qbit", "qbittorrent-nox"],
+  sabnzbd: ["sabnzbd", "sab"],
+  fileflows: ["fileflows", "file-flows"],
+};
+
+/** Resolve hub watchdog row for a mobile service id (exact id, then aliases). */
+export function hubStatusForService(
+  hubServices: HubWatchdogServiceMap,
+  serviceId: string,
+): HubWatchdogServiceMap[string] | undefined {
+  const direct = hubServices[serviceId];
+  if (direct && direct.up !== null) return direct;
+  if (direct) return direct;
+
+  const aliases = HUB_SERVICE_ID_ALIASES[serviceId] || [serviceId];
+  for (const alias of aliases) {
+    const row = hubServices[alias];
+    if (row && row.up !== null) return row;
+  }
+  for (const alias of aliases) {
+    if (hubServices[alias]) return hubServices[alias];
+  }
+
+  // Reverse: hub key maps to this mobile id via alias tables.
+  for (const [mobileId, list] of Object.entries(HUB_SERVICE_ID_ALIASES)) {
+    if (mobileId === serviceId) continue;
+    if (!list.includes(serviceId)) continue;
+    const row = hubServices[mobileId];
+    if (row) return row;
+  }
+  return undefined;
+}
+
+/**
  * Fetch Arrs Hub watchdog board once. Primary status source when Hub is
  * configured; callers fall back to direct probes for missing/unknown rows.
  */

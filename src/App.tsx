@@ -15,8 +15,11 @@ import {
   IconSettings,
   ServiceIcon,
 } from "./icons";
+import { App as CapApp } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
 import {
   fetchHubWatchdogServices,
+  hubStatusForService,
   loadModuleOrder,
   loadServices,
   probeService,
@@ -490,9 +493,13 @@ export function App() {
 
     // Hub primary: one watchdog board fetch when configured. Direct probes
     // fill anything still unknown / missing / hub unreachable. Panels open direct.
+    const workoutsUrl =
+      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
     const hubRaw = wol.hubUrl.trim()
       ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
-      : "";
+      : workoutsUrl
+        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
+        : "";
     const hubBase = hubRaw
       ? resolveServiceUrl(
           hubRaw,
@@ -506,7 +513,7 @@ export function App() {
 
     if (hubServices) {
       for (const service of enabled) {
-        const hub = hubServices[service.id];
+        const hub = hubStatusForService(hubServices, service.id);
         if (!hub || hub.up === null) continue;
         next[service.id] = {
           up: hub.up,
@@ -544,12 +551,61 @@ export function App() {
     return () => clearInterval(timer);
   }, [ready, refresh]);
 
+  // Soft reopen: after true background, show connecting panel and re-probe once.
+  useEffect(() => {
+    if (!ready) return;
+    let sawBackground = false;
+    let debounceTimer: number | null = null;
+
+    const runResumeProbe = () => {
+      setCheckingLabel("Reconnecting…");
+      setHealthSettled(false);
+      void refresh();
+    };
+
+    const onBecameActive = () => {
+      if (!sawBackground) return;
+      sawBackground = false;
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(runResumeProbe, 350);
+    };
+
+    let removeCap: (() => void) | undefined;
+    if (Capacitor.isNativePlatform()) {
+      const handle = CapApp.addListener("appStateChange", ({ isActive }) => {
+        if (!isActive) {
+          sawBackground = true;
+          return;
+        }
+        onBecameActive();
+      });
+      removeCap = () => {
+        void handle.then((h) => h.remove());
+      };
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        sawBackground = true;
+        return;
+      }
+      if (document.visibilityState === "visible") onBecameActive();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      removeCap?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+    };
+  }, [ready, refresh]);
+
   // Don't leave Home stuck on connecting if probes hang past per-request timeouts.
   useEffect(() => {
     if (!ready || healthSettled) return;
     const settleTimeout = window.setTimeout(() => {
       setHealthSettled(true);
-    }, 12000);
+    }, 8000);
     return () => window.clearTimeout(settleTimeout);
   }, [ready, healthSettled]);
 

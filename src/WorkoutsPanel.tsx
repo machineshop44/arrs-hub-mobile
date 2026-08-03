@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
 import {
-  checkHubReachable,
   fetchWorkoutClients,
   fetchWorkoutDiscover,
   fetchWorkoutSettings,
   LOCAL_CLIENT_ID,
   playWorkoutDay,
+  probeHubReachable,
   type PlaylistItem,
   type WorkoutClient,
   type WorkoutDay,
@@ -212,15 +212,15 @@ export function WorkoutsPanel({
         return;
       }
 
-      const reachable = await checkHubReachable(hubUrl);
-      setHubUp(reachable);
-      if (!reachable) {
+      const reach = await probeHubReachable(hubUrl);
+      setHubUp(reach.ok);
+      if (!reach.ok) {
         setSettings(null);
         setDays([]);
         setWarmup(null);
         setClients([]);
         setError(
-          "Arrs Hub is offline or unreachable. Workouts need the hub running and reachable on its port (default 3000) — forward that port (or use VPN) when remote, or use the LAN host when on home Wi‑Fi. The phone talks to hub /api/workouts/*, not Plex directly.",
+          `Arrs Hub unreachable — Workouts talks to hub /api/workouts/* (not Plex). Ensure Arrs Hub is running and bound for LAN (default 0.0.0.0:3000), and that Settings → Network uses host 67.84.101.14 (or LAN 10.0.0.18) with port 3000.\nTried: ${reach.triedUrl || hubUrl}\n${reach.detail}`,
         );
         return;
       }

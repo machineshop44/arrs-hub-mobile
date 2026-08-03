@@ -163,7 +163,10 @@ if (!ytarrConfigPath && !seed.ytarr?.apiKey) {
 }
 
 /** @type {Record<string, string | boolean | number>} */
-const wolDefaults = {};
+const wolDefaults = {
+  hubUrl: REMOTE_HOST,
+  hubPort: 3000,
+};
 for (const candidate of watchdogCandidates) {
   const watchdog = readJson(candidate);
   const pcs = Array.isArray(watchdog?.pcs) ? watchdog.pcs : [];

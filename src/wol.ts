@@ -262,7 +262,9 @@ export async function loadWolSettings(): Promise<WolSettings> {
     const { value } = await Preferences.get({ key: WOL_STORAGE_KEY });
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<WolSettings>;
-    const rawHubUrl = parsed.hubUrl ?? base.hubUrl;
+    const rawHubUrl =
+      (typeof parsed.hubUrl === "string" && parsed.hubUrl.trim()) ||
+      base.hubUrl;
     const hubParts = splitHubHostAndPort(rawHubUrl);
     const hubPort =
       parsed.hubPort != null
@@ -270,14 +272,20 @@ export async function loadWolSettings(): Promise<WolSettings> {
         : hubParts.port ?? normalizeHubPort(base.hubPort);
     return {
       enabled: parsed.enabled ?? base.enabled,
-      mac: parsed.mac ?? base.mac,
-      targetHost: parsed.targetHost ?? base.targetHost,
+      mac: (typeof parsed.mac === "string" && parsed.mac.trim()) || base.mac,
+      targetHost:
+        (typeof parsed.targetHost === "string" && parsed.targetHost.trim()) ||
+        base.targetHost,
       broadcastIp: parsed.broadcastIp || base.broadcastIp || "255.255.255.255",
       port: Number(parsed.port) || base.port || 9,
-      homeCidr: parsed.homeCidr ?? base.homeCidr,
+      homeCidr:
+        (typeof parsed.homeCidr === "string" && parsed.homeCidr.trim()) ||
+        base.homeCidr,
       hubUrl: hubParts.host || rawHubUrl,
       hubPort,
-      hubPcId: parsed.hubPcId ?? base.hubPcId,
+      hubPcId:
+        (typeof parsed.hubPcId === "string" && parsed.hubPcId.trim()) ||
+        base.hubPcId,
     };
   } catch {
     return base;

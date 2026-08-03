@@ -98,7 +98,10 @@ export async function loadPathSettings(): Promise<PathSettings> {
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<PathSettings>;
     return {
-      homeBaseUrl: parsed.homeBaseUrl ?? base.homeBaseUrl,
+      homeBaseUrl:
+        (typeof parsed.homeBaseUrl === "string" &&
+          parsed.homeBaseUrl.trim()) ||
+        base.homeBaseUrl,
     };
   } catch {
     return base;

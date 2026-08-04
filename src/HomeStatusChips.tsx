@@ -8,10 +8,18 @@ import {
   type HubStatusSummary,
   type OmbiPendingItem,
 } from "./hubSummary";
+import {
+  fetchPlexUpdateJob,
+  fetchPlexUpdateStatus,
+  plexJobBusy,
+  shortPlexVersion,
+  startPlexUpdateJob,
+  type PlexUpdateStatus,
+} from "./plexUpdateApi";
 import type { ServiceConfig } from "./services";
 
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
-type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | null;
+type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | "plex" | null;
 
 export type HomeChipModule = {
   id: string;
@@ -22,6 +30,8 @@ export type HomeChipModule = {
 type HomeStatusChipsProps = {
   hubBaseUrl: string;
   hubReachable: boolean | null;
+  /** Prefer true for install/download; false disables apply with a clear reason. */
+  onHomeNetwork: boolean | null;
   services: ServiceConfig[];
   resolveUrl: (service: ServiceConfig) => string;
   modules: HomeChipModule[];
@@ -37,6 +47,7 @@ type HomeStatusChipsProps = {
 export function HomeStatusChips({
   hubBaseUrl,
   hubReachable,
+  onHomeNetwork,
   services,
   resolveUrl,
   modules,
@@ -52,13 +63,20 @@ export function HomeStatusChips({
   const [ombiItems, setOmbiItems] = useState<OmbiPendingItem[]>([]);
   const [ombiLoading, setOmbiLoading] = useState(false);
   const [ombiError, setOmbiError] = useState<string | null>(null);
+  const [plexStatus, setPlexStatus] = useState<PlexUpdateStatus | null>(null);
+  const [plexLoading, setPlexLoading] = useState(false);
+  const [plexBusy, setPlexBusy] = useState(false);
+  const [plexError, setPlexError] = useState<string | null>(null);
+  const [plexActionMsg, setPlexActionMsg] = useState<string | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
+  const onLan = onHomeNetwork === true;
 
   const load = useCallback(async () => {
     if (hubDown) {
       setSummary(null);
+      setPlexStatus(null);
       return;
     }
     const next = await fetchHubStatusSummary(
@@ -69,12 +87,64 @@ export function HomeStatusChips({
     setSummary(next);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
+  const loadPlex = useCallback(
+    async (refresh = false) => {
+      if (hubDown) {
+        setPlexStatus(null);
+        return;
+      }
+      setPlexLoading(true);
+      try {
+        const next = await fetchPlexUpdateStatus(hubBaseUrl, { refresh });
+        setPlexStatus(next);
+        setPlexError(next.error || null);
+      } catch (err) {
+        setPlexError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPlexLoading(false);
+      }
+    },
+    [hubBaseUrl, hubDown],
+  );
+
   useEffect(() => {
     void load();
+    void loadPlex(false);
     if (hubDown) return;
-    const timer = window.setInterval(() => void load(), 20000);
+    const timer = window.setInterval(() => {
+      void load();
+      void loadPlex(false);
+    }, 20000);
     return () => window.clearInterval(timer);
-  }, [load, hubDown]);
+  }, [load, loadPlex, hubDown]);
+
+  useEffect(() => {
+    if (hubDown) return;
+    const busy = plexJobBusy(plexStatus?.job);
+    if (!busy) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const job = await fetchPlexUpdateJob(hubBaseUrl);
+          setPlexStatus((prev) => (prev ? { ...prev, job } : prev));
+          if (!plexJobBusy(job)) {
+            const next = await fetchPlexUpdateStatus(hubBaseUrl);
+            setPlexStatus(next);
+            setPlexBusy(false);
+            if (job.phase === "error") {
+              setPlexError(job.error || job.message || "Plex update failed.");
+            } else if (job.message) {
+              setPlexActionMsg(job.message);
+            }
+          }
+        } catch (err) {
+          setPlexError(err instanceof Error ? err.message : String(err));
+          setPlexBusy(false);
+        }
+      })();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [hubDown, hubBaseUrl, plexStatus?.job?.phase]);
 
   useEffect(() => {
     if (sheet !== "ombi" || hubDown) return;
@@ -135,9 +205,90 @@ export function HomeStatusChips({
   const ombiPending = summary?.ombi?.pending ?? null;
   const queueTotal = summary?.arr?.queueTotal ?? null;
   const pendingSummary = !hubDown && summary == null;
+  const pendingPlex = !hubDown && plexStatus == null && plexLoading;
 
   const onlineModules = modules.filter((m) => m.up === true);
   const offlineModules = modules.filter((m) => m.up === false);
+
+  const plexJob = plexStatus?.job;
+  const plexChipValue = (() => {
+    if (hubDown) return "—";
+    if (pendingPlex) return "…";
+    if (!plexStatus) return "—";
+    if (plexJobBusy(plexJob)) {
+      return `${Math.round(plexJob?.progress ?? 0)}%`;
+    }
+    if (plexStatus.updateAvailable) return "upd";
+    if (plexStatus.ok && plexStatus.installedVersion) return "ok";
+    if (plexStatus.error) return "err";
+    return "—";
+  })();
+
+  const plexChipTone: ChipTone = (() => {
+    if (hubDown || !plexStatus) return "muted";
+    if (plexJobBusy(plexJob) || plexJob?.phase === "error") return "warn";
+    if (plexStatus.updateAvailable) return "warn";
+    if (plexStatus.ok && !plexStatus.error) return "good";
+    return "muted";
+  })();
+
+  const installBlockedReason = (() => {
+    if (hubDown) return "Hub offline — cannot check or install updates.";
+    if (onHomeNetwork === false)
+      return "Not on home LAN — install only from the home network.";
+    if (onHomeNetwork == null)
+      return "Home network status unknown — connect on LAN to install.";
+    if (plexStatus && !plexStatus.canInstall)
+      return "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
+    return null;
+  })();
+
+  const canRunInstall = !hubDown && onLan && Boolean(plexStatus?.canInstall);
+
+  const runPlexAction = async (
+    body: { download?: boolean; apply?: boolean; tonight?: boolean },
+    confirmApply: boolean,
+  ) => {
+    if (confirmApply) {
+      const tonight = Boolean(body.tonight);
+      const ok = window.confirm(
+        tonight
+          ? "Schedule Plex Media Server update for tonight (Butler)? Active streams may still be interrupted when it applies."
+          : "Apply Plex Media Server update now? PMS will restart and active streams will disconnect.",
+      );
+      if (!ok) return;
+    }
+    setPlexBusy(true);
+    setPlexError(null);
+    setPlexActionMsg(null);
+    try {
+      const { job } = await startPlexUpdateJob(hubBaseUrl, body);
+      setPlexStatus((prev) =>
+        prev
+          ? { ...prev, job }
+          : {
+              ok: true,
+              installedVersion: null,
+              latestVersion: null,
+              updateAvailable: false,
+              channel: null,
+              canInstall: false,
+              releaseState: null,
+              lastChecked: null,
+              error: null,
+              job,
+            },
+      );
+      if (!plexJobBusy(job)) {
+        setPlexBusy(false);
+        setPlexActionMsg(job.message || "Done.");
+        await loadPlex(false);
+      }
+    } catch (err) {
+      setPlexBusy(false);
+      setPlexError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const chips: {
     id: string;
@@ -223,6 +374,13 @@ export function HomeStatusChips({
             : "muted",
       title: "Ombi pending",
     },
+    {
+      id: "plex",
+      label: "Plex",
+      value: plexChipValue,
+      tone: plexChipTone,
+      title: "Plex Media Server update",
+    },
   ];
 
   const arrApps: {
@@ -258,7 +416,9 @@ export function HomeStatusChips({
             ? "Active downloads"
             : sheet === "ombi"
               ? "Ombi pending"
-              : "";
+              : sheet === "plex"
+                ? "Plex Media Server"
+                : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -271,7 +431,8 @@ export function HomeStatusChips({
       chipId === "down" ||
       chipId === "queue" ||
       chipId === "downloads" ||
-      chipId === "ombi"
+      chipId === "ombi" ||
+      chipId === "plex"
     ) {
       openSheet(chipId);
     }
@@ -286,7 +447,8 @@ export function HomeStatusChips({
             chip.id === "down" ||
             chip.id === "queue" ||
             chip.id === "downloads" ||
-            chip.id === "ombi";
+            chip.id === "ombi" ||
+            chip.id === "plex";
           const expanded = expandsSheet && sheet === chip.id;
           return (
             <div key={chip.id} className="dash-chip-wrap">
@@ -561,6 +723,152 @@ export function HomeStatusChips({
                     Open Ombi
                   </button>
                 </p>
+              </>
+            )}
+
+            {sheet === "plex" && (
+              <>
+                {hubDown ? (
+                  <p className="dash-chip-popover-empty">
+                    Hub offline — cannot reach Plex update status.
+                  </p>
+                ) : plexLoading && !plexStatus ? (
+                  <p className="dash-chip-popover-empty">Loading…</p>
+                ) : (
+                  <>
+                    <ul className="dash-queue-breakdown dash-plex-versions">
+                      <li>
+                        <span>Installed</span>
+                        <strong>
+                          {shortPlexVersion(plexStatus?.installedVersion)}
+                        </strong>
+                      </li>
+                      <li>
+                        <span>Latest</span>
+                        <strong>
+                          {shortPlexVersion(plexStatus?.latestVersion)}
+                        </strong>
+                      </li>
+                      <li>
+                        <span>Status</span>
+                        <strong>
+                          {plexStatus?.updateAvailable
+                            ? "Update available"
+                            : plexStatus?.ok
+                              ? "Up to date"
+                              : "Unavailable"}
+                        </strong>
+                      </li>
+                      {plexStatus?.releaseState ? (
+                        <li>
+                          <span>Release</span>
+                          <strong>{plexStatus.releaseState}</strong>
+                        </li>
+                      ) : null}
+                      {plexStatus?.lastChecked ? (
+                        <li>
+                          <span>Checked</span>
+                          <strong>
+                            {new Date(plexStatus.lastChecked).toLocaleString()}
+                          </strong>
+                        </li>
+                      ) : null}
+                    </ul>
+
+                    {plexStatus?.updateAvailable ? (
+                      <p className="dash-plex-badge" role="status">
+                        Update available
+                        {plexStatus.canInstall ? "" : " · cannot install from hub"}
+                      </p>
+                    ) : null}
+
+                    {plexJobBusy(plexJob) || plexJob?.phase === "done" || plexJob?.phase === "error" ? (
+                      <div className="dash-plex-job" aria-live="polite">
+                        <div className="dash-plex-job-row">
+                          <span>{plexJob?.phase ?? "idle"}</span>
+                          <strong>{Math.round(plexJob?.progress ?? 0)}%</strong>
+                        </div>
+                        {plexJob?.message ? (
+                          <p className="dash-chip-popover-empty">
+                            {plexJob.message}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {installBlockedReason ? (
+                      <p className="dash-chip-popover-empty">
+                        {installBlockedReason}
+                      </p>
+                    ) : null}
+
+                    <div className="dash-plex-actions">
+                      <button
+                        type="button"
+                        className="btn chip"
+                        disabled={hubDown || plexBusy || plexJobBusy(plexJob)}
+                        onClick={() => void loadPlex(true)}
+                      >
+                        Check
+                      </button>
+                      <button
+                        type="button"
+                        className="btn primary"
+                        disabled={
+                          !canRunInstall ||
+                          plexBusy ||
+                          plexJobBusy(plexJob) ||
+                          !plexStatus?.updateAvailable
+                        }
+                        title={
+                          installBlockedReason ||
+                          "Download and apply update now"
+                        }
+                        onClick={() =>
+                          void runPlexAction(
+                            { download: true, apply: true, tonight: false },
+                            true,
+                          )
+                        }
+                      >
+                        Install
+                      </button>
+                      <button
+                        type="button"
+                        className="btn chip"
+                        disabled={
+                          !canRunInstall ||
+                          plexBusy ||
+                          plexJobBusy(plexJob) ||
+                          !plexStatus?.updateAvailable
+                        }
+                        title={
+                          installBlockedReason ||
+                          "Schedule update for tonight (Butler)"
+                        }
+                        onClick={() =>
+                          void runPlexAction(
+                            { download: true, apply: true, tonight: true },
+                            true,
+                          )
+                        }
+                      >
+                        Tonight
+                      </button>
+                    </div>
+
+                    {plexActionMsg ? (
+                      <p className="dash-chip-popover-hint">{plexActionMsg}</p>
+                    ) : null}
+                    {plexError ? (
+                      <p className="dash-chip-popover-error">{plexError}</p>
+                    ) : null}
+                    <p className="dash-chip-popover-hint">
+                      Updates run on the hub PC via PMS updater — the phone
+                      never downloads the installer.
+                    </p>
+                  </>
+                )}
               </>
             )}
           </div>

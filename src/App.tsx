@@ -1817,6 +1817,7 @@ export function App() {
             <HomeStatusChips
               hubBaseUrl={hubBaseForChips}
               hubReachable={hubReachable}
+              onHomeNetwork={homeNet?.onHomeNetwork ?? null}
               services={services}
               resolveUrl={(s) => withEffectiveUrl(s).url}
               modules={modules.map((m) => ({

@@ -1,0 +1,249 @@
+import { httpRequest } from "./arrApi";
+
+export type PlexUpdateJobPhase =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "applying"
+  | "done"
+  | "error";
+
+export type PlexUpdateJob = {
+  id: string | null;
+  phase: PlexUpdateJobPhase;
+  progress: number;
+  message: string;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  result: unknown;
+};
+
+export type PlexUpdateStatus = {
+  ok: boolean;
+  installedVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  channel: string | null;
+  canInstall: boolean;
+  releaseState: string | null;
+  downloadURL?: string | null;
+  lastChecked: string | null;
+  platform?: string;
+  error: string | null;
+  job: PlexUpdateJob;
+};
+
+/** Body for POST /api/plex/update — matches Arrs-Hub startPlexUpdateJob. */
+export type PlexUpdateStartBody = {
+  download?: boolean;
+  apply?: boolean;
+  tonight?: boolean;
+};
+
+function normalizeBase(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+function asObject(data: unknown): Record<string, unknown> {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
+  if (typeof data === "string" && data.trim()) {
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // keep empty
+    }
+  }
+  return {};
+}
+
+function asJob(raw: unknown): PlexUpdateJob {
+  const o = asObject(raw);
+  const phase = String(o.phase || "idle") as PlexUpdateJobPhase;
+  return {
+    id: typeof o.id === "string" ? o.id : null,
+    phase: [
+      "idle",
+      "checking",
+      "downloading",
+      "applying",
+      "done",
+      "error",
+    ].includes(phase)
+      ? phase
+      : "idle",
+    progress: typeof o.progress === "number" ? o.progress : 0,
+    message: typeof o.message === "string" ? o.message : "",
+    error: typeof o.error === "string" ? o.error : null,
+    startedAt: typeof o.startedAt === "string" ? o.startedAt : null,
+    finishedAt: typeof o.finishedAt === "string" ? o.finishedAt : null,
+    result: o.result ?? null,
+  };
+}
+
+function asStatus(raw: unknown): PlexUpdateStatus {
+  const o = asObject(raw);
+  return {
+    ok: o.ok !== false,
+    installedVersion:
+      typeof o.installedVersion === "string" ? o.installedVersion : null,
+    latestVersion:
+      typeof o.latestVersion === "string" ? o.latestVersion : null,
+    updateAvailable: Boolean(o.updateAvailable),
+    channel: typeof o.channel === "string" ? o.channel : null,
+    canInstall: Boolean(o.canInstall),
+    releaseState:
+      typeof o.releaseState === "string" ? o.releaseState : null,
+    downloadURL:
+      typeof o.downloadURL === "string" ? o.downloadURL : null,
+    lastChecked: typeof o.lastChecked === "string" ? o.lastChecked : null,
+    platform: typeof o.platform === "string" ? o.platform : undefined,
+    error: typeof o.error === "string" ? o.error : null,
+    job: asJob(o.job),
+  };
+}
+
+function httpError(
+  url: string,
+  status: number,
+  json: Record<string, unknown>,
+  fallback: string,
+): Error {
+  const detail =
+    typeof json.error === "string" && json.error.trim()
+      ? json.error.trim()
+      : fallback;
+  return new Error(
+    `${detail}\nTried: ${url}${status ? ` (HTTP ${status})` : ""}`,
+  );
+}
+
+/** Short display version (strip build suffix after -). */
+export function shortPlexVersion(version: string | null | undefined): string {
+  if (!version) return "—";
+  return version.split("-")[0] || version;
+}
+
+export function plexJobBusy(job: PlexUpdateJob | null | undefined): boolean {
+  if (!job) return false;
+  return (
+    job.phase === "checking" ||
+    job.phase === "downloading" ||
+    job.phase === "applying"
+  );
+}
+
+/** GET /api/plex/update-status — optional refresh=1 triggers PMS updater check. */
+export async function fetchPlexUpdateStatus(
+  hubBaseUrl: string,
+  options: { refresh?: boolean; timeoutMs?: number } = {},
+): Promise<PlexUpdateStatus> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) {
+    throw new Error("Arrs Hub URL is not set.");
+  }
+  const qs = options.refresh ? "?refresh=1" : "";
+  const url = `${base}/api/plex/update-status${qs}`;
+  try {
+    const res = await httpRequest(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      timeoutMs: options.timeoutMs ?? 20000,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw httpError(
+        url,
+        res.status,
+        json,
+        `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
+      );
+    }
+    return asStatus(json);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
+  }
+}
+
+/**
+ * POST /api/plex/update → 202
+ * Defaults on hub: download=true, apply=true unless explicitly false.
+ */
+export async function startPlexUpdateJob(
+  hubBaseUrl: string,
+  body: PlexUpdateStartBody = {},
+  timeoutMs = 15000,
+): Promise<{ ok: boolean; job: PlexUpdateJob }> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) {
+    throw new Error("Arrs Hub URL is not set.");
+  }
+  const url = `${base}/api/plex/update`;
+  try {
+    const res = await httpRequest(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      data: body,
+      timeoutMs,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw httpError(
+        url,
+        res.status,
+        json,
+        res.status === 409
+          ? "A Plex update job is already running."
+          : `Hub returned HTTP ${res.status}.`,
+      );
+    }
+    return { ok: json.ok !== false, job: asJob(json.job) };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
+  }
+}
+
+/** GET /api/plex/update-job — poll in-progress job. */
+export async function fetchPlexUpdateJob(
+  hubBaseUrl: string,
+  timeoutMs = 10000,
+): Promise<PlexUpdateJob> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) {
+    throw new Error("Arrs Hub URL is not set.");
+  }
+  const url = `${base}/api/plex/update-job`;
+  try {
+    const res = await httpRequest(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      timeoutMs,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw httpError(
+        url,
+        res.status,
+        json,
+        `Hub returned HTTP ${res.status}.`,
+      );
+    }
+    return asJob(json.job);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
+  }
+}

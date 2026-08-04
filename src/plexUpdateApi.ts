@@ -161,7 +161,9 @@ export async function fetchPlexUpdateStatus(
         url,
         res.status,
         json,
-        `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
+        res.status === 404
+          ? "Hub missing Plex update API — update Arrs Hub on the PC."
+          : `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
       );
     }
     return asStatus(json);
@@ -202,9 +204,11 @@ export async function startPlexUpdateJob(
         url,
         res.status,
         json,
-        res.status === 409
-          ? "A Plex update job is already running."
-          : `Hub returned HTTP ${res.status}.`,
+        res.status === 404
+          ? "Hub missing Plex update API — update Arrs Hub on the PC."
+          : res.status === 409
+            ? "A Plex update job is already running."
+            : `Hub returned HTTP ${res.status}.`,
       );
     }
     return { ok: json.ok !== false, job: asJob(json.job) };
@@ -237,7 +241,9 @@ export async function fetchPlexUpdateJob(
         url,
         res.status,
         json,
-        `Hub returned HTTP ${res.status}.`,
+        res.status === 404
+          ? "Hub missing Plex update API — update Arrs Hub on the PC."
+          : `Hub returned HTTP ${res.status}.`,
       );
     }
     return asJob(json.job);

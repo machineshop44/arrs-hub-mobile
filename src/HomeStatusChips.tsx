@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { App as CapApp } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
 import {
   fetchHubStatusSummary,
   fetchOmbiPending,
@@ -65,13 +67,18 @@ export function HomeStatusChips({
   const [ombiError, setOmbiError] = useState<string | null>(null);
   const [plexStatus, setPlexStatus] = useState<PlexUpdateStatus | null>(null);
   const [plexLoading, setPlexLoading] = useState(false);
+  const [plexChecking, setPlexChecking] = useState(false);
   const [plexBusy, setPlexBusy] = useState(false);
   const [plexError, setPlexError] = useState<string | null>(null);
   const [plexActionMsg, setPlexActionMsg] = useState<string | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const didStartupRefresh = useRef(false);
+  const lastResumeRefreshAt = useRef(0);
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
   const onLan = onHomeNetwork === true;
+  /** Same gate as chip probes: hub up; skip expensive refresh off home LAN. */
+  const allowPlexRefresh = !hubDown && onHomeNetwork !== false;
 
   const load = useCallback(async () => {
     if (hubDown) {
@@ -87,26 +94,64 @@ export function HomeStatusChips({
     setSummary(next);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
+  const checkResultMessage = (next: PlexUpdateStatus): string => {
+    if (next.updateAvailable) {
+      return `Update available: ${shortPlexVersion(next.installedVersion)} → ${shortPlexVersion(next.latestVersion)}`;
+    }
+    if (next.ok && next.installedVersion) return "Up to date";
+    if (next.error) return next.error;
+    return "Check finished.";
+  };
+
   const loadPlex = useCallback(
-    async (refresh = false) => {
+    async (
+      refresh = false,
+      opts: { announce?: boolean } = {},
+    ) => {
       if (hubDown) {
         setPlexStatus(null);
         return;
       }
-      setPlexLoading(true);
+      if (refresh) {
+        setPlexChecking(true);
+        if (opts.announce) {
+          setPlexError(null);
+          setPlexActionMsg(null);
+        }
+      } else {
+        setPlexLoading(true);
+      }
       try {
-        const next = await fetchPlexUpdateStatus(hubBaseUrl, { refresh });
+        const next = await fetchPlexUpdateStatus(hubBaseUrl, {
+          refresh,
+          // Real PMS + plex.tv check can take a bit longer than cached polls.
+          timeoutMs: refresh ? 45000 : 20000,
+        });
         setPlexStatus(next);
-        setPlexError(next.error || null);
+        if (refresh && opts.announce) {
+          setPlexActionMsg(checkResultMessage(next));
+          // Hub may return a non-fatal advisory in error while still ok.
+          setPlexError(next.error || null);
+        } else if (refresh) {
+          setPlexError(next.error || null);
+        } else {
+          setPlexError(next.error || null);
+        }
       } catch (err) {
-        setPlexError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setPlexError(msg);
+        if (refresh && opts.announce) {
+          setPlexActionMsg(null);
+        }
       } finally {
-        setPlexLoading(false);
+        if (refresh) setPlexChecking(false);
+        else setPlexLoading(false);
       }
     },
     [hubBaseUrl, hubDown],
   );
 
+  // Cached badge polls (no refresh=1).
   useEffect(() => {
     void load();
     void loadPlex(false);
@@ -117,6 +162,53 @@ export function HomeStatusChips({
     }, 20000);
     return () => window.clearInterval(timer);
   }, [load, loadPlex, hubDown]);
+
+  // One real check at home mount (refresh=1) when hub reachable (+ prefer LAN).
+  useEffect(() => {
+    if (!allowPlexRefresh) return;
+    if (didStartupRefresh.current) return;
+    didStartupRefresh.current = true;
+    void loadPlex(true);
+  }, [allowPlexRefresh, loadPlex]);
+
+  // Nice-to-have: refresh=1 when returning to foreground (throttled).
+  useEffect(() => {
+    if (!allowPlexRefresh) return;
+    let sawBackground = false;
+    const run = () => {
+      if (!sawBackground) return;
+      sawBackground = false;
+      const now = Date.now();
+      if (now - lastResumeRefreshAt.current < 60_000) return;
+      lastResumeRefreshAt.current = now;
+      void loadPlex(true);
+    };
+    let removeCap: (() => void) | undefined;
+    if (Capacitor.isNativePlatform()) {
+      const handle = CapApp.addListener("appStateChange", ({ isActive }) => {
+        if (!isActive) {
+          sawBackground = true;
+          return;
+        }
+        run();
+      });
+      removeCap = () => {
+        void handle.then((h) => h.remove());
+      };
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        sawBackground = true;
+        return;
+      }
+      if (document.visibilityState === "visible") run();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      removeCap?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [allowPlexRefresh, loadPlex]);
 
   useEffect(() => {
     if (hubDown) return;
@@ -205,7 +297,8 @@ export function HomeStatusChips({
   const ombiPending = summary?.ombi?.pending ?? null;
   const queueTotal = summary?.arr?.queueTotal ?? null;
   const pendingSummary = !hubDown && summary == null;
-  const pendingPlex = !hubDown && plexStatus == null && plexLoading;
+  const pendingPlex =
+    !hubDown && plexStatus == null && (plexLoading || plexChecking);
 
   const onlineModules = modules.filter((m) => m.up === true);
   const offlineModules = modules.filter((m) => m.up === false);
@@ -213,22 +306,25 @@ export function HomeStatusChips({
   const plexJob = plexStatus?.job;
   const plexChipValue = (() => {
     if (hubDown) return "—";
-    if (pendingPlex) return "…";
+    if (pendingPlex || (plexChecking && !plexStatus)) return "…";
     if (!plexStatus) return "—";
+    if (plexChecking) return "…";
     if (plexJobBusy(plexJob)) {
       return `${Math.round(plexJob?.progress ?? 0)}%`;
     }
     if (plexStatus.updateAvailable) return "upd";
     if (plexStatus.ok && plexStatus.installedVersion) return "ok";
-    if (plexStatus.error) return "err";
+    if (plexStatus.error && !plexStatus.updateAvailable) return "err";
     return "—";
   })();
 
   const plexChipTone: ChipTone = (() => {
     if (hubDown || !plexStatus) return "muted";
+    if (plexChecking) return "accent";
     if (plexJobBusy(plexJob) || plexJob?.phase === "error") return "warn";
     if (plexStatus.updateAvailable) return "warn";
-    if (plexStatus.ok && !plexStatus.error) return "good";
+    if (plexStatus.ok && (!plexStatus.error || plexStatus.updateAvailable))
+      return "good";
     return "muted";
   })();
 
@@ -238,12 +334,22 @@ export function HomeStatusChips({
       return "Not on home LAN — install only from the home network.";
     if (onHomeNetwork == null)
       return "Home network status unknown — connect on LAN to install.";
+    if (plexStatus?.updateAvailable && !plexStatus.canInstall) {
+      if (plexStatus.channel === "plex.tv") {
+        return "Seen on plex.tv, but PMS updater has not listed this Release yet — update from Plex Settings on the host.";
+      }
+      return "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
+    }
     if (plexStatus && !plexStatus.canInstall)
       return "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
     return null;
   })();
 
-  const canRunInstall = !hubDown && onLan && Boolean(plexStatus?.canInstall);
+  const canRunInstall =
+    !hubDown &&
+    onLan &&
+    Boolean(plexStatus?.canInstall) &&
+    Boolean(plexStatus?.updateAvailable);
 
   const runPlexAction = async (
     body: { download?: boolean; apply?: boolean; tonight?: boolean },
@@ -732,7 +838,7 @@ export function HomeStatusChips({
                   <p className="dash-chip-popover-empty">
                     Hub offline — cannot reach Plex update status.
                   </p>
-                ) : plexLoading && !plexStatus ? (
+                ) : plexLoading && !plexStatus && !plexChecking ? (
                   <p className="dash-chip-popover-empty">Loading…</p>
                 ) : (
                   <>
@@ -752,13 +858,21 @@ export function HomeStatusChips({
                       <li>
                         <span>Status</span>
                         <strong>
-                          {plexStatus?.updateAvailable
-                            ? "Update available"
-                            : plexStatus?.ok
-                              ? "Up to date"
-                              : "Unavailable"}
+                          {plexChecking
+                            ? "Checking…"
+                            : plexStatus?.updateAvailable
+                              ? "Update available"
+                              : plexStatus?.ok
+                                ? "Up to date"
+                                : "Unavailable"}
                         </strong>
                       </li>
+                      {plexStatus?.channel ? (
+                        <li>
+                          <span>Source</span>
+                          <strong>{plexStatus.channel}</strong>
+                        </li>
+                      ) : null}
                       {plexStatus?.releaseState ? (
                         <li>
                           <span>Release</span>
@@ -778,15 +892,21 @@ export function HomeStatusChips({
                     {plexStatus?.updateAvailable ? (
                       <p className="dash-plex-badge" role="status">
                         Update available
-                        {plexStatus.canInstall ? "" : " · cannot install from hub"}
+                        {plexStatus.canInstall
+                          ? ""
+                          : " · cannot install from hub"}
                       </p>
                     ) : null}
 
-                    {plexJobBusy(plexJob) || plexJob?.phase === "done" || plexJob?.phase === "error" ? (
+                    {plexJobBusy(plexJob) ||
+                    plexJob?.phase === "done" ||
+                    plexJob?.phase === "error" ? (
                       <div className="dash-plex-job" aria-live="polite">
                         <div className="dash-plex-job-row">
                           <span>{plexJob?.phase ?? "idle"}</span>
-                          <strong>{Math.round(plexJob?.progress ?? 0)}%</strong>
+                          <strong>
+                            {Math.round(plexJob?.progress ?? 0)}%
+                          </strong>
                         </div>
                         {plexJob?.message ? (
                           <p className="dash-chip-popover-empty">
@@ -806,16 +926,25 @@ export function HomeStatusChips({
                       <button
                         type="button"
                         className="btn chip"
-                        disabled={hubDown || plexBusy || plexJobBusy(plexJob)}
-                        onClick={() => void loadPlex(true)}
+                        disabled={
+                          hubDown ||
+                          plexChecking ||
+                          plexBusy ||
+                          plexJobBusy(plexJob)
+                        }
+                        aria-busy={plexChecking}
+                        onClick={() =>
+                          void loadPlex(true, { announce: true })
+                        }
                       >
-                        Check
+                        {plexChecking ? "Checking…" : "Check"}
                       </button>
                       <button
                         type="button"
                         className="btn primary"
                         disabled={
                           !canRunInstall ||
+                          plexChecking ||
                           plexBusy ||
                           plexJobBusy(plexJob) ||
                           !plexStatus?.updateAvailable
@@ -838,6 +967,7 @@ export function HomeStatusChips({
                         className="btn chip"
                         disabled={
                           !canRunInstall ||
+                          plexChecking ||
                           plexBusy ||
                           plexJobBusy(plexJob) ||
                           !plexStatus?.updateAvailable
@@ -857,8 +987,15 @@ export function HomeStatusChips({
                       </button>
                     </div>
 
+                    {plexChecking ? (
+                      <p className="dash-chip-popover-hint" aria-live="polite">
+                        Checking for updates…
+                      </p>
+                    ) : null}
                     {plexActionMsg ? (
-                      <p className="dash-chip-popover-hint">{plexActionMsg}</p>
+                      <p className="dash-chip-popover-hint" aria-live="polite">
+                        {plexActionMsg}
+                      </p>
                     ) : null}
                     {plexError ? (
                       <p className="dash-chip-popover-error">{plexError}</p>

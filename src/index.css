@@ -974,6 +974,16 @@ body {
   cursor: not-allowed;
 }
 
+.dash-plex-actions .btn:not(:disabled):active {
+  transform: scale(0.96);
+  filter: brightness(0.9);
+}
+
+.dash-plex-actions .btn[aria-busy="true"] {
+  opacity: 0.75;
+  cursor: wait;
+}
+
 .home-sections {
   padding: 0.15rem 0.85rem 1.25rem;
 }

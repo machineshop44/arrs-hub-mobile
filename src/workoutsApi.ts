@@ -129,6 +129,11 @@ export type WorkoutClient = {
   machineIdentifier: string;
   product?: string;
   castType?: string;
+  deviceClass?: string;
+  platform?: string;
+  provides?: string;
+  kind?: "local" | "tv" | "speaker" | "phone" | "app";
+  kindLabel?: string;
 };
 
 export type WorkoutDay = {
@@ -299,6 +304,15 @@ export async function fetchWorkoutClients(
   const list = Array.isArray(json.clients) ? json.clients : [];
   return list.map((raw) => {
     const c = asObject(raw);
+    const kindRaw = String(c.kind || "");
+    const kind =
+      kindRaw === "tv" ||
+      kindRaw === "speaker" ||
+      kindRaw === "phone" ||
+      kindRaw === "app" ||
+      kindRaw === "local"
+        ? kindRaw
+        : undefined;
     return {
       name: String(c.name || "Client"),
       address: String(c.address || ""),
@@ -306,6 +320,11 @@ export async function fetchWorkoutClients(
       machineIdentifier: String(c.machineIdentifier || ""),
       product: c.product ? String(c.product) : undefined,
       castType: c.castType ? String(c.castType) : undefined,
+      deviceClass: c.deviceClass ? String(c.deviceClass) : undefined,
+      platform: c.platform ? String(c.platform) : undefined,
+      provides: c.provides ? String(c.provides) : undefined,
+      kind,
+      kindLabel: c.kindLabel ? String(c.kindLabel) : undefined,
     };
   });
 }
@@ -369,7 +388,7 @@ export async function playWorkoutDay(
       return {
         title: String(item.title || ""),
         ratingKey: String(item.ratingKey || ""),
-        url: String(item.url || ""),
+        url: resolvePlaylistUrl(hubUrl, item),
         seekable: item.seekable !== false,
         durationMs:
           typeof item.durationMs === "number" ? item.durationMs : null,
@@ -378,4 +397,52 @@ export async function playWorkoutDay(
     playQueueID:
       typeof json.playQueueID === "number" ? json.playQueueID : undefined,
   };
+}
+
+/**
+ * Ensure playlist media is fetched via the hub proxy (never Plex localhost).
+ */
+function resolvePlaylistUrl(
+  hubUrl: string,
+  item: Record<string, unknown>,
+): string {
+  const ratingKey = String(item.ratingKey || "").trim();
+  const raw = String(item.url || "").trim();
+  const base = normalizeBase(hubUrl);
+  const proxyPath = ratingKey
+    ? `/api/workouts/media/${encodeURIComponent(ratingKey)}`
+    : "";
+
+  if (raw.includes("/api/workouts/media/")) {
+    try {
+      // Absolute hub URL already — keep it if host isn't loopback-only dead end
+      const u = new URL(raw, base || "http://local.invalid");
+      if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
+        return base && proxyPath ? `${base}${proxyPath}` : raw;
+      }
+      return u.toString();
+    } catch {
+      return base && proxyPath ? `${base}${proxyPath}` : raw;
+    }
+  }
+
+  // Legacy: direct Plex part URL (often localhost:32400) — rewrite to hub proxy.
+  if (ratingKey && base) {
+    try {
+      const u = new URL(raw);
+      if (
+        u.hostname === "localhost" ||
+        u.hostname === "127.0.0.1" ||
+        u.pathname.includes("/library/parts/") ||
+        u.pathname.includes("/video/:/transcode/")
+      ) {
+        return `${base}${proxyPath}`;
+      }
+    } catch {
+      return `${base}${proxyPath}`;
+    }
+  }
+
+  if (raw.startsWith("/") && base) return `${base}${raw}`;
+  return raw || (base && proxyPath ? `${base}${proxyPath}` : "");
 }

@@ -19,7 +19,19 @@ interface WorkoutsPanelProps {
   service: ServiceConfig;
   onBack: () => void;
   onOpenSettings: () => void;
+  /** Same CIDR/home detection as WOL — when not true, hide LAN cast targets. */
+  onHomeNetwork?: boolean | null;
 }
+
+const LOCAL_ONLY_CLIENT: WorkoutClient = {
+  name: "This device (play here)",
+  machineIdentifier: LOCAL_CLIENT_ID,
+  address: "local",
+  port: 0,
+  castType: "local",
+  kind: "local",
+  kindLabel: "This device",
+};
 
 function formatClock(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -30,15 +42,81 @@ function formatClock(seconds: number) {
 
 function withStreamOffset(url: string, offsetSeconds: number) {
   try {
-    const next = new URL(url);
+    const next = new URL(url, "http://local.invalid");
     next.searchParams.set(
       "offset",
       String(Math.max(0, Math.floor(offsetSeconds * 1000))),
     );
     next.searchParams.set("X-Plex-Session-Id", `${Date.now()}`);
+    if (url.startsWith("/")) {
+      return `${next.pathname}${next.search}`;
+    }
     return next.toString();
   } catch {
     return url;
+  }
+}
+
+function clientKindLabel(client: WorkoutClient): string {
+  if (client.kindLabel) return client.kindLabel;
+  if (client.kind === "tv") return "TV";
+  if (client.kind === "speaker") return "Speaker";
+  if (client.kind === "phone") return "Phone";
+  if (client.kind === "app") return "App";
+  if (client.castType === "local" || client.machineIdentifier === LOCAL_CLIENT_ID) {
+    return "This device";
+  }
+  return "";
+}
+
+function formatClientOption(client: WorkoutClient): string {
+  const kind = clientKindLabel(client);
+  if (client.castType === "local" || client.machineIdentifier === LOCAL_CLIENT_ID) {
+    return client.name;
+  }
+  const prefix =
+    kind === "TV"
+      ? "TV · "
+      : kind === "Speaker"
+        ? "Speaker · "
+        : kind === "Phone"
+          ? "Phone · "
+          : kind === "App"
+            ? "App · "
+            : client.castType === "chromecast"
+              ? "Cast · "
+              : client.castType === "plex"
+                ? "Plex · "
+                : "";
+  return `${prefix}${client.name}`;
+}
+
+/** Off home LAN (or unknown): only in-app play — never offer family TVs/speakers. */
+function filterClientsForNetwork(
+  clients: WorkoutClient[],
+  onHomeNetwork: boolean | null | undefined,
+): WorkoutClient[] {
+  const local =
+    clients.find((c) => c.machineIdentifier === LOCAL_CLIENT_ID) ||
+    LOCAL_ONLY_CLIENT;
+  if (onHomeNetwork === true) {
+    return clients.length ? clients : [local];
+  }
+  return [local];
+}
+
+function mediaErrorMessage(code: number | undefined): string {
+  switch (code) {
+    case 1:
+      return "Playback aborted.";
+    case 2:
+      return "Network error loading video (hub/Plex unreachable or stream dropped).";
+    case 3:
+      return "Video decode failed — format may be unsupported on this device.";
+    case 4:
+      return "Broken or unsupported video source (URL missing, 404, or codec not playable).";
+    default:
+      return "Could not play this video.";
   }
 }
 
@@ -63,12 +141,14 @@ function WorkoutPlayer({
     item?.durationMs ? item.durationMs / 1000 : 0,
   );
   const [scrubbing, setScrubbing] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!item) return;
     setSrc(item.url);
     setCurrent(0);
     setDuration(item.durationMs ? item.durationMs / 1000 : 0);
+    setPlayerError(null);
   }, [item, index]);
 
   const seekTo = (seconds: number) => {
@@ -113,6 +193,11 @@ function WorkoutPlayer({
             ✕
           </button>
         </header>
+        {playerError && (
+          <div className="err banner" style={{ margin: "0.5rem 0" }}>
+            {playerError}
+          </div>
+        )}
         <video
           ref={videoRef}
           key={src}
@@ -125,9 +210,21 @@ function WorkoutPlayer({
           onLoadedMetadata={(e) => {
             const d = e.currentTarget.duration;
             if (Number.isFinite(d) && d > 0) setDuration(d);
+            setPlayerError(null);
           }}
           onTimeUpdate={(e) => {
             if (!scrubbing) setCurrent(e.currentTarget.currentTime || 0);
+          }}
+          onError={(e) => {
+            const code = e.currentTarget.error?.code;
+            const empty = !src.trim();
+            setPlayerError(
+              empty
+                ? "No stream URL returned from hub."
+                : `${mediaErrorMessage(code)}${
+                    item.ratingKey ? ` (media ${item.ratingKey})` : ""
+                  }`,
+            );
           }}
           onEnded={() => {
             if (index < playlist.length - 1) onIndexChange(index + 1);
@@ -176,6 +273,7 @@ export function WorkoutsPanel({
   service,
   onBack,
   onOpenSettings,
+  onHomeNetwork = null,
 }: WorkoutsPanelProps) {
   const hubUrl = service.url;
   const [loading, setLoading] = useState(true);
@@ -194,6 +292,19 @@ export function WorkoutsPanel({
   const configured = Boolean(
     settings?.plexTokenSet && settings.librarySectionId,
   );
+
+  const visibleClients = useMemo(
+    () => filterClientsForNetwork(clients, onHomeNetwork),
+    [clients, onHomeNetwork],
+  );
+
+  const awayFromHome = onHomeNetwork !== true;
+
+  useEffect(() => {
+    if (!visibleClients.some((c) => c.machineIdentifier === clientId)) {
+      setClientId(LOCAL_CLIENT_ID);
+    }
+  }, [visibleClients, clientId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -277,8 +388,27 @@ export function WorkoutsPanel({
     setMessage(null);
     setError(null);
     try {
-      const result = await playWorkoutDay(hubUrl, day, clientId);
+      let targetId = clientId;
+      if (
+        awayFromHome &&
+        targetId !== LOCAL_CLIENT_ID
+      ) {
+        const ok = window.confirm(
+          "You don’t appear to be on the home network. Casting to TVs/speakers remotely can interrupt family devices.\n\nPlay on This device instead?",
+        );
+        if (!ok) return;
+        targetId = LOCAL_CLIENT_ID;
+        setClientId(LOCAL_CLIENT_ID);
+      }
+
+      const result = await playWorkoutDay(hubUrl, day, targetId);
       if (result.mode === "local" && result.playlist?.length) {
+        const broken = result.playlist.find((p) => !p.url?.trim());
+        if (broken) {
+          throw new Error(
+            `Hub returned an empty stream URL for "${broken.title}". Update Arrs Hub and try again.`,
+          );
+        }
         setPlaylist(result.playlist);
         setPlaylistIndex(0);
         setMessage(`Playing here: ${result.warmup} → ${result.day}`);
@@ -343,8 +473,8 @@ export function WorkoutsPanel({
       {!loading && hubUp && settings && (
         <div className="workouts-body">
           <p className="hint" style={{ paddingTop: "0.35rem" }}>
-            Warm-up plays first, then the day you pick. Playback uses the hub’s
-            saved Plex token — configure that on the desktop hub if needed.
+            Warm-up plays first, then the day you pick. Playback streams through
+            Arrs Hub (not a direct Plex localhost URL).
           </p>
 
           {configured && (
@@ -354,33 +484,28 @@ export function WorkoutsPanel({
                 value={clientId}
                 onChange={(e) => setClientId(e.target.value)}
               >
-                {(clients.length
-                  ? clients
-                  : [
-                      {
-                        name: "This device (play here)",
-                        machineIdentifier: LOCAL_CLIENT_ID,
-                        address: "local",
-                        port: 0,
-                        castType: "local",
-                      },
-                    ]
-                ).map((client) => (
+                {visibleClients.map((client) => (
                   <option
                     key={client.machineIdentifier}
                     value={client.machineIdentifier}
                   >
-                    {client.castType === "chromecast"
-                      ? "Cast · "
-                      : client.castType === "plex"
-                        ? "Plex · "
-                        : ""}
-                    {client.name}
-                    {client.product ? ` · ${client.product}` : ""}
+                    {formatClientOption(client)}
                   </option>
                 ))}
               </select>
             </label>
+          )}
+          {configured && awayFromHome && (
+            <p className="hint" style={{ paddingTop: 0 }}>
+              Away from home — only <strong>This device</strong> is offered so
+              you don’t cast to family TVs/speakers remotely.
+            </p>
+          )}
+          {configured && onHomeNetwork === true && (
+            <p className="hint" style={{ paddingTop: 0 }}>
+              Home network — TVs and speakers are labeled. Prefer a TV for
+              workouts.
+            </p>
           )}
 
           {warmup ? (

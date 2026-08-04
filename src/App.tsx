@@ -772,6 +772,7 @@ export function App() {
           setScreen("modules");
         }}
         onOpenSettings={() => setScreen("settings")}
+        onHomeNetwork={homeNet?.onHomeNetwork ?? null}
       />
     );
   }

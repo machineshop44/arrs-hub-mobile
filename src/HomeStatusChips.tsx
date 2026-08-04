@@ -11,18 +11,28 @@ import {
 import type { ServiceConfig } from "./services";
 
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
-type SheetId = "queue" | "downloads" | "ombi" | null;
+type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | null;
+
+export type HomeChipModule = {
+  id: string;
+  name: string;
+  up: boolean | null;
+};
 
 type HomeStatusChipsProps = {
   hubBaseUrl: string;
   hubReachable: boolean | null;
   services: ServiceConfig[];
   resolveUrl: (service: ServiceConfig) => string;
+  modules: HomeChipModule[];
   upCount: number;
   downCount: number;
   scanning: boolean;
+  /** LAN when on home network, Remote otherwise. */
+  networkLabel: "LAN" | "Remote";
   onOpenStreams: () => void;
   onOpenService: (id: string) => void;
+  onOpenNetwork: () => void;
 };
 
 export function HomeStatusChips({
@@ -30,11 +40,14 @@ export function HomeStatusChips({
   hubReachable,
   services,
   resolveUrl,
+  modules,
   upCount,
   downCount,
   scanning,
+  networkLabel,
   onOpenStreams,
   onOpenService,
+  onOpenNetwork,
 }: HomeStatusChipsProps) {
   const [summary, setSummary] = useState<HubStatusSummary | null>(null);
   const [sheet, setSheet] = useState<SheetId>(null);
@@ -125,23 +138,29 @@ export function HomeStatusChips({
   const queueTotal = summary?.arr?.queueTotal ?? null;
   const pendingSummary = !hubDown && summary == null;
 
+  const onlineModules = modules.filter((m) => m.up === true);
+  const offlineModules = modules.filter((m) => m.up === false);
+
   const chips: {
     id: string;
     label: string;
     value: string;
     tone: ChipTone;
+    title: string;
   }[] = [
     {
       id: "up",
       label: "Up",
       value: scanning ? "…" : String(upCount),
       tone: scanning ? "muted" : upCount > 0 ? "good" : "muted",
+      title: "Online modules",
     },
     {
       id: "down",
       label: "Down",
       value: scanning ? "…" : String(downCount),
       tone: scanning ? "muted" : downCount > 0 ? "bad" : "good",
+      title: "Offline modules",
     },
     {
       id: "streams",
@@ -159,6 +178,7 @@ export function HomeStatusChips({
           : summary?.streams?.configured
             ? "muted"
             : "warn",
+      title: "Open Streams (Tautulli)",
     },
     {
       id: "downloads",
@@ -172,6 +192,7 @@ export function HomeStatusChips({
             ? String(downloads)
             : "setup",
       tone: downloads && downloads > 0 ? "accent" : "muted",
+      title: "Active downloads",
     },
     {
       id: "queue",
@@ -184,6 +205,7 @@ export function HomeStatusChips({
             ? String(queueTotal)
             : "setup",
       tone: queueTotal && queueTotal > 0 ? "warn" : "muted",
+      title: "*arr queue",
     },
     {
       id: "ombi",
@@ -201,6 +223,14 @@ export function HomeStatusChips({
           : summary?.ombi?.configured
             ? "good"
             : "muted",
+      title: "Ombi pending",
+    },
+    {
+      id: "network",
+      label: "Path",
+      value: networkLabel,
+      tone: networkLabel === "LAN" ? "good" : "muted",
+      title: "Network path (Settings)",
     },
   ];
 
@@ -222,55 +252,71 @@ export function HomeStatusChips({
     })),
   );
 
-  const openSheet = (id: SheetId) => {
+  const openSheet = (id: Exclude<SheetId, null>) => {
     setSheet((prev) => (prev === id ? null : id));
+  };
+
+  const sheetTitle =
+    sheet === "up"
+      ? "Online modules"
+      : sheet === "down"
+        ? "Offline modules"
+        : sheet === "queue"
+          ? "Queue by app"
+          : sheet === "downloads"
+            ? "Active downloads"
+            : sheet === "ombi"
+              ? "Ombi pending"
+              : "";
+
+  const onChipClick = (chipId: string) => {
+    if (chipId === "streams") {
+      setSheet(null);
+      onOpenStreams();
+      return;
+    }
+    if (chipId === "network") {
+      setSheet(null);
+      onOpenNetwork();
+      return;
+    }
+    if (
+      chipId === "up" ||
+      chipId === "down" ||
+      chipId === "queue" ||
+      chipId === "downloads" ||
+      chipId === "ombi"
+    ) {
+      openSheet(chipId);
+    }
   };
 
   return (
     <section className="dash-status" aria-label="Hub status summary">
       <div className="dash-chips">
         {chips.map((chip) => {
-          if (chip.id === "streams") {
-            return (
+          const expandsSheet =
+            chip.id === "up" ||
+            chip.id === "down" ||
+            chip.id === "queue" ||
+            chip.id === "downloads" ||
+            chip.id === "ombi";
+          const expanded = expandsSheet && sheet === chip.id;
+          return (
+            <div key={chip.id} className="dash-chip-wrap">
               <button
-                key={chip.id}
                 type="button"
-                className={`dash-chip dash-chip-btn tone-${chip.tone}`}
-                title="Open Streams (Tautulli)"
-                onClick={onOpenStreams}
+                className={`dash-chip dash-chip-btn tone-${chip.tone}${
+                  expanded ? " is-active" : ""
+                }`}
+                title={chip.title}
+                aria-expanded={expandsSheet ? expanded : undefined}
+                aria-haspopup={expandsSheet ? "dialog" : undefined}
+                onClick={() => onChipClick(chip.id)}
               >
                 <span className="dash-chip-value">{chip.value}</span>
                 <span className="dash-chip-label">{chip.label}</span>
               </button>
-            );
-          }
-
-          if (
-            chip.id === "queue" ||
-            chip.id === "downloads" ||
-            chip.id === "ombi"
-          ) {
-            const sheetId = chip.id as Exclude<SheetId, null>;
-            return (
-              <div key={chip.id} className="dash-chip-wrap">
-                <button
-                  type="button"
-                  className={`dash-chip dash-chip-btn tone-${chip.tone}`}
-                  aria-expanded={sheet === sheetId}
-                  aria-haspopup="dialog"
-                  onClick={() => openSheet(sheetId)}
-                >
-                  <span className="dash-chip-value">{chip.value}</span>
-                  <span className="dash-chip-label">{chip.label}</span>
-                </button>
-              </div>
-            );
-          }
-
-          return (
-            <div key={chip.id} className={`dash-chip tone-${chip.tone}`}>
-              <span className="dash-chip-value">{chip.value}</span>
-              <span className="dash-chip-label">{chip.label}</span>
             </div>
           );
         })}
@@ -287,23 +333,11 @@ export function HomeStatusChips({
           <div
             className="dash-sheet"
             role="dialog"
-            aria-label={
-              sheet === "queue"
-                ? "*arr queue breakdown"
-                : sheet === "downloads"
-                  ? "Downloads breakdown"
-                  : "Ombi pending"
-            }
+            aria-label={sheetTitle}
             ref={sheetRef}
           >
             <div className="dash-sheet-head">
-              <strong>
-                {sheet === "queue"
-                  ? "Queue by app"
-                  : sheet === "downloads"
-                    ? "Active downloads"
-                    : "Ombi pending"}
-              </strong>
+              <strong>{sheetTitle}</strong>
               <button
                 type="button"
                 className="icon-btn"
@@ -313,6 +347,62 @@ export function HomeStatusChips({
                 ✕
               </button>
             </div>
+
+            {sheet === "up" && (
+              <>
+                {onlineModules.length === 0 ? (
+                  <p className="dash-chip-popover-empty">
+                    No modules currently online.
+                  </p>
+                ) : (
+                  <ul className="dash-queue-breakdown">
+                    {onlineModules.map((mod) => (
+                      <li key={mod.id}>
+                        <button
+                          type="button"
+                          className="dash-sheet-row-btn"
+                          onClick={() => {
+                            setSheet(null);
+                            onOpenService(mod.id);
+                          }}
+                        >
+                          <span>{mod.name}</span>
+                          <strong>Up</strong>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+
+            {sheet === "down" && (
+              <>
+                {offlineModules.length === 0 ? (
+                  <p className="dash-chip-popover-empty">
+                    No modules currently offline.
+                  </p>
+                ) : (
+                  <ul className="dash-queue-breakdown">
+                    {offlineModules.map((mod) => (
+                      <li key={mod.id}>
+                        <button
+                          type="button"
+                          className="dash-sheet-row-btn"
+                          onClick={() => {
+                            setSheet(null);
+                            onOpenService(mod.id);
+                          }}
+                        >
+                          <span>{mod.name}</span>
+                          <strong>Down</strong>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
 
             {sheet === "queue" && (
               <>

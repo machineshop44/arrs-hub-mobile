@@ -1795,11 +1795,23 @@ export function App() {
               hubReachable={hubReachable}
               services={services}
               resolveUrl={(s) => withEffectiveUrl(s).url}
+              modules={modules.map((m) => ({
+                id: m.id,
+                name: m.name,
+                up: health[m.id]?.up ?? null,
+              }))}
               upCount={onlineCount}
               downCount={offlineCount}
               scanning={!healthSettled}
+              networkLabel={
+                homeNet?.onHomeNetwork === true ? "LAN" : "Remote"
+              }
               onOpenStreams={() => openServiceById("tautulli")}
               onOpenService={openServiceById}
+              onOpenNetwork={() => {
+                setSettingsNetworkOpen(true);
+                setScreen("settings");
+              }}
             />
           )}
           {showWakeControl && (

@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Arrs Hub Mobile Tester</string>
-    <string name="title_activity_main">Arrs Hub Mobile Tester</string>
-    <string name="package_name">com.arrshub.status.tester</string>
-    <string name="custom_url_scheme">com.arrshub.status.tester</string>
+    <string name="app_name">Arrs Hub Status</string>
+    <string name="title_activity_main">Arrs Hub Status</string>
+    <string name="package_name">com.arrshub.status</string>
+    <string name="custom_url_scheme">com.arrshub.status</string>
     <string name="vlc_close">Close player</string>
     <string name="vlc_play_pause">Play or pause</string>
 </resources>

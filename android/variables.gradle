@@ -1,6 +1,8 @@
 ext {
     minSdkVersion = 23
-    compileSdkVersion = 35
+    // compileSdk 36 required by libvlc-all 3.7.x (16 KB page-size native libs).
+    // targetSdk stays 35 for Capacitor 7 compatibility.
+    compileSdkVersion = 36
     targetSdkVersion = 35
     androidxActivityVersion = '1.9.2'
     androidxAppCompatVersion = '1.7.0'

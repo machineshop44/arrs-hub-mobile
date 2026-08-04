@@ -256,7 +256,7 @@ export async function applySettingsBundle(
 
 export async function shareSettingsJsonFile(
   json: string,
-  fileName = "ArrsHubMobileTester-settings.json",
+  fileName = "ArrsHubStatus-settings.json",
 ): Promise<void> {
   if (Capacitor.isNativePlatform()) {
     await ConfigShare.shareJsonFile({ fileName, content: json });

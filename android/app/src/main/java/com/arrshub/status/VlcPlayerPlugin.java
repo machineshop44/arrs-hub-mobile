@@ -1,4 +1,4 @@
-package com.arrshub.status.tester;
+package com.arrshub.status;
 
 import android.content.Intent;
 import android.util.Log;

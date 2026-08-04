@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { useAndroidBackHandler } from "./androidBack";
+import {
+  openStreamExternally,
+  openStreamInVlc,
+  openVlcInstallPage,
+} from "./externalPlayer";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
 import {
@@ -142,6 +149,8 @@ function WorkoutPlayer({
   );
   const [scrubbing, setScrubbing] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
+  const [externalHint, setExternalHint] = useState<string | null>(null);
+  const native = Capacitor.isNativePlatform();
 
   useEffect(() => {
     if (!item) return;
@@ -149,7 +158,43 @@ function WorkoutPlayer({
     setCurrent(0);
     setDuration(item.durationMs ? item.durationMs / 1000 : 0);
     setPlayerError(null);
+    setExternalHint(null);
   }, [item, index]);
+
+  const playInVlc = async () => {
+    if (!item?.url?.trim()) {
+      setExternalHint("No stream URL to open.");
+      return;
+    }
+    setExternalHint(null);
+    try {
+      const result = await openStreamInVlc(item.url);
+      if (!result.opened) {
+        if (result.vlcInstalled === false) {
+          setExternalHint(
+            "VLC is not installed. Install VLC for Android, then try again — it plays Matroska/AC3 that this built-in player can’t.",
+          );
+        } else {
+          setExternalHint(result.message || "Could not open VLC.");
+        }
+      }
+    } catch (err) {
+      setExternalHint(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const playExternally = async () => {
+    if (!item?.url?.trim()) {
+      setExternalHint("No stream URL to open.");
+      return;
+    }
+    setExternalHint(null);
+    try {
+      await openStreamExternally(item.url);
+    } catch (err) {
+      setExternalHint(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const seekTo = (seconds: number) => {
     if (!item) return;
@@ -196,6 +241,27 @@ function WorkoutPlayer({
         {playerError && (
           <div className="err banner" style={{ margin: "0.5rem 0" }}>
             {playerError}
+            {native ? (
+              <span>
+                {" "}
+                Try <strong>Play in VLC</strong> below — hub stream is often
+                Matroska, which WebView can’t decode.
+              </span>
+            ) : null}
+          </div>
+        )}
+        {externalHint && (
+          <div className="err banner" style={{ margin: "0.5rem 0" }}>
+            {externalHint}{" "}
+            {native && externalHint.includes("not installed") ? (
+              <button
+                type="button"
+                className="btn chip"
+                onClick={() => void openVlcInstallPage().catch(() => undefined)}
+              >
+                Get VLC
+              </button>
+            ) : null}
           </div>
         )}
         <video
@@ -249,6 +315,24 @@ function WorkoutPlayer({
           >
             +10s
           </button>
+          {native && (
+            <>
+              <button
+                type="button"
+                className="btn chip"
+                onClick={() => void playInVlc()}
+              >
+                Play in VLC
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                onClick={() => void playExternally()}
+              >
+                Open externally
+              </button>
+            </>
+          )}
           <input
             className="workout-scrub"
             type="range"
@@ -428,6 +512,14 @@ export function WorkoutsPanel({
     setPlaylist(null);
     setPlaylistIndex(0);
   };
+
+  useAndroidBackHandler(() => {
+    if (playlist) {
+      closePlayer();
+      return true;
+    }
+    return false;
+  });
 
   return (
     <div className="page luna-page">

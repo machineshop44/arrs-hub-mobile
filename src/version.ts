@@ -1,4 +1,4 @@
-/** Arrs Hub Mobile Tester — single source for display name + semver. */
+/** Arrs Hub Mobile Tester - single source for display name + semver. */
 import packageJson from "../package.json";
 
 export const APP_MAJOR = "v1";

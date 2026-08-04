@@ -1,5 +1,6 @@
 import { Browser } from "@capacitor/browser";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAndroidBackHandler } from "./androidBack";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
 import { MediaImg } from "./mediaUrl";
@@ -121,6 +122,14 @@ export function YtarrPanel({
     setSelected(null);
     setVideos([]);
   };
+
+  useAndroidBackHandler(() => {
+    if (selected) {
+      closeDetail();
+      return true;
+    }
+    return false;
+  });
 
   const filteredSources = useMemo(() => {
     const q = libraryFilter.trim().toLowerCase();

@@ -18,6 +18,7 @@ import {
 } from "./icons";
 import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
+import { consumeAndroidBack } from "./androidBack";
 import {
   fetchHubWatchdogServices,
   hubStatusForService,
@@ -263,6 +264,22 @@ export function App() {
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
 
+  // Keep latest nav state for the Capacitor backButton listener.
+  const screenRef = useRef(screen);
+  const drawerRef = useRef(drawer);
+  const reorderingRef = useRef(reordering);
+  const settingsNetworkOpenRef = useRef(settingsNetworkOpen);
+  const settingsWolOpenRef = useRef(settingsWolOpen);
+  const settingsWolAdvancedRef = useRef(settingsWolAdvanced);
+  const settingsServiceIdRef = useRef(settingsServiceId);
+  screenRef.current = screen;
+  drawerRef.current = drawer;
+  reorderingRef.current = reordering;
+  settingsNetworkOpenRef.current = settingsNetworkOpen;
+  settingsWolOpenRef.current = settingsWolOpen;
+  settingsWolAdvancedRef.current = settingsWolAdvanced;
+  settingsServiceIdRef.current = settingsServiceId;
+
   useEffect(() => {
     void (async () => {
       const [svc, wolSettings, pathSettings, order, version] = await Promise.all([
@@ -286,6 +303,67 @@ export function App() {
       setReordering(false);
     }
   }, [screen]);
+
+  // Android gesture / nav-bar back: close overlays → pop panel stack → home → minimize.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    const handle = CapApp.addListener("backButton", () => {
+      if (consumeAndroidBack()) return;
+
+      if (drawerRef.current) {
+        setDrawer(false);
+        return;
+      }
+
+      if (reorderingRef.current) {
+        setReordering(false);
+        return;
+      }
+
+      const current = screenRef.current;
+
+      if (current === "backup") {
+        setTransferMessage(null);
+        setShareMessage(null);
+        setScreen("settings");
+        return;
+      }
+
+      if (current === "settings") {
+        if (settingsServiceIdRef.current) {
+          setSettingsServiceId(null);
+          return;
+        }
+        if (settingsWolAdvancedRef.current) {
+          setSettingsWolAdvanced(false);
+          return;
+        }
+        if (settingsWolOpenRef.current) {
+          setSettingsWolOpen(false);
+          return;
+        }
+        if (settingsNetworkOpenRef.current) {
+          setSettingsNetworkOpen(false);
+          return;
+        }
+        setScreen("modules");
+        return;
+      }
+
+      if (current !== "modules") {
+        setActive(null);
+        setScreen("modules");
+        return;
+      }
+
+      void CapApp.minimizeApp();
+    });
+
+    return () => {
+      void handle.then((h) => h.remove());
+    };
+  }, []);
 
   const clearLongPress = () => {
     if (longPressTimer.current != null) {

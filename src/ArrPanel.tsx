@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAndroidBackHandler } from "./androidBack";
 import {
   addAndSearch,
   albumsFromLookup,
@@ -272,6 +273,14 @@ export function ArrPanel({ service, onBack }: ArrPanelProps) {
     }
     closeDetail();
   };
+
+  useAndroidBackHandler(() => {
+    if (selected || lookupPreview || selectedAlbum || selectedBook) {
+      goBackFromDetail();
+      return true;
+    }
+    return false;
+  });
 
   const openLibraryItem = async (item: ArrLibraryItem) => {
     setSelected(item);

@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_PATHING,
   loadPathSettings,
+  normalizeConnectionPreference,
   PATHING_STORAGE_KEY,
   savePathSettings,
   type PathSettings,
@@ -100,6 +101,9 @@ function normalizePathing(raw: Partial<PathSettings> | undefined): PathSettings 
   const pathRaw = raw ?? {};
   return {
     homeBaseUrl: String(pathRaw.homeBaseUrl ?? DEFAULT_PATHING.homeBaseUrl),
+    connectionPreference: normalizeConnectionPreference(
+      pathRaw.connectionPreference ?? DEFAULT_PATHING.connectionPreference,
+    ),
   };
 }
 
@@ -293,8 +297,9 @@ export function summarizeBundle(bundle: SettingsBundle): string {
       ? "WOL on (no MAC)"
       : "WOL off/empty";
   const home = bundle.pathing.homeBaseUrl.trim() || "no LAN base";
+  const pathPref = bundle.pathing.connectionPreference || "auto";
   const hub = bundle.wol.hubUrl.trim()
     ? `hub :${bundle.wol.hubPort || DEFAULT_WOL.hubPort}`
     : "no hub";
-  return `${withKeys} services · ${wol} · ${home} · ${hub}`;
+  return `${withKeys} services · ${wol} · ${home} · ${pathPref} · ${hub}`;
 }

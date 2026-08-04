@@ -3,17 +3,51 @@ import { Preferences } from "@capacitor/preferences";
 /** Capacitor Preferences key for home/LAN pathing. */
 export const PATHING_STORAGE_KEY = "arrs-mobile-pathing-v1";
 
+/** Effective path after Auto detection or a forced preference. */
+export type ConnectionMode = "home" | "remote";
+/** Auto detects LAN vs away; home/remote force a mode (mirrors Arrs Hub). */
+export type ConnectionPreference = "auto" | ConnectionMode;
+
 export type PathSettings = {
   /**
    * LAN host (or full base without per-service port), e.g. http://192.168.1.50
    * When on the home network, service remote URLs swap to this host and keep their port/path.
    */
   homeBaseUrl: string;
+  /** Auto / Home / Remote — same spirit as Arrs Hub `connectionPreference`. */
+  connectionPreference: ConnectionPreference;
 };
 
 export const DEFAULT_PATHING: PathSettings = {
   homeBaseUrl: "",
+  connectionPreference: "auto",
 };
+
+export function normalizeConnectionPreference(
+  raw: unknown,
+): ConnectionPreference {
+  if (raw === "home" || raw === "remote" || raw === "auto") return raw;
+  return DEFAULT_PATHING.connectionPreference;
+}
+
+/** Resolve Auto → home|remote from LAN detection; forced prefs win. */
+export function resolveConnectionMode(
+  preference: ConnectionPreference,
+  onHomeNetwork: boolean | null,
+): ConnectionMode {
+  if (preference === "home") return "home";
+  if (preference === "remote") return "remote";
+  return onHomeNetwork === true ? "home" : "remote";
+}
+
+/** Chip value: Auto when preference is Auto; else LAN / Remote for forced mode. */
+export function pathChipLabel(
+  preference: ConnectionPreference,
+): "Auto" | "LAN" | "Remote" {
+  if (preference === "auto") return "Auto";
+  if (preference === "home") return "LAN";
+  return "Remote";
+}
 
 function parseIpv4(ip: string): number[] | null {
   const m = String(ip || "").match(
@@ -58,17 +92,19 @@ export function cidrFromHomeBase(homeBaseUrl: string): string | null {
 }
 
 /**
- * When clearly on home LAN and a home base is set, swap the remote URL's host
+ * When effective mode is home and a home base is set, swap the remote URL's host
  * to the LAN host while keeping the service port and path.
  */
 export function resolveServiceUrl(
   remoteUrl: string,
   homeBaseUrl: string,
   onHomeNetwork: boolean | null,
+  preference: ConnectionPreference = "auto",
 ): string {
   const remote = String(remoteUrl || "").trim();
   if (!remote) return remote;
-  if (onHomeNetwork !== true) return remote;
+  const mode = resolveConnectionMode(preference, onHomeNetwork);
+  if (mode !== "home") return remote;
   const homeHost = hostFromUrlOrHost(homeBaseUrl);
   if (!homeHost) return remote;
 
@@ -92,7 +128,13 @@ export async function loadPathSettings(): Promise<PathSettings> {
     pathingDefaults?: Partial<PathSettings>;
   }>("./credentials.local.ts", { eager: true });
   const seed = modules["./credentials.local.ts"]?.pathingDefaults ?? {};
-  const base: PathSettings = { ...DEFAULT_PATHING, ...seed };
+  const base: PathSettings = {
+    ...DEFAULT_PATHING,
+    ...seed,
+    connectionPreference: normalizeConnectionPreference(
+      seed.connectionPreference ?? DEFAULT_PATHING.connectionPreference,
+    ),
+  };
   try {
     const { value } = await Preferences.get({ key: PATHING_STORAGE_KEY });
     if (!value) return base;
@@ -102,6 +144,9 @@ export async function loadPathSettings(): Promise<PathSettings> {
         (typeof parsed.homeBaseUrl === "string" &&
           parsed.homeBaseUrl.trim()) ||
         base.homeBaseUrl,
+      connectionPreference: normalizeConnectionPreference(
+        parsed.connectionPreference ?? base.connectionPreference,
+      ),
     };
   } catch {
     return base;
@@ -111,6 +156,11 @@ export async function loadPathSettings(): Promise<PathSettings> {
 export async function savePathSettings(settings: PathSettings): Promise<void> {
   await Preferences.set({
     key: PATHING_STORAGE_KEY,
-    value: JSON.stringify(settings),
+    value: JSON.stringify({
+      homeBaseUrl: settings.homeBaseUrl,
+      connectionPreference: normalizeConnectionPreference(
+        settings.connectionPreference,
+      ),
+    }),
   });
 }

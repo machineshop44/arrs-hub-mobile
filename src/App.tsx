@@ -32,8 +32,11 @@ import {
 import {
   DEFAULT_PATHING,
   loadPathSettings,
+  pathChipLabel,
+  resolveConnectionMode,
   resolveServiceUrl,
   savePathSettings,
+  type ConnectionPreference,
   type PathSettings,
 } from "./pathing";
 import {
@@ -532,10 +535,17 @@ export function App() {
           rawUrl,
           pathing.homeBaseUrl,
           homeNet?.onHomeNetwork ?? null,
+          pathing.connectionPreference,
         ),
       };
     },
-    [pathing.homeBaseUrl, homeNet?.onHomeNetwork, wol.hubUrl, wol.hubPort],
+    [
+      pathing.homeBaseUrl,
+      pathing.connectionPreference,
+      homeNet?.onHomeNetwork,
+      wol.hubUrl,
+      wol.hubPort,
+    ],
   );
 
   const onWakePc = async () => {
@@ -592,6 +602,7 @@ export function App() {
           hubRaw,
           pathing.homeBaseUrl,
           homeNet?.onHomeNetwork ?? null,
+          pathing.connectionPreference,
         )
       : "";
     const hubServices = hubBase
@@ -629,6 +640,7 @@ export function App() {
     wol.hubUrl,
     wol.hubPort,
     pathing.homeBaseUrl,
+    pathing.connectionPreference,
     homeNet?.onHomeNetwork,
   ]);
 
@@ -828,14 +840,31 @@ export function App() {
       hubRaw,
       pathing.homeBaseUrl,
       homeNet?.onHomeNetwork ?? null,
+      pathing.connectionPreference,
     );
   }, [
     enabled,
     wol.hubUrl,
     wol.hubPort,
     pathing.homeBaseUrl,
+    pathing.connectionPreference,
     homeNet?.onHomeNetwork,
   ]);
+
+  const connectionMode = resolveConnectionMode(
+    pathing.connectionPreference,
+    homeNet?.onHomeNetwork ?? null,
+  );
+
+  const setConnectionPreference = (pref: ConnectionPreference) => {
+    void persistPathing({ ...pathing, connectionPreference: pref });
+  };
+
+  const PATH_PREFS: { id: ConnectionPreference; label: string }[] = [
+    { id: "auto", label: "Auto" },
+    { id: "home", label: "Home" },
+    { id: "remote", label: "Remote" },
+  ];
 
   const openServiceById = (id: string) => {
     const service = services.find((s) => s.id === id);
@@ -1049,15 +1078,21 @@ export function App() {
 
   if (screen === "settings") {
     const networkSummary = (() => {
+      const pref =
+        pathing.connectionPreference === "auto"
+          ? "Auto"
+          : pathing.connectionPreference === "home"
+            ? "Home"
+            : "Remote";
       const hub = wol.hubUrl.trim()
         ? hostSummary(buildHubBaseUrl(wol.hubUrl, wol.hubPort))
         : "";
       if (pathing.homeBaseUrl.trim()) {
         return hub
-          ? `LAN · ${hostSummary(pathing.homeBaseUrl)} · Hub ${hub}`
-          : `LAN · ${hostSummary(pathing.homeBaseUrl)}`;
+          ? `${pref} · LAN ${hostSummary(pathing.homeBaseUrl)} · Hub ${hub}`
+          : `${pref} · LAN ${hostSummary(pathing.homeBaseUrl)}`;
       }
-      return hub ? `Hub ${hub}` : "Remote URLs only";
+      return hub ? `${pref} · Hub ${hub}` : `${pref} · Remote URLs only`;
     })();
     const wolMac = normalizeMac(wol.mac);
     const wolSummary = wol.enabled
@@ -1140,6 +1175,30 @@ export function App() {
           </button>
           {settingsNetworkOpen && (
             <div className="settings-accordion-body">
+              <div
+                className="connection-toggle"
+                role="group"
+                aria-label="Connection preference"
+                style={{ marginBottom: "0.75rem" }}
+              >
+                {PATH_PREFS.map((pref) => (
+                  <button
+                    key={pref.id}
+                    type="button"
+                    className={`connection-btn${
+                      pathing.connectionPreference === pref.id ? " active" : ""
+                    }`}
+                    onClick={() => setConnectionPreference(pref.id)}
+                  >
+                    {pref.label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint" style={{ padding: "0 0 0.5rem" }}>
+                Auto follows home Wi‑Fi. Home forces LAN. Remote keeps WAN.
+                Effective:{" "}
+                {connectionMode === "home" ? "Home (LAN)" : "Remote"}.
+              </p>
               <label className="field">
                 <span>Home / LAN base URL</span>
                 <input
@@ -1163,8 +1222,8 @@ export function App() {
                 />
               </label>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
-                On home Wi‑Fi, remote hosts swap to this LAN base (ports stay).
-                Leave blank to always use remote URLs.
+                On home Wi‑Fi (or Home mode), remote hosts swap to this LAN base
+                (ports stay). Leave blank to always use remote URLs.
               </p>
               <label className="field">
                 <span>Arrs Hub host</span>
@@ -1803,15 +1862,13 @@ export function App() {
               upCount={onlineCount}
               downCount={offlineCount}
               scanning={!healthSettled}
-              networkLabel={
-                homeNet?.onHomeNetwork === true ? "LAN" : "Remote"
-              }
+              networkLabel={pathChipLabel(pathing.connectionPreference)}
+              connectionPreference={pathing.connectionPreference}
+              effectiveMode={connectionMode}
+              activeBaseUrl={hubBaseForChips}
+              onConnectionPreference={setConnectionPreference}
               onOpenStreams={() => openServiceById("tautulli")}
               onOpenService={openServiceById}
-              onOpenNetwork={() => {
-                setSettingsNetworkOpen(true);
-                setScreen("settings");
-              }}
             />
           )}
           {showWakeControl && (

@@ -9,9 +9,13 @@ import {
   type OmbiPendingItem,
 } from "./hubSummary";
 import type { ServiceConfig } from "./services";
+import type {
+  ConnectionMode,
+  ConnectionPreference,
+} from "./pathing";
 
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
-type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | null;
+type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | "path" | null;
 
 export type HomeChipModule = {
   id: string;
@@ -28,12 +32,24 @@ type HomeStatusChipsProps = {
   upCount: number;
   downCount: number;
   scanning: boolean;
-  /** LAN when on home network, Remote otherwise. */
-  networkLabel: "LAN" | "Remote";
+  /** Chip value: Auto | LAN | Remote from preference. */
+  networkLabel: "Auto" | "LAN" | "Remote";
+  /** Persisted preference (Auto / Home / Remote). */
+  connectionPreference: ConnectionPreference;
+  /** Resolved mode after Auto detection or forced preference. */
+  effectiveMode: ConnectionMode;
+  /** Active base URL currently used for probes / hub. */
+  activeBaseUrl: string;
+  onConnectionPreference: (pref: ConnectionPreference) => void;
   onOpenStreams: () => void;
   onOpenService: (id: string) => void;
-  onOpenNetwork: () => void;
 };
+
+const PATH_PREFS: { id: ConnectionPreference; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "home", label: "Home" },
+  { id: "remote", label: "Remote" },
+];
 
 export function HomeStatusChips({
   hubBaseUrl,
@@ -45,9 +61,12 @@ export function HomeStatusChips({
   downCount,
   scanning,
   networkLabel,
+  connectionPreference,
+  effectiveMode,
+  activeBaseUrl,
+  onConnectionPreference,
   onOpenStreams,
   onOpenService,
-  onOpenNetwork,
 }: HomeStatusChipsProps) {
   const [summary, setSummary] = useState<HubStatusSummary | null>(null);
   const [sheet, setSheet] = useState<SheetId>(null);
@@ -226,11 +245,16 @@ export function HomeStatusChips({
       title: "Ombi pending",
     },
     {
-      id: "network",
+      id: "path",
       label: "Path",
       value: networkLabel,
-      tone: networkLabel === "LAN" ? "good" : "muted",
-      title: "Network path (Settings)",
+      tone:
+        networkLabel === "LAN"
+          ? "good"
+          : networkLabel === "Auto"
+            ? "accent"
+            : "muted",
+      title: "Connection path (Auto / Home / Remote)",
     },
   ];
 
@@ -267,7 +291,9 @@ export function HomeStatusChips({
             ? "Active downloads"
             : sheet === "ombi"
               ? "Ombi pending"
-              : "";
+              : sheet === "path"
+                ? "Connection path"
+                : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -275,21 +301,26 @@ export function HomeStatusChips({
       onOpenStreams();
       return;
     }
-    if (chipId === "network") {
-      setSheet(null);
-      onOpenNetwork();
-      return;
-    }
     if (
       chipId === "up" ||
       chipId === "down" ||
       chipId === "queue" ||
       chipId === "downloads" ||
-      chipId === "ombi"
+      chipId === "ombi" ||
+      chipId === "path"
     ) {
       openSheet(chipId);
     }
   };
+
+  const effectiveLabel =
+    effectiveMode === "home" ? "Home (LAN)" : "Remote";
+  const preferenceLabel =
+    connectionPreference === "auto"
+      ? "Auto"
+      : connectionPreference === "home"
+        ? "Home"
+        : "Remote";
 
   return (
     <section className="dash-status" aria-label="Hub status summary">
@@ -300,7 +331,8 @@ export function HomeStatusChips({
             chip.id === "down" ||
             chip.id === "queue" ||
             chip.id === "downloads" ||
-            chip.id === "ombi";
+            chip.id === "ombi" ||
+            chip.id === "path";
           const expanded = expandsSheet && sheet === chip.id;
           return (
             <div key={chip.id} className="dash-chip-wrap">
@@ -347,6 +379,47 @@ export function HomeStatusChips({
                 ✕
               </button>
             </div>
+
+            {sheet === "path" && (
+              <>
+                <p className="dash-path-meta">
+                  <span>
+                    Mode · <strong>{preferenceLabel}</strong>
+                    {connectionPreference === "auto"
+                      ? ` → ${effectiveLabel}`
+                      : ""}
+                  </span>
+                </p>
+                <p className="dash-path-url" title={activeBaseUrl || undefined}>
+                  {activeBaseUrl.trim() || "No active base URL configured"}
+                </p>
+                <div
+                  className="connection-toggle"
+                  role="group"
+                  aria-label="Connection preference"
+                >
+                  {PATH_PREFS.map((pref) => (
+                    <button
+                      key={pref.id}
+                      type="button"
+                      className={`connection-btn${
+                        connectionPreference === pref.id ? " active" : ""
+                      }`}
+                      onClick={() => onConnectionPreference(pref.id)}
+                    >
+                      {pref.label}
+                    </button>
+                  ))}
+                </div>
+                <p
+                  className="dash-chip-popover-empty"
+                  style={{ marginTop: "0.75rem" }}
+                >
+                  Auto follows home Wi‑Fi. Home forces LAN host swap. Remote
+                  keeps WAN URLs.
+                </p>
+              </>
+            )}
 
             {sheet === "up" && (
               <>

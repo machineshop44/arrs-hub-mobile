@@ -28,6 +28,7 @@ export const wolDefaults: Partial<WolSettings> = {
 /** Optional dual-path defaults (LAN host for home Wi‑Fi). */
 export const pathingDefaults: Partial<PathSettings> = {
   // homeBaseUrl: "http://192.168.1.50",
+  // connectionPreference: "auto", // auto | home | remote
 };
 
 export default seed;

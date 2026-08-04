@@ -1,3 +1,4 @@
-# Built APKs land here via scripts/publish-apk-to-drive.ps1 (*.apk are gitignored).
-# Canonical install artifact: ArrsHubStatus-<versionName>(<versionCode>).apk
-# Also mirrored to G:\My Drive\apks\ (one versioned file only; no -latest/-universal).
+# Built APKs land here via publish scripts (*.apk are gitignored).
+# Production: ArrsHubStatus-<versionName>(<versionCode>).apk + ArrsHubStatus-latest.apk
+# Tester: ArrsHubMobileTester-<versionName>(<versionCode>).apk + ArrsHubMobileTester-latest.apk
+# Also mirrored to G:\My Drive\apks\

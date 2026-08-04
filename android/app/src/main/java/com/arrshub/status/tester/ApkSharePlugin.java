@@ -1,4 +1,4 @@
-package com.arrshub.status;
+package com.arrshub.status.tester;
 
 import android.content.ClipData;
 import android.content.Intent;
@@ -20,8 +20,8 @@ import java.io.FileOutputStream;
 @CapacitorPlugin(name = "ApkShare")
 public class ApkSharePlugin extends Plugin {
     private static final String TAG = "ApkShare";
-    private static final String SHARE_NAME = "ArrsHubStatus-update.apk";
-    private static final String DEFAULT_SETTINGS_NAME = "ArrsHubStatus-settings.json";
+    private static final String SHARE_NAME = "ArrsHubMobileTester-update.apk";
+    private static final String DEFAULT_SETTINGS_NAME = "ArrsHubMobileTester-settings.json";
 
     private File ensureShareDir() throws Exception {
         File outDir = new File(getContext().getCacheDir(), "share");
@@ -79,10 +79,10 @@ public class ApkSharePlugin extends Plugin {
             openShareChooser(
                     out,
                     "application/octet-stream",
-                    "Arrs Hub Status update",
-                    "Open ArrsHubStatus-update.apk and tap Install. "
+                    "Arrs Hub Mobile Tester update",
+                    "Open ArrsHubMobileTester-update.apk and tap Install. "
                             + "Allow installs from this app/source if Android asks.",
-                    "Share Arrs Hub Status APK");
+                    "Share Arrs Hub Mobile Tester APK");
             Log.i(TAG, "Sharing APK (" + out.length() + " bytes)");
 
             JSObject result = new JSObject();
@@ -121,8 +121,8 @@ public class ApkSharePlugin extends Plugin {
             openShareChooser(
                     out,
                     "application/json",
-                    "Arrs Hub Status settings",
-                    "Import this file in Arrs Hub Status → Settings → Import config.",
+                    "Arrs Hub Mobile Tester settings",
+                    "Import this file in Arrs Hub Mobile Tester → Settings → Import config.",
                     "Share settings file");
             Log.i(TAG, "Sharing settings (" + out.length() + " bytes)");
 

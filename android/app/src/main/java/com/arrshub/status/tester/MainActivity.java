@@ -1,4 +1,4 @@
-package com.arrshub.status;
+package com.arrshub.status.tester;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;

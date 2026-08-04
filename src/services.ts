@@ -4,6 +4,15 @@ export const REMOTE_HOST = "http://67.84.101.14";
 export type ProbeKind = "arr" | "http" | "plex";
 export type AuthKind = "apiKey" | "userPass" | "none";
 
+export type ServiceCategory =
+  | "media-management"
+  | "indexers"
+  | "downloaders"
+  | "requests"
+  | "monitoring"
+  | "automation"
+  | "other";
+
 export type ServiceDefinition = {
   id: string;
   name: string;
@@ -12,6 +21,7 @@ export type ServiceDefinition = {
   color: string;
   probe: ProbeKind;
   auth: AuthKind;
+  category: ServiceCategory;
   defaultEnabled?: boolean;
 };
 
@@ -26,7 +36,28 @@ export type ServiceConfig = {
   color: string;
   probe: ProbeKind;
   auth: AuthKind;
+  category: ServiceCategory;
 };
+
+export const CATEGORY_LABELS: Record<ServiceCategory, string> = {
+  "media-management": "Media Management",
+  indexers: "Indexers",
+  downloaders: "Download Clients",
+  requests: "Requests",
+  monitoring: "Monitoring & Stats",
+  automation: "Automation",
+  other: "Other",
+};
+
+export const CATEGORY_ORDER: ServiceCategory[] = [
+  "media-management",
+  "indexers",
+  "downloaders",
+  "requests",
+  "monitoring",
+  "automation",
+  "other",
+];
 
 /** Brand accents aligned with each app (not shared duplicates). */
 export const DEFAULT_SERVICES: ServiceDefinition[] = [
@@ -37,6 +68,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#3a7abf",
     probe: "arr",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: true,
   },
   {
@@ -46,6 +78,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#f5c518",
     probe: "arr",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: true,
   },
   {
@@ -55,6 +88,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#009252",
     probe: "arr",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: true,
   },
   {
@@ -64,6 +98,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#8e3532",
     probe: "arr",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: true,
   },
   {
@@ -73,6 +108,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#e66000",
     probe: "arr",
     auth: "apiKey",
+    category: "indexers",
     defaultEnabled: true,
   },
   {
@@ -82,6 +118,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#f97316",
     probe: "http",
     auth: "none",
+    category: "indexers",
     defaultEnabled: true,
   },
   {
@@ -91,6 +128,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#be4b14",
     probe: "http",
     auth: "apiKey",
+    category: "automation",
     defaultEnabled: true,
   },
   {
@@ -100,6 +138,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#3585d2",
     probe: "http",
     auth: "userPass",
+    category: "downloaders",
     defaultEnabled: true,
   },
   {
@@ -109,6 +148,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#ffc230",
     probe: "http",
     auth: "apiKey",
+    category: "downloaders",
     defaultEnabled: true,
   },
   {
@@ -118,6 +158,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#df7a00",
     probe: "http",
     auth: "apiKey",
+    category: "requests",
     defaultEnabled: true,
   },
   {
@@ -127,6 +168,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#cc7b19",
     probe: "http",
     auth: "apiKey",
+    category: "monitoring",
     defaultEnabled: true,
   },
   {
@@ -136,6 +178,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#00c2a8",
     probe: "http",
     auth: "none",
+    category: "automation",
     defaultEnabled: true,
   },
   {
@@ -145,6 +188,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#e5a00d",
     probe: "plex",
     auth: "apiKey",
+    category: "other",
     defaultEnabled: true,
   },
   {
@@ -154,6 +198,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#45b29d",
     probe: "http",
     auth: "userPass",
+    category: "media-management",
     defaultEnabled: false,
   },
   {
@@ -163,6 +208,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#6366f1",
     probe: "http",
     auth: "apiKey",
+    category: "requests",
     defaultEnabled: false,
   },
   {
@@ -172,6 +218,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#b43e8f",
     probe: "arr",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: false,
   },
   {
@@ -181,6 +228,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#3fb950",
     probe: "http",
     auth: "apiKey",
+    category: "media-management",
     defaultEnabled: true,
   },
   {
@@ -191,6 +239,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     color: "#2dd4bf",
     probe: "http",
     auth: "none",
+    category: "other",
     defaultEnabled: true,
   },
 ];
@@ -201,6 +250,14 @@ export type CredentialSeed = Partial<
     { apiKey?: string; username?: string; password?: string; url?: string }
   >
 >;
+
+const CATEGORY_BY_ID = Object.fromEntries(
+  DEFAULT_SERVICES.map((d) => [d.id, d.category]),
+) as Record<string, ServiceCategory>;
+
+export function serviceCategory(id: string): ServiceCategory {
+  return CATEGORY_BY_ID[id] || "other";
+}
 
 export function buildDefaultConfigs(seed: CredentialSeed = {}): ServiceConfig[] {
   return DEFAULT_SERVICES.map((def) => {
@@ -216,6 +273,7 @@ export function buildDefaultConfigs(seed: CredentialSeed = {}): ServiceConfig[] 
       color: def.color,
       probe: def.probe,
       auth: def.auth,
+      category: def.category,
     };
   });
 }

@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -34,18 +35,25 @@ import {
   savePathSettings,
   type PathSettings,
 } from "./pathing";
-import type { ServiceConfig } from "./services";
+import {
+  CATEGORY_LABELS,
+  CATEGORY_ORDER,
+  serviceCategory,
+  type ServiceCategory,
+  type ServiceConfig,
+} from "./services";
 import { TautulliPanel } from "./TautulliPanel";
 import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
 import { YtarrPanel } from "./YtarrPanel";
 import { WorkoutsPanel } from "./WorkoutsPanel";
+import { HomeStatusChips } from "./HomeStatusChips";
 import {
   getAppVersionInfo,
   shareInstalledApk,
   type AppVersionInfo,
 } from "./apkShare";
-import { APP_VERSION_LABEL } from "./version";
+import { APP_NAME, APP_VERSION_LABEL } from "./version";
 import {
   applySettingsBundle,
   buildSettingsBundle,
@@ -235,6 +243,7 @@ export function App() {
   const [wol, setWol] = useState<WolSettings>(DEFAULT_WOL);
   const [pathing, setPathing] = useState<PathSettings>(DEFAULT_PATHING);
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
+  const [hubReachable, setHubReachable] = useState<boolean | null>(null);
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
@@ -510,6 +519,7 @@ export function App() {
     const hubServices = hubBase
       ? await fetchHubWatchdogServices(hubBase)
       : null;
+    setHubReachable(hubBase ? hubServices != null : false);
 
     if (hubServices) {
       for (const service of enabled) {
@@ -690,16 +700,78 @@ export function App() {
   };
 
   const moveModule = async (id: string, dir: -1 | 1) => {
-    const ids = modules.map((m) => m.id);
-    const i = ids.indexOf(id);
+    const category = serviceCategory(id);
+    const catIds = modules
+      .filter((m) => serviceCategory(m.id) === category)
+      .map((m) => m.id);
+    const i = catIds.indexOf(id);
     const j = i + dir;
-    if (i < 0 || j < 0 || j >= ids.length) return;
-    const swapped = [...ids];
-    const tmp = swapped[i]!;
-    swapped[i] = swapped[j]!;
-    swapped[j] = tmp;
-    const rest = moduleOrder.filter((x) => !swapped.includes(x));
-    await persistModuleOrder([...swapped, ...rest]);
+    if (i < 0 || j < 0 || j >= catIds.length) return;
+    const swappedCat = [...catIds];
+    const tmp = swappedCat[i]!;
+    swappedCat[i] = swappedCat[j]!;
+    swappedCat[j] = tmp;
+
+    const next: string[] = [];
+    let catEmitted = false;
+    for (const mid of modules.map((m) => m.id)) {
+      if (serviceCategory(mid) === category) {
+        if (!catEmitted) {
+          next.push(...swappedCat);
+          catEmitted = true;
+        }
+        continue;
+      }
+      next.push(mid);
+    }
+    const rest = moduleOrder.filter((x) => !next.includes(x));
+    await persistModuleOrder([...next, ...rest]);
+  };
+
+  const modulesByCategory = useMemo(() => {
+    const groups: { category: ServiceCategory; items: ServiceConfig[] }[] = [];
+    for (const category of CATEGORY_ORDER) {
+      const items = modules.filter((m) => serviceCategory(m.id) === category);
+      if (items.length > 0) groups.push({ category, items });
+    }
+    return groups;
+  }, [modules]);
+
+  const hubBaseForChips = useMemo(() => {
+    const workoutsUrl =
+      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
+    const hubRaw = wol.hubUrl.trim()
+      ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
+      : workoutsUrl
+        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
+        : "";
+    if (!hubRaw) return "";
+    return resolveServiceUrl(
+      hubRaw,
+      pathing.homeBaseUrl,
+      homeNet?.onHomeNetwork ?? null,
+    );
+  }, [
+    enabled,
+    wol.hubUrl,
+    wol.hubPort,
+    pathing.homeBaseUrl,
+    homeNet?.onHomeNetwork,
+  ]);
+
+  const openServiceById = (id: string) => {
+    const service = services.find((s) => s.id === id);
+    if (service) openModule(service);
+  };
+
+  const cardHealthLabel = (probe: ProbeResult | undefined): string => {
+    if (!probe || probe.up === null) return "Unknown";
+    if (probe.up) {
+      if (probe.viaHub) return "Up · via Hub";
+      if (probe.latencyMs != null) return `Up · ${probe.latencyMs}ms`;
+      return "Up";
+    }
+    return probe.viaHub ? "Down · via Hub" : probe.message || "Down";
   };
 
   if (!ready) {
@@ -1590,7 +1662,7 @@ export function App() {
       )}
       <aside className={`drawer ${drawer ? "open" : ""}`}>
         <div className="drawer-head">
-          <strong>Arrs</strong>
+          <strong>{APP_NAME}</strong>
         </div>
         {modules.map((service) => (
           <button
@@ -1626,7 +1698,7 @@ export function App() {
         >
           ☰
         </button>
-        <h1>Arrs</h1>
+        <h1>{APP_NAME}</h1>
         <button
           type="button"
           className="icon-btn"
@@ -1640,21 +1712,17 @@ export function App() {
       {(healthSettled || showWakeControl) && (
         <div className="home-status">
           {healthSettled && (
-            <p className="home-status-line" aria-live="polite">
-              <span className="status-dot status-up" aria-hidden="true" />
-              {onlineCount} online
-              <span className="home-status-sep">·</span>
-              <span className="status-dot status-down" aria-hidden="true" />
-              {offlineCount} offline
-              <span className="home-status-sep">·</span>
-              {modules.length} modules
-              {pathing.homeBaseUrl.trim() && (
-                <>
-                  <span className="home-status-sep">·</span>
-                  {homeNet?.onHomeNetwork === true ? "LAN" : "Remote"}
-                </>
-              )}
-            </p>
+            <HomeStatusChips
+              hubBaseUrl={hubBaseForChips}
+              hubReachable={hubReachable}
+              services={services}
+              resolveUrl={(s) => withEffectiveUrl(s).url}
+              upCount={onlineCount}
+              downCount={offlineCount}
+              scanning={!healthSettled}
+              onOpenStreams={() => openServiceById("tautulli")}
+              onOpenService={openServiceById}
+            />
           )}
           {showWakeControl && (
             <div className="wol-bar home-wol">
@@ -1707,75 +1775,95 @@ export function App() {
             </div>
           )}
 
-          <ul
-            className={`module-list home${reordering ? " is-reordering" : ""}`}
+          <div
+            className={`home-sections${reordering ? " is-reordering" : ""}`}
           >
-            {modules.map((service, index) => {
-              const probe = health[service.id];
-              const upState = probe?.up;
-              const viaHub = Boolean(probe?.viaHub);
-              return (
-                <li
-                  key={service.id}
-                  className={`module-item${reordering ? " reordering" : ""}`}
-                >
-                  {reordering && (
-                    <div className="reorder-btns">
-                      <button
-                        type="button"
-                        className="reorder-btn"
-                        aria-label={`Move ${service.name} up`}
-                        disabled={index === 0}
-                        onClick={() => void moveModule(service.id, -1)}
+            {modulesByCategory.map(({ category, items }) => (
+              <section key={category} className="service-section">
+                <h2 className="section-title">{CATEGORY_LABELS[category]}</h2>
+                <div className="service-grid">
+                  {items.map((service, index) => {
+                    const probe = health[service.id];
+                    const upState = probe?.up;
+                    return (
+                      <div
+                        key={service.id}
+                        className={`service-card-wrap${reordering ? " reordering" : ""}`}
                       >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        className="reorder-btn"
-                        aria-label={`Move ${service.name} down`}
-                        disabled={index === modules.length - 1}
-                        onClick={() => void moveModule(service.id, 1)}
-                      >
-                        ↓
-                      </button>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className="module-row"
-                    {...moduleRowPressHandlers}
-                    onClick={() => onModuleRowClick(service)}
-                  >
-                    <span
-                      className={statusDotClass(upState)}
-                      aria-hidden="true"
-                    />
-                    <span className="module-text">
-                      <strong>{service.name}</strong>
-                      <small>
-                        {MODULE_COPY[service.id] || "Open module"}
-                        {upState === true
-                          ? viaHub
-                            ? " · Online · via Hub"
-                            : " · Online"
-                          : upState === false
-                            ? viaHub
-                              ? " · Offline · via Hub"
-                              : " · Offline"
-                            : ""}
-                      </small>
-                    </span>
-                    <ServiceIcon
-                      id={service.id}
-                      color={service.color}
-                      size={28}
-                    />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                        {reordering && (
+                          <div className="reorder-btns">
+                            <button
+                              type="button"
+                              className="reorder-btn"
+                              aria-label={`Move ${service.name} up`}
+                              disabled={index === 0}
+                              onClick={() => void moveModule(service.id, -1)}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="reorder-btn"
+                              aria-label={`Move ${service.name} down`}
+                              disabled={index === items.length - 1}
+                              onClick={() => void moveModule(service.id, 1)}
+                            >
+                              ↓
+                            </button>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          className="service-card"
+                          style={
+                            {
+                              "--accent": service.color,
+                            } as CSSProperties
+                          }
+                          {...moduleRowPressHandlers}
+                          onClick={() => onModuleRowClick(service)}
+                        >
+                          <span className="service-card-icon">
+                            <ServiceIcon
+                              id={service.id}
+                              color={service.color}
+                              size={28}
+                            />
+                          </span>
+                          <span className="service-card-body">
+                            <strong>
+                              <span
+                                className={statusDotClass(upState)}
+                                aria-hidden="true"
+                              />
+                              {service.name}
+                            </strong>
+                            <small>
+                              {MODULE_COPY[service.id] || "Open module"}
+                            </small>
+                            <span
+                              className={`service-card-health ${
+                                upState === true
+                                  ? "status-up"
+                                  : upState === false
+                                    ? "status-down"
+                                    : "status-unknown"
+                              }`}
+                            >
+                              {cardHealthLabel(probe)}
+                            </span>
+                          </span>
+                          <span className="service-card-arrow" aria-hidden="true">
+                            →
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
         </>
       )}
     </div>

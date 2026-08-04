@@ -9,6 +9,10 @@ import {
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
 import {
+  isEmbeddedVlcAvailable,
+  playEmbeddedVlc,
+} from "./vlcPlayer";
+import {
   fetchWorkoutClients,
   fetchWorkoutDiscover,
   fetchWorkoutSettings,
@@ -244,8 +248,8 @@ function WorkoutPlayer({
             {native ? (
               <span>
                 {" "}
-                Try <strong>Play in VLC</strong> below — hub stream is often
-                Matroska, which WebView can’t decode.
+                Try <strong>Play in VLC</strong> (external app) below if the
+                built-in player can’t decode this stream.
               </span>
             ) : null}
           </div>
@@ -493,6 +497,33 @@ export function WorkoutsPanel({
             `Hub returned an empty stream URL for "${broken.title}". Update Arrs Hub and try again.`,
           );
         }
+
+        // Primary (Android): in-process libVLC fullscreen — stays in-app.
+        if (Capacitor.isNativePlatform()) {
+          try {
+            const embedOk = await isEmbeddedVlcAvailable();
+            if (embedOk) {
+              setPlayingDay(null);
+              setMessage(`Playing here (VLC): ${result.warmup} → ${result.day}`);
+              const outcome = await playEmbeddedVlc(result.playlist, 0);
+              setMessage(
+                outcome.finished
+                  ? "Workout finished."
+                  : `Stopped: ${result.warmup} → ${result.day}`,
+              );
+              return;
+            }
+          } catch (embedErr) {
+            console.warn("Embedded VLC unavailable, falling back", embedErr);
+            setMessage(
+              `Embedded VLC failed — using built-in player. ${
+                embedErr instanceof Error ? embedErr.message : String(embedErr)
+              }`,
+            );
+          }
+        }
+
+        // Fallback: HTML5 overlay (+ Intent VLC / external on native).
         setPlaylist(result.playlist);
         setPlaylistIndex(0);
         setMessage(`Playing here: ${result.warmup} → ${result.day}`);

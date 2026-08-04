@@ -4,4 +4,6 @@
     <string name="title_activity_main">Arrs Hub Mobile Tester</string>
     <string name="package_name">com.arrshub.status.tester</string>
     <string name="custom_url_scheme">com.arrshub.status.tester</string>
+    <string name="vlc_close">Close player</string>
+    <string name="vlc_play_pause">Play or pause</string>
 </resources>

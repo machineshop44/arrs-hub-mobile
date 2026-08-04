@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ApkSharePlugin.class);
         registerPlugin(ExternalPlayerPlugin.class);
+        registerPlugin(VlcPlayerPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

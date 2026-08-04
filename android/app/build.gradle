@@ -7,8 +7,8 @@ android {
         applicationId "com.arrshub.status.tester"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 19
-        versionName "1.0.18"
+        versionCode 20
+        versionName "1.0.19"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Fat / universal APK: include common ABIs so one artifact installs on
         // Pixel (arm64), tablets, and emulators (mirrors Ava Bedtime approach).
@@ -51,6 +51,8 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // In-app Matroska/AC3 playback (LGPL). Grows APK ~25–40MB (native ABIs).
+    implementation "org.videolan.android:libvlc-all:3.6.2"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

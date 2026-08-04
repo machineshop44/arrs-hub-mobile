@@ -297,9 +297,8 @@ export function summarizeBundle(bundle: SettingsBundle): string {
       ? "WOL on (no MAC)"
       : "WOL off/empty";
   const home = bundle.pathing.homeBaseUrl.trim() || "no LAN base";
-  const pathPref = bundle.pathing.connectionPreference || "auto";
   const hub = bundle.wol.hubUrl.trim()
     ? `hub :${bundle.wol.hubPort || DEFAULT_WOL.hubPort}`
     : "no hub";
-  return `${withKeys} services · ${wol} · ${home} · ${pathPref} · ${hub}`;
+  return `${withKeys} services · ${wol} · ${home} · ${hub}`;
 }

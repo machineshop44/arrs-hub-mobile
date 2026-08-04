@@ -5,7 +5,7 @@ export const PATHING_STORAGE_KEY = "arrs-mobile-pathing-v1";
 
 /** Effective path after Auto detection or a forced preference. */
 export type ConnectionMode = "home" | "remote";
-/** Auto detects LAN vs away; home/remote force a mode (mirrors Arrs Hub). */
+/** Auto detects LAN vs away from IP/CIDR (forced prefs removed from UI). */
 export type ConnectionPreference = "auto" | ConnectionMode;
 
 export type PathSettings = {
@@ -14,7 +14,7 @@ export type PathSettings = {
    * When on the home network, service remote URLs swap to this host and keep their port/path.
    */
   homeBaseUrl: string;
-  /** Auto / Home / Remote — same spirit as Arrs Hub `connectionPreference`. */
+  /** Always auto — kept for settings import/export compat. */
   connectionPreference: ConnectionPreference;
 };
 
@@ -24,29 +24,23 @@ export const DEFAULT_PATHING: PathSettings = {
 };
 
 export function normalizeConnectionPreference(
-  raw: unknown,
+  _raw: unknown,
 ): ConnectionPreference {
-  if (raw === "home" || raw === "remote" || raw === "auto") return raw;
-  return DEFAULT_PATHING.connectionPreference;
+  // Path mode is automatic from IP/CIDR only; ignore legacy home/remote forces.
+  return "auto";
 }
 
-/** Resolve Auto → home|remote from LAN detection; forced prefs win. */
+/** Resolve LAN vs remote from home-network detection (Auto only). */
 export function resolveConnectionMode(
-  preference: ConnectionPreference,
+  _preference: ConnectionPreference,
   onHomeNetwork: boolean | null,
 ): ConnectionMode {
-  if (preference === "home") return "home";
-  if (preference === "remote") return "remote";
   return onHomeNetwork === true ? "home" : "remote";
 }
 
-/** Chip value: Auto when preference is Auto; else LAN / Remote for forced mode. */
-export function pathChipLabel(
-  preference: ConnectionPreference,
-): "Auto" | "LAN" | "Remote" {
-  if (preference === "auto") return "Auto";
-  if (preference === "home") return "LAN";
-  return "Remote";
+/** Non-clickable status hint from effective mode. */
+export function pathHintLabel(mode: ConnectionMode): "LAN" | "Remote" {
+  return mode === "home" ? "LAN" : "Remote";
 }
 
 function parseIpv4(ip: string): number[] | null {

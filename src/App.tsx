@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import { ArrPanel } from "./ArrPanel";
 import {
@@ -50,7 +51,10 @@ import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
 import { YtarrPanel } from "./YtarrPanel";
 import { WorkoutsPanel } from "./WorkoutsPanel";
-import { HomeStatusChips } from "./HomeStatusChips";
+import {
+  HomeStatusChips,
+  type HomeStatusChipsHandle,
+} from "./HomeStatusChips";
 import {
   getAppVersionInfo,
   shareInstalledApk,
@@ -230,6 +234,8 @@ function serviceRowSummary(
   return `${status} · ${hostSummary(url)}`;
 }
 
+const PULL_REFRESH_THRESHOLD = 72;
+
 export function App() {
   const [screen, setScreen] = useState<Screen>("modules");
   const [services, setServices] = useState<ServiceConfig[]>([]);
@@ -237,6 +243,12 @@ export function App() {
   const [ready, setReady] = useState(false);
   /** False until first health wave finishes or boot timeout — avoids a frozen Home. */
   const [healthSettled, setHealthSettled] = useState(false);
+  /** True once Home has been shown (probe done or boot timeout). */
+  const [initialSettled, setInitialSettled] = useState(false);
+  /** First boot probe still running after Home was revealed early. */
+  const [bootProbing, setBootProbing] = useState(true);
+  /** Announced reconnect (resume / pull) — subtle banner, not full overlay. */
+  const [reconnecting, setReconnecting] = useState(false);
   const [checkingLabel, setCheckingLabel] = useState("Checking services…");
   const [drawer, setDrawer] = useState(false);
   const [active, setActive] = useState<ServiceConfig | null>(null);
@@ -247,6 +259,7 @@ export function App() {
   const [pathing, setPathing] = useState<PathSettings>(DEFAULT_PATHING);
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
   const [hubReachable, setHubReachable] = useState<boolean | null>(null);
+  const [hubLastError, setHubLastError] = useState<string | null>(null);
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
@@ -262,9 +275,20 @@ export function App() {
   const [settingsServiceId, setSettingsServiceId] = useState<string | null>(
     null,
   );
+  const [pullPx, setPullPx] = useState(0);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const suppressClick = useRef(false);
+  const chipsRef = useRef<HomeStatusChipsHandle>(null);
+  const probeGen = useRef(0);
+  const announceCount = useRef(0);
+  const initialSettledRef = useRef(false);
+  const bootProbeGen = useRef<number | null>(null);
+  const pullStartY = useRef<number | null>(null);
+  const pullArmed = useRef(false);
+  const pullRefreshingRef = useRef(false);
+  const reorderingPullRef = useRef(false);
 
   // Keep latest nav state for the Capacitor backButton listener.
   const screenRef = useRef(screen);
@@ -277,10 +301,13 @@ export function App() {
   screenRef.current = screen;
   drawerRef.current = drawer;
   reorderingRef.current = reordering;
+  reorderingPullRef.current = reordering;
   settingsNetworkOpenRef.current = settingsNetworkOpen;
   settingsWolOpenRef.current = settingsWolOpen;
   settingsWolAdvancedRef.current = settingsWolAdvanced;
   settingsServiceIdRef.current = settingsServiceId;
+  initialSettledRef.current = initialSettled;
+  pullRefreshingRef.current = pullRefreshing;
 
   useEffect(() => {
     void (async () => {
@@ -584,73 +611,139 @@ export function App() {
     [services, wol.hubUrl],
   );
 
-  const refresh = useCallback(async () => {
-    const next: Record<string, ProbeResult> = {};
-
-    // Hub primary: one watchdog board fetch when configured. Direct probes
-    // fill anything still unknown / missing / hub unreachable. Panels open direct.
-    const workoutsUrl =
-      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
-    const hubRaw = wol.hubUrl.trim()
-      ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
-      : workoutsUrl
-        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
-        : "";
-    const hubBase = hubRaw
-      ? resolveServiceUrl(
-          hubRaw,
-          pathing.homeBaseUrl,
-          homeNet?.onHomeNetwork ?? null,
-          pathing.connectionPreference,
-        )
-      : "";
-    const hubServices = hubBase
-      ? await fetchHubWatchdogServices(hubBase)
-      : null;
-    setHubReachable(hubBase ? hubServices != null : false);
-
-    if (hubServices) {
-      for (const service of enabled) {
-        const hub = hubStatusForService(hubServices, service.id);
-        if (!hub || hub.up === null) continue;
-        next[service.id] = {
-          up: hub.up,
-          latencyMs: hub.latencyMs,
-          message: hub.up ? "Online (via Hub)" : "Offline (via Hub)",
-          viaHub: true,
-        };
+  const refresh = useCallback(
+    async (opts?: { announce?: boolean; boot?: boolean }) => {
+      const gen = ++probeGen.current;
+      const announce = opts?.announce === true;
+      const isBoot = opts?.boot === true;
+      if (isBoot) bootProbeGen.current = gen;
+      if (announce) {
+        announceCount.current += 1;
+        setCheckingLabel("Reconnecting…");
+        setReconnecting(true);
       }
+
+      const next: Record<string, ProbeResult> = {};
+
+      // Hub primary: one watchdog board fetch when configured. Direct probes
+      // fill anything still unknown / missing / hub unreachable. Panels open direct.
+      const workoutsUrl =
+        enabled.find((s) => s.id === "workouts")?.url.trim() || "";
+      const hubRaw = wol.hubUrl.trim()
+        ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
+        : workoutsUrl
+          ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
+          : "";
+      const hubBase = hubRaw
+        ? resolveServiceUrl(
+            hubRaw,
+            pathing.homeBaseUrl,
+            homeNet?.onHomeNetwork ?? null,
+            pathing.connectionPreference,
+          )
+        : "";
+      const hubServices = hubBase
+        ? await fetchHubWatchdogServices(hubBase)
+        : null;
+
+      if (gen !== probeGen.current) {
+        if (announce) {
+          announceCount.current = Math.max(0, announceCount.current - 1);
+          if (announceCount.current === 0) setReconnecting(false);
+        }
+        return;
+      }
+
+      if (!hubBase) {
+        setHubReachable(false);
+        setHubLastError("Hub URL not configured");
+      } else if (hubServices == null) {
+        setHubReachable(false);
+        setHubLastError("Watchdog unreachable");
+      } else {
+        setHubReachable(true);
+        setHubLastError(null);
+      }
+
+      if (hubServices) {
+        for (const service of enabled) {
+          const hub = hubStatusForService(hubServices, service.id);
+          if (!hub || hub.up === null) continue;
+          next[service.id] = {
+            up: hub.up,
+            latencyMs: hub.latencyMs,
+            message: hub.up ? "Online (via Hub)" : "Offline (via Hub)",
+            viaHub: true,
+          };
+        }
+      }
+
+      const needDirect = enabled.filter(
+        (s) => !next[s.id] || next[s.id]!.up === null,
+      );
+      await Promise.all(
+        needDirect.map(async (service) => {
+          next[service.id] = await probeService(withEffectiveUrl(service));
+        }),
+      );
+
+      if (gen !== probeGen.current) {
+        if (announce) {
+          announceCount.current = Math.max(0, announceCount.current - 1);
+          if (announceCount.current === 0) setReconnecting(false);
+        }
+        return;
+      }
+
+      setHealth(next);
+      setHealthSettled(true);
+      setInitialSettled(true);
+      if (bootProbeGen.current === gen) {
+        bootProbeGen.current = null;
+        setBootProbing(false);
+      }
+      if (announce) {
+        announceCount.current = Math.max(0, announceCount.current - 1);
+        if (announceCount.current === 0) setReconnecting(false);
+      }
+    },
+    [
+      enabled,
+      withEffectiveUrl,
+      wol.hubUrl,
+      wol.hubPort,
+      pathing.homeBaseUrl,
+      pathing.connectionPreference,
+      homeNet?.onHomeNetwork,
+    ],
+  );
+
+  const runFullReconnect = useCallback(async () => {
+    if (pullRefreshingRef.current) return;
+    setPullRefreshing(true);
+    setCheckingLabel("Reconnecting…");
+    try {
+      await Promise.all([
+        refresh({ announce: true }),
+        refreshHomeNet(wol, pathing.homeBaseUrl),
+      ]);
+      await chipsRef.current?.refreshAll({ plexRefresh: true });
+    } finally {
+      setPullRefreshing(false);
+      setPullPx(0);
     }
-
-    const needDirect = enabled.filter(
-      (s) => !next[s.id] || next[s.id]!.up === null,
-    );
-    await Promise.all(
-      needDirect.map(async (service) => {
-        next[service.id] = await probeService(withEffectiveUrl(service));
-      }),
-    );
-
-    setHealth(next);
-    setHealthSettled(true);
-  }, [
-    enabled,
-    withEffectiveUrl,
-    wol.hubUrl,
-    wol.hubPort,
-    pathing.homeBaseUrl,
-    pathing.connectionPreference,
-    homeNet?.onHomeNetwork,
-  ]);
+  }, [refresh, refreshHomeNet, wol, pathing.homeBaseUrl]);
 
   useEffect(() => {
     if (!ready) return;
-    void refresh();
+    const isBoot = !initialSettledRef.current;
+    if (isBoot) setBootProbing(true);
+    void refresh(isBoot ? { boot: true } : undefined);
     const timer = setInterval(() => void refresh(), 20000);
     return () => clearInterval(timer);
   }, [ready, refresh]);
 
-  // Soft reopen: after true background, show connecting panel and re-probe once.
+  // Soft reopen: after true background, re-probe without blocking Home again.
   useEffect(() => {
     if (!ready) return;
     let sawBackground = false;
@@ -658,8 +751,10 @@ export function App() {
 
     const runResumeProbe = () => {
       setCheckingLabel("Reconnecting…");
-      setHealthSettled(false);
-      void refresh();
+      if (!initialSettledRef.current) {
+        setHealthSettled(false);
+      }
+      void refresh({ announce: true });
     };
 
     const onBecameActive = () => {
@@ -704,9 +799,69 @@ export function App() {
     if (!ready || healthSettled) return;
     const settleTimeout = window.setTimeout(() => {
       setHealthSettled(true);
+      setInitialSettled(true);
     }, 8000);
     return () => window.clearTimeout(settleTimeout);
   }, [ready, healthSettled]);
+
+  const pageScrollTop = () =>
+    window.scrollY ||
+    document.documentElement.scrollTop ||
+    document.body.scrollTop ||
+    0;
+
+  const onHomeTouchStart = (e: ReactTouchEvent) => {
+    if (reorderingPullRef.current || pullRefreshingRef.current) return;
+    if (pageScrollTop() > 2) {
+      pullArmed.current = false;
+      pullStartY.current = null;
+      return;
+    }
+    pullArmed.current = true;
+    pullStartY.current = e.touches[0]?.clientY ?? null;
+  };
+
+  const onHomeTouchMove = (e: ReactTouchEvent) => {
+    if (!pullArmed.current || pullStartY.current == null) return;
+    if (reorderingPullRef.current || pullRefreshingRef.current) return;
+    if (pageScrollTop() > 2) {
+      pullArmed.current = false;
+      setPullPx(0);
+      return;
+    }
+    const y = e.touches[0]?.clientY ?? pullStartY.current;
+    const delta = Math.max(0, y - pullStartY.current);
+    if (delta > 8) clearLongPress();
+    // Rubber-band: resist past threshold so it doesn't feel sticky.
+    const resisted =
+      delta < PULL_REFRESH_THRESHOLD
+        ? delta
+        : PULL_REFRESH_THRESHOLD +
+          (delta - PULL_REFRESH_THRESHOLD) * 0.35;
+    setPullPx(Math.min(resisted, PULL_REFRESH_THRESHOLD * 1.55));
+  };
+
+  const onHomeTouchEnd = () => {
+    if (!pullArmed.current) return;
+    pullArmed.current = false;
+    pullStartY.current = null;
+    const shouldRefresh = pullPx >= PULL_REFRESH_THRESHOLD;
+    setPullPx(0);
+    if (shouldRefresh) void runFullReconnect();
+  };
+
+  const onHomeTouchCancel = () => {
+    pullArmed.current = false;
+    pullStartY.current = null;
+    setPullPx(0);
+  };
+
+  const showBlockingConnect = !healthSettled && !initialSettled;
+  const showReconnectBanner =
+    initialSettled &&
+    (reconnecting || pullRefreshing || (bootProbing && healthSettled));
+  const healthScanning =
+    showBlockingConnect || reconnecting || pullRefreshing || bootProbing;
 
   const persist = async (next: ServiceConfig[]) => {
     setServices(next);
@@ -766,8 +921,7 @@ export function App() {
   }, [enabled, moduleOrder]);
 
   useEffect(() => {
-    if (healthSettled || modules.length === 0) {
-      setCheckingLabel("Checking services…");
+    if (!showBlockingConnect || modules.length === 0) {
       return;
     }
     let i = 0;
@@ -777,7 +931,7 @@ export function App() {
       setCheckingLabel(`Checking ${modules[i]!.name}…`);
     }, 850);
     return () => window.clearInterval(timer);
-  }, [healthSettled, modules]);
+  }, [showBlockingConnect, modules]);
 
   /** Wake on Home only when on home LAN, or uncertain (with confirm). Hide off-home. */
   const showWakeControl =
@@ -1753,7 +1907,13 @@ export function App() {
   const offlineCount = modules.filter((m) => health[m.id]?.up === false).length;
 
   return (
-    <div className="page luna-page">
+    <div
+      className="page luna-page home-page"
+      onTouchStart={onHomeTouchStart}
+      onTouchMove={onHomeTouchMove}
+      onTouchEnd={onHomeTouchEnd}
+      onTouchCancel={onHomeTouchCancel}
+    >
       {drawer && (
         <button
           type="button"
@@ -1811,12 +1971,45 @@ export function App() {
         </button>
       </header>
 
+      <div
+        className={`home-pull-indicator${
+          pullPx > 0 || pullRefreshing ? " is-visible" : ""
+        }${pullRefreshing || pullPx >= PULL_REFRESH_THRESHOLD ? " is-armed" : ""}`}
+        style={{
+          height:
+            pullRefreshing || pullPx > 0
+              ? `${Math.max(pullRefreshing ? 44 : pullPx * 0.85, pullRefreshing ? 44 : 0)}px`
+              : undefined,
+        }}
+        aria-hidden={!(pullPx > 0 || pullRefreshing)}
+      >
+        <div
+          className={`boot-spinner home-pull-spinner${pullRefreshing ? " is-spinning" : ""}`}
+        />
+        <span>
+          {pullRefreshing
+            ? "Refreshing…"
+            : pullPx >= PULL_REFRESH_THRESHOLD
+              ? "Release to refresh"
+              : "Pull to refresh"}
+        </span>
+      </div>
+
+      {showReconnectBanner && (
+        <div className="home-reconnect-banner" role="status" aria-live="polite">
+          <div className="boot-spinner home-reconnect-spinner" aria-hidden="true" />
+          <span>Reconnecting…</span>
+        </div>
+      )}
+
       {(healthSettled || showWakeControl) && (
         <div className="home-status">
           {healthSettled && (
             <HomeStatusChips
+              ref={chipsRef}
               hubBaseUrl={hubBaseForChips}
               hubReachable={hubReachable}
+              hubLastError={hubLastError}
               onHomeNetwork={homeNet?.onHomeNetwork ?? null}
               services={services}
               resolveUrl={(s) => withEffectiveUrl(s).url}
@@ -1827,10 +2020,12 @@ export function App() {
               }))}
               upCount={onlineCount}
               downCount={offlineCount}
-              scanning={!healthSettled}
+              scanning={healthScanning && !showBlockingConnect}
               pathHint={pathHintLabel(connectionMode)}
               onOpenStreams={() => openServiceById("tautulli")}
               onOpenService={openServiceById}
+              onReconnect={() => void runFullReconnect()}
+              reconnecting={reconnecting || pullRefreshing}
             />
           )}
           {showWakeControl && (
@@ -1854,7 +2049,7 @@ export function App() {
         </div>
       )}
 
-      {!healthSettled ? (
+      {showBlockingConnect ? (
         <div className="home-connecting" role="status" aria-live="polite">
           <div className="boot-spinner" aria-hidden="true" />
           <strong>Checking services…</strong>

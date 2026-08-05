@@ -63,6 +63,7 @@ import {
   fetchPlexUpdateStatus,
   fetchPlexUpdateJob,
   plexJobBusy,
+  plexStatusAllowsInstall,
   shortPlexVersion,
 } from "./plexUpdateApi";
 import {
@@ -230,10 +231,40 @@ describe("plexUpdateApi — request handling (mocked hub)", () => {
     expect(status.updateAvailable).toBe(true);
     expect(shortPlexVersion(status.installedVersion)).toBe("1.41.0.1234");
     expect(plexJobBusy(status.job)).toBe(false);
+    expect(plexStatusAllowsInstall(status)).toBe(false);
     expect(mockedHttp).toHaveBeenCalledWith(
       "http://192.168.1.10:3000/api/plex/update-status?refresh=1",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("allows install when windows-installer + hubLocal even if canInstall false", () => {
+    expect(
+      plexStatusAllowsInstall({
+        ok: true,
+        installedVersion: "1.41.0",
+        latestVersion: "1.41.1",
+        updateAvailable: true,
+        channel: "plex.tv",
+        canInstall: false,
+        installMethod: "windows-installer",
+        releaseState: "available",
+        downloadURL: "https://example.com/plex.exe",
+        lastChecked: null,
+        hubLocal: true,
+        error: null,
+        job: {
+          id: null,
+          phase: "idle",
+          progress: 0,
+          message: "",
+          error: null,
+          startedAt: null,
+          finishedAt: null,
+          result: null,
+        },
+      }),
+    ).toBe(true);
   });
 
   it("surfaces 404 with upgrade hint", async () => {

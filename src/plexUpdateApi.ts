@@ -199,6 +199,21 @@ export function plexJobBusy(job: PlexUpdateJob | null | undefined): boolean {
   );
 }
 
+/** True when hub status says an install can actually run (PMS or Windows path). */
+export function plexStatusAllowsInstall(
+  status: PlexUpdateStatus | null | undefined,
+): boolean {
+  if (!status?.updateAvailable) return false;
+  if (status.canInstall) return true;
+  // Unblock when hub reports the Windows installer path even if an older
+  // build left canInstall=false inconsistently.
+  return (
+    status.installMethod === "windows-installer" &&
+    status.hubLocal === true &&
+    Boolean(status.downloadURL)
+  );
+}
+
 /** GET /api/plex/update-status — optional refresh=1 triggers PMS updater check. */
 export async function fetchPlexUpdateStatus(
   hubBaseUrl: string,

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import {
@@ -14,6 +21,7 @@ import {
   fetchPlexUpdateJob,
   fetchPlexUpdateStatus,
   plexJobBusy,
+  plexStatusAllowsInstall,
   shortPlexVersion,
   startPlexUpdateJob,
   type PlexUpdateStatus,
@@ -21,10 +29,24 @@ import {
 import { createPlexPollController } from "./plexPollGuard";
 import type { ServiceConfig } from "./services";
 
+export type HomeStatusChipsHandle = {
+  /** Re-fetch hub summary + plex (refresh=1 when allowed). */
+  refreshAll: (opts?: { plexRefresh?: boolean }) => Promise<void>;
+};
+
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
-type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | "plex" | null;
+type SheetId =
+  | "hub"
+  | "up"
+  | "down"
+  | "queue"
+  | "downloads"
+  | "ombi"
+  | "plex"
+  | null;
 
 const SHEET_CHIPS = [
+  "hub",
   "up",
   "down",
   "queue",
@@ -47,6 +69,12 @@ function checkResultMessage(next: PlexUpdateStatus): string {
 
 function plexInstallBlockedDetail(status: PlexUpdateStatus): string {
   if (status.error?.trim()) return status.error.trim();
+  if (
+    status.installMethod === "windows-installer" &&
+    status.hubLocal !== true
+  ) {
+    return "Windows installer path needs hub on the PMS PC (plexBaseUrl localhost).";
+  }
   if (status.updateAvailable && status.channel === "plex.tv") {
     return "Seen on plex.tv, but Install is unavailable from this hub (need Arrs Hub 1.3.22+ on the Windows PMS PC, or wait for PMS /updater).";
   }
@@ -62,6 +90,7 @@ export type HomeChipModule = {
 type HomeStatusChipsProps = {
   hubBaseUrl: string;
   hubReachable: boolean | null;
+  hubLastError?: string | null;
   /** Prefer true for install/download; false disables apply with a clear reason. */
   onHomeNetwork: boolean | null;
   services: ServiceConfig[];
@@ -74,22 +103,34 @@ type HomeStatusChipsProps = {
   pathHint: "LAN" | "Remote";
   onOpenStreams: () => void;
   onOpenService: (id: string) => void;
+  /** Full reconnect (same as pull-to-refresh). */
+  onReconnect?: () => void;
+  reconnecting?: boolean;
 };
 
-export function HomeStatusChips({
-  hubBaseUrl,
-  hubReachable,
-  onHomeNetwork,
-  services,
-  resolveUrl,
-  modules,
-  upCount,
-  downCount,
-  scanning,
-  pathHint,
-  onOpenStreams,
-  onOpenService,
-}: HomeStatusChipsProps) {
+export const HomeStatusChips = forwardRef<
+  HomeStatusChipsHandle,
+  HomeStatusChipsProps
+>(function HomeStatusChips(
+  {
+    hubBaseUrl,
+    hubReachable,
+    hubLastError = null,
+    onHomeNetwork,
+    services,
+    resolveUrl,
+    modules,
+    upCount,
+    downCount,
+    scanning,
+    pathHint,
+    onOpenStreams,
+    onOpenService,
+    onReconnect,
+    reconnecting = false,
+  },
+  ref,
+) {
   const [summary, setSummary] = useState<HubStatusSummary | null>(null);
   const [sheet, setSheet] = useState<SheetId>(null);
   const [ombiItems, setOmbiItems] = useState<OmbiPendingItem[]>([]);
@@ -107,7 +148,6 @@ export function HomeStatusChips({
   const plexPoll = useRef(createPlexPollController());
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
-  const onLan = onHomeNetwork === true;
   /** Same gate as chip probes: hub up; skip expensive refresh off home LAN. */
   const allowPlexRefresh = !hubDown && onHomeNetwork !== false;
 
@@ -179,6 +219,20 @@ export function HomeStatusChips({
       }
     },
     [hubBaseUrl, hubDown],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      refreshAll: async (opts = {}) => {
+        const plexRefresh = opts.plexRefresh !== false && allowPlexRefresh;
+        await Promise.all([
+          load(),
+          loadPlex(plexRefresh, { announce: false }),
+        ]);
+      },
+    }),
+    [allowPlexRefresh, load, loadPlex],
   );
 
   // Cached badge polls (no refresh=1). Skip initial plex fetch when a
@@ -360,21 +414,34 @@ export function HomeStatusChips({
 
   const installBlockedReason = (() => {
     if (hubDown) return "Hub offline — cannot check or install updates.";
-    if (onHomeNetwork === false)
-      return "Not on home LAN — install only from the home network.";
-    if (onHomeNetwork == null)
-      return "Home network status unknown — connect on LAN to install.";
-    if (plexStatus && !plexStatus.canInstall) {
+    if (!plexStatus?.updateAvailable) return null;
+    if (!plexStatusAllowsInstall(plexStatus)) {
+      if (plexStatus.hubLocal === false) {
+        return "Hub is not on the PMS PC — set Plex URL to localhost on that machine, or update from Plex Settings there.";
+      }
       return plexInstallBlockedDetail(plexStatus);
     }
     return null;
   })();
 
+  // Install runs on the hub/PMS PC via API — WAN is fine when hub is reachable.
   const canRunInstall =
     !hubDown &&
-    onLan &&
-    Boolean(plexStatus?.canInstall) &&
+    plexStatusAllowsInstall(plexStatus) &&
     Boolean(plexStatus?.updateAvailable);
+
+  const remoteInstall =
+    onHomeNetwork !== true && canRunInstall;
+
+  const hubChipValue = scanning
+    ? "…"
+    : hubReachable === true
+      ? "Up"
+      : hubReachable === false
+        ? "Down"
+        : "—";
+  const hubChipTone: ChipTone =
+    hubReachable === true ? "good" : hubReachable === false ? "bad" : "muted";
 
   const runPlexAction = async (
     body: { download?: boolean; apply?: boolean; tonight?: boolean },
@@ -382,10 +449,15 @@ export function HomeStatusChips({
   ) => {
     if (confirmApply) {
       const tonight = Boolean(body.tonight);
+      const remoteNote =
+        onHomeNetwork !== true
+          ? "\n\nYou’re remote; install still runs on the Plex PC via the hub (phone only calls the API)."
+          : "";
       const ok = window.confirm(
-        tonight
+        (tonight
           ? "Schedule Plex Media Server update for tonight (Butler)? Active streams may still be interrupted when it applies."
-          : "Apply Plex Media Server update now? PMS will restart and active streams will disconnect.",
+          : "Apply Plex Media Server update now? PMS will restart and active streams will disconnect.") +
+          remoteNote,
       );
       if (!ok) return;
     }
@@ -428,6 +500,13 @@ export function HomeStatusChips({
     tone: ChipTone;
     title: string;
   }[] = [
+    {
+      id: "hub",
+      label: "Hub",
+      value: hubChipValue,
+      tone: hubChipTone,
+      title: "Arrs Hub connectivity",
+    },
     {
       id: "up",
       label: "Up",
@@ -537,19 +616,21 @@ export function HomeStatusChips({
   };
 
   const sheetTitle =
-    sheet === "up"
-      ? "Online modules"
-      : sheet === "down"
-        ? "Offline modules"
-        : sheet === "queue"
-          ? "Queue by app"
-          : sheet === "downloads"
-            ? "Active downloads"
-            : sheet === "ombi"
-              ? "Ombi pending"
-              : sheet === "plex"
-                ? "Plex Media Server"
-                : "";
+    sheet === "hub"
+      ? "Arrs Hub"
+      : sheet === "up"
+        ? "Online modules"
+        : sheet === "down"
+          ? "Offline modules"
+          : sheet === "queue"
+            ? "Queue by app"
+            : sheet === "downloads"
+              ? "Active downloads"
+              : sheet === "ombi"
+                ? "Ombi pending"
+                : sheet === "plex"
+                  ? "Plex Media Server"
+                  : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -624,6 +705,53 @@ export function HomeStatusChips({
                 ✕
               </button>
             </div>
+
+            {sheet === "hub" && (
+              <>
+                <ul className="dash-queue-breakdown dash-plex-versions">
+                  <li>
+                    <span>Status</span>
+                    <strong>
+                      {hubReachable === true
+                        ? "Up"
+                        : hubReachable === false
+                          ? "Down"
+                          : "Unknown"}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>URL</span>
+                    <strong className="dash-hub-url">
+                      {hubBaseUrl.trim() || "Not configured"}
+                    </strong>
+                  </li>
+                  {hubLastError ? (
+                    <li>
+                      <span>Last error</span>
+                      <strong>{hubLastError}</strong>
+                    </li>
+                  ) : null}
+                </ul>
+                <p className="dash-chip-popover-hint">
+                  Pull down on Home to refresh, or reconnect below.
+                </p>
+                {onReconnect ? (
+                  <div className="dash-plex-actions">
+                    <button
+                      type="button"
+                      className="btn primary"
+                      disabled={reconnecting}
+                      onClick={() => {
+                        setSheet(null);
+                        onReconnect();
+                      }}
+                    >
+                      {reconnecting ? "Reconnecting…" : "Reconnect"}
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )}
 
             {sheet === "up" && (
               <>
@@ -906,11 +1034,11 @@ export function HomeStatusChips({
                     {plexStatus?.updateAvailable ? (
                       <p className="dash-plex-badge" role="status">
                         Update available
-                        {plexStatus.canInstall
-                          ? plexStatus.installMethod === "windows-installer"
-                            ? " · Windows installer"
-                            : ""
-                          : " · install blocked"}
+                        {plexStatus.installMethod === "windows-installer"
+                          ? " · Windows installer"
+                          : plexStatusAllowsInstall(plexStatus)
+                            ? ""
+                            : " · install blocked"}
                       </p>
                     ) : null}
 
@@ -935,6 +1063,12 @@ export function HomeStatusChips({
                     {installBlockedReason ? (
                       <p className="dash-chip-popover-empty">
                         {installBlockedReason}
+                      </p>
+                    ) : null}
+                    {remoteInstall ? (
+                      <p className="dash-chip-popover-hint">
+                        Remote session — Install still runs on the Plex PC via
+                        the hub.
                       </p>
                     ) : null}
 
@@ -1017,8 +1151,9 @@ export function HomeStatusChips({
                       <p className="dash-chip-popover-error">{plexError}</p>
                     ) : null}
                     <p className="dash-chip-popover-hint">
-                      Updates run on the hub PC via PMS updater — the phone
-                      never downloads the installer.
+                      {plexStatus?.installMethod === "windows-installer"
+                        ? "Updates download the Windows installer on the hub PC — the phone never downloads it."
+                        : "Updates run on the hub PC via PMS updater — the phone never downloads the installer."}
                     </p>
                   </>
                 )}
@@ -1029,4 +1164,4 @@ export function HomeStatusChips({
       )}
     </section>
   );
-}
+});

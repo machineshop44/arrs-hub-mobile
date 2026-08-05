@@ -121,10 +121,14 @@ function httpError(
   json: Record<string, unknown>,
   fallback: string,
 ): Error {
+  // 404 almost always means an older hub without the Plex update routes —
+  // prefer the upgrade hint over a generic "not found" body.
   const detail =
-    typeof json.error === "string" && json.error.trim()
-      ? json.error.trim()
-      : fallback;
+    status === 404
+      ? fallback
+      : typeof json.error === "string" && json.error.trim()
+        ? json.error.trim()
+        : fallback;
   return new Error(
     `${detail}\nTried: ${url}${status ? ` (HTTP ${status})` : ""}`,
   );

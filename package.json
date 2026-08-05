@@ -1,12 +1,15 @@
 {
   "name": "arrs-hub-mobile",
   "private": true,
-  "version": "1.0.26",
+  "version": "1.0.27",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5174",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:stress": "vitest run src/stress.stress.test.ts",
+    "test:watch": "vitest",
     "live:prepare": "node scripts/enable-live-reload.mjs",
     "sync:keys": "node scripts/sync-credentials-from-hub.mjs",
     "cap:sync": "npm run build && npx cap sync",
@@ -31,6 +34,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "~5.7.2",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^3.2.7"
   }
 }

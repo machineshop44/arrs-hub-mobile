@@ -18,6 +18,7 @@ import {
   startPlexUpdateJob,
   type PlexUpdateStatus,
 } from "./plexUpdateApi";
+import { createPlexPollController } from "./plexPollGuard";
 import type { ServiceConfig } from "./services";
 
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
@@ -103,9 +104,7 @@ export function HomeStatusChips({
   const sheetRef = useRef<HTMLDivElement>(null);
   const didStartupRefresh = useRef(false);
   const lastResumeRefreshAt = useRef(0);
-  /** True while a refresh=1 request is in flight — skip stacking cached polls. */
-  const plexRefreshInFlight = useRef(false);
-  const plexFetchGen = useRef(0);
+  const plexPoll = useRef(createPlexPollController());
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
   const onLan = onHomeNetwork === true;
@@ -135,12 +134,16 @@ export function HomeStatusChips({
         setPlexStatus(null);
         return;
       }
-      // Don't stack a lightweight cached poll on top of a real check.
-      if (!refresh && plexRefreshInFlight.current) return;
+      const kind = refresh ? "refresh" : "cached";
+      const ticket = plexPoll.current.begin(kind);
+      if (!ticket) {
+        if (refresh && opts.announce && plexPoll.current.refreshInFlight) {
+          setPlexActionMsg("Check already in progress…");
+        }
+        return;
+      }
 
-      const gen = ++plexFetchGen.current;
       if (refresh) {
-        plexRefreshInFlight.current = true;
         setPlexChecking(true);
         if (opts.announce) {
           setPlexError(null);
@@ -155,23 +158,20 @@ export function HomeStatusChips({
           // Real PMS + plex.tv check can take a bit longer than cached polls.
           timeoutMs: refresh ? 45000 : 20000,
         });
-        if (gen !== plexFetchGen.current) return;
+        if (!plexPoll.current.isCurrent(ticket)) return;
         setPlexStatus(next);
         setPlexError(next.error || null);
         if (refresh && opts.announce) {
           setPlexActionMsg(checkResultMessage(next));
         }
       } catch (err) {
-        if (gen !== plexFetchGen.current) return;
+        if (!plexPoll.current.isCurrent(ticket)) return;
         setPlexError(err instanceof Error ? err.message : String(err));
         if (refresh && opts.announce) setPlexActionMsg(null);
       } finally {
+        const { clearChecking } = plexPoll.current.end(ticket);
         if (refresh) {
-          // Only the latest refresh owns checking / in-flight.
-          if (gen === plexFetchGen.current) {
-            plexRefreshInFlight.current = false;
-            setPlexChecking(false);
-          }
+          if (clearChecking) setPlexChecking(false);
         } else {
           // Always clear; a newer request may still be in flight.
           setPlexLoading(false);

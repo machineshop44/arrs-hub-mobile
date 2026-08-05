@@ -7,10 +7,12 @@ import {
   useState,
 } from "react";
 import { App as CapApp } from "@capacitor/app";
+import { Browser } from "@capacitor/browser";
 import { Capacitor } from "@capacitor/core";
 import {
   fetchHubStatusSummary,
   fetchOmbiPending,
+  approveOmbiRequest,
   issueBadge,
   ombiTypeLabel,
   type ArrQueueApp,
@@ -28,6 +30,13 @@ import {
 } from "./plexUpdateApi";
 import { createPlexPollController } from "./plexPollGuard";
 import type { ServiceConfig } from "./services";
+
+/** Match desktop hub: *arr Activity Queue lives at /activity/queue. */
+function activityQueueUrl(baseUrl: string | undefined): string | null {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return null;
+  return `${trimmed.replace(/\/+$/, "")}/activity/queue`;
+}
 
 export type HomeStatusChipsHandle = {
   /** Re-fetch hub summary + plex (refresh=1 when allowed). */
@@ -102,7 +111,10 @@ type HomeStatusChipsProps = {
   /** Non-clickable LAN / Remote hint from IP/CIDR detection. */
   pathHint: "LAN" | "Remote";
   onOpenStreams: () => void;
-  onOpenService: (id: string) => void;
+  onOpenService: (
+    id: string,
+    opts?: { initialTab?: "library" | "search" | "calendar" | "missing" | "queue" },
+  ) => void;
   /** Full reconnect (same as pull-to-refresh). */
   onReconnect?: () => void;
   reconnecting?: boolean;
@@ -136,6 +148,7 @@ export const HomeStatusChips = forwardRef<
   const [ombiItems, setOmbiItems] = useState<OmbiPendingItem[]>([]);
   const [ombiLoading, setOmbiLoading] = useState(false);
   const [ombiError, setOmbiError] = useState<string | null>(null);
+  const [ombiApprovingId, setOmbiApprovingId] = useState<string | null>(null);
   const [plexStatus, setPlexStatus] = useState<PlexUpdateStatus | null>(null);
   const [plexLoading, setPlexLoading] = useState(false);
   const [plexChecking, setPlexChecking] = useState(false);
@@ -555,7 +568,7 @@ export const HomeStatusChips = forwardRef<
     },
     {
       id: "queue",
-      label: "Queue",
+      label: "*arr queue",
       value: hubDown
         ? "—"
         : pendingSummary || queueTotal == null
@@ -564,11 +577,11 @@ export const HomeStatusChips = forwardRef<
             ? String(queueTotal)
             : "setup",
       tone: queueTotal && queueTotal > 0 ? "warn" : "muted",
-      title: "*arr queue",
+      title: "*arr queue — open Activity Queue",
     },
     {
       id: "ombi",
-      label: "Ombi",
+      label: "Ombi pending",
       value: hubDown
         ? "—"
         : pendingSummary || ombiPending == null
@@ -582,7 +595,7 @@ export const HomeStatusChips = forwardRef<
           : summary?.ombi?.configured
             ? "good"
             : "muted",
-      title: "Ombi pending",
+      title: "Ombi pending approvals",
     },
     {
       id: "plex",
@@ -613,6 +626,80 @@ export const HomeStatusChips = forwardRef<
 
   const openSheet = (id: Exclude<SheetId, null>) => {
     setSheet((prev) => (prev === id ? null : id));
+  };
+
+  const openArrActivity = async (appId: string) => {
+    const service = services.find((s) => s.id === appId && s.enabled);
+    const openUrl = service
+      ? activityQueueUrl(resolveUrl(service))
+      : null;
+    setSheet(null);
+    if (!openUrl) {
+      // No Home URL configured — fall back to in-app Arr Activity tab.
+      onOpenService(appId, { initialTab: "queue" });
+      return;
+    }
+    try {
+      await Browser.open({ url: openUrl });
+    } catch {
+      window.open(openUrl, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const reloadOmbiPending = useCallback(async () => {
+    const result = await fetchOmbiPending(hubBaseUrl, services, resolveUrl);
+    if (!result) {
+      setOmbiError("Could not load Ombi pending.");
+      setOmbiItems([]);
+      return;
+    }
+    setOmbiItems(result.items);
+    setOmbiError(result.error || null);
+    if (typeof result.pending === "number") {
+      setSummary((prev) =>
+        prev
+          ? {
+              ...prev,
+              ombi: {
+                ok: result.ok,
+                configured: result.configured,
+                pending: result.pending,
+                error: result.error,
+              },
+            }
+          : prev,
+      );
+    }
+  }, [hubBaseUrl, services, resolveUrl]);
+
+  const approveOmbi = async (item: OmbiPendingItem) => {
+    const key = `${item.type}-${item.id}`;
+    setOmbiApprovingId(key);
+    setOmbiError(null);
+    try {
+      await approveOmbiRequest(hubBaseUrl, item, services, resolveUrl);
+      // Drop immediately so success is visible even before refresh returns.
+      setOmbiItems((prev) =>
+        prev.filter((row) => !(row.type === item.type && row.id === item.id)),
+      );
+      setSummary((prev) =>
+        prev?.ombi
+          ? {
+              ...prev,
+              ombi: {
+                ...prev.ombi,
+                pending: Math.max(0, (prev.ombi.pending ?? 1) - 1),
+              },
+            }
+          : prev,
+      );
+      await Promise.all([reloadOmbiPending(), load()]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOmbiError(msg);
+    } finally {
+      setOmbiApprovingId(null);
+    }
   };
 
   const sheetTitle =
@@ -831,10 +918,8 @@ export const HomeStatusChips = forwardRef<
                         <button
                           type="button"
                           className="dash-sheet-row-btn"
-                          onClick={() => {
-                            setSheet(null);
-                            onOpenService(app.id);
-                          }}
+                          title={`Open ${app.label} Activity Queue`}
+                          onClick={() => openArrActivity(app.id)}
                         >
                           <span>{app.label}</span>
                           <strong>{value}</strong>
@@ -864,21 +949,28 @@ export const HomeStatusChips = forwardRef<
                               {issue.errorMessage}
                             </span>
                           ) : null}
+                          {issue.outputPath ? (
+                            <span className="dash-queue-issue-path">
+                              {issue.outputPath}
+                            </span>
+                          ) : null}
                         </div>
                         <button
                           type="button"
                           className="dash-queue-issue-link"
-                          onClick={() => {
-                            setSheet(null);
-                            onOpenService(appId);
-                          }}
+                          onClick={() => openArrActivity(appId)}
                         >
-                          Open {appLabel}
+                          Open Activity
                         </button>
                       </li>
                     ))}
                   </ul>
                 )}
+                <p className="dash-chip-popover-hint">
+                  Tap Sonarr / Radarr / Lidarr (or Open Activity) to open that
+                  app&apos;s Activity Queue in the browser. Matching still
+                  happens there.
+                </p>
               </>
             )}
 
@@ -941,25 +1033,44 @@ export const HomeStatusChips = forwardRef<
                   </p>
                 ) : (
                   <ul className="dash-queue-issues">
-                    {ombiItems.map((item) => (
-                      <li key={`${item.type}-${item.id}`}>
-                        <div className="dash-queue-issue-main">
-                          <span className="dash-queue-issue-badge">
-                            {ombiTypeLabel(item.type)}
-                            {item.requester ? ` · ${item.requester}` : ""}
-                          </span>
-                          <span className="dash-queue-issue-title">
-                            {item.title}
-                          </span>
-                        </div>
-                      </li>
-                    ))}
+                    {ombiItems.map((item) => {
+                      const key = `${item.type}-${item.id}`;
+                      const approving = ombiApprovingId === key;
+                      return (
+                        <li key={key}>
+                          <div className="dash-queue-issue-main">
+                            <span className="dash-queue-issue-badge">
+                              {ombiTypeLabel(item.type)}
+                              {item.requester ? ` · ${item.requester}` : ""}
+                            </span>
+                            <span className="dash-queue-issue-title">
+                              {item.title}
+                            </span>
+                          </div>
+                          <div className="dash-ombi-actions">
+                            <button
+                              type="button"
+                              className="dash-ombi-approve"
+                              disabled={
+                                approving || ombiApprovingId != null || hubDown
+                              }
+                              onClick={() => void approveOmbi(item)}
+                            >
+                              {approving ? "Approving…" : "Approve"}
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
                 {ombiError ? (
-                  <p className="dash-chip-popover-error">{ombiError}</p>
+                  <p className="dash-chip-popover-error" role="alert">
+                    Approve error: {ombiError}
+                  </p>
                 ) : null}
                 <p className="dash-chip-popover-hint">
+                  Fallback:{" "}
                   <button
                     type="button"
                     className="dash-queue-issue-link"

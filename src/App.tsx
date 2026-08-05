@@ -252,6 +252,9 @@ export function App() {
   const [checkingLabel, setCheckingLabel] = useState("Checking services…");
   const [drawer, setDrawer] = useState(false);
   const [active, setActive] = useState<ServiceConfig | null>(null);
+  const [arrInitialTab, setArrInitialTab] = useState<
+    "library" | "search" | "calendar" | "missing" | "queue" | undefined
+  >(undefined);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>(
     {},
   );
@@ -872,35 +875,44 @@ export function App() {
     setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const openModule = (service: ServiceConfig) => {
+  const openModule = (
+    service: ServiceConfig,
+    opts?: { initialTab?: "library" | "search" | "calendar" | "missing" | "queue" },
+  ) => {
     setDrawer(false);
     setReordering(false);
     const resolved = withEffectiveUrl(service);
     if (service.id === "tautulli") {
+      setArrInitialTab(undefined);
       setActive(resolved);
       setScreen("tautulli");
       return;
     }
     if (service.id === "bazarr") {
+      setArrInitialTab(undefined);
       setActive(resolved);
       setScreen("bazarr");
       return;
     }
     if (service.id === "ytarr") {
+      setArrInitialTab(undefined);
       setActive(resolved);
       setScreen("ytarr");
       return;
     }
     if (service.id === "workouts") {
+      setArrInitialTab(undefined);
       setActive(resolved);
       setScreen("workouts");
       return;
     }
     if (NATIVE_ARR_IDS.has(service.id)) {
+      setArrInitialTab(opts?.initialTab);
       setActive(resolved);
       setScreen("arr");
       return;
     }
+    setArrInitialTab(undefined);
     setActive(resolved);
     setScreen("web");
   };
@@ -1009,9 +1021,12 @@ export function App() {
     homeNet?.onHomeNetwork ?? null,
   );
 
-  const openServiceById = (id: string) => {
+  const openServiceById = (
+    id: string,
+    opts?: { initialTab?: "library" | "search" | "calendar" | "missing" | "queue" },
+  ) => {
     const service = services.find((s) => s.id === id);
-    if (service) openModule(service);
+    if (service) openModule(service, opts);
   };
 
   const cardHealthLabel = (probe: ProbeResult | undefined): string => {
@@ -1037,9 +1052,12 @@ export function App() {
   if (screen === "arr" && active) {
     return (
       <ArrPanel
+        key={`${active.id}-${arrInitialTab ?? "library"}`}
         service={active}
+        initialTab={arrInitialTab}
         onBack={() => {
           setActive(null);
+          setArrInitialTab(undefined);
           setScreen("modules");
         }}
       />

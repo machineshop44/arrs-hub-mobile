@@ -198,6 +198,46 @@ export async function fetchOmbiPending(
   }
 }
 
+/** Approve an Ombi request via hub (mirrors DashboardStatus approve body). */
+export async function approveOmbiRequest(
+  hubBaseUrl: string,
+  item: Pick<OmbiPendingItem, "type" | "id">,
+  services: ServiceConfig[],
+  resolveUrl: (service: ServiceConfig) => string,
+  timeoutMs = 15000,
+): Promise<void> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) throw new Error("Hub URL is not set");
+
+  let status: number;
+  let data: unknown;
+  try {
+    ({ status, data } = await postJson(
+      `${base}/api/activity/ombi/approve`,
+      {
+        type: item.type,
+        id: item.id,
+        urls: summaryUrlMap(services, resolveUrl),
+      },
+      timeoutMs,
+    ));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/abort/i.test(msg)) {
+      throw new Error("Approve timed out talking to hub");
+    }
+    throw new Error(msg || "Approve network error");
+  }
+
+  const error =
+    data && typeof data === "object" && "error" in data
+      ? String((data as { error?: unknown }).error || "").trim()
+      : "";
+  if (status < 200 || status >= 300) {
+    throw new Error(error || `Approve failed (HTTP ${status})`);
+  }
+}
+
 export function issueBadge(issue: ArrQueueIssue): string {
   const state = String(issue.trackedDownloadState || "").toLowerCase();
   const tracked = String(issue.trackedDownloadStatus || "").toLowerCase();

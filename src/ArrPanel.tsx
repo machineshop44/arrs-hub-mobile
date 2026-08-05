@@ -44,6 +44,8 @@ type DetailTab = "overview" | "episodes" | "albums" | "tracks" | "books";
 interface ArrPanelProps {
   service: ServiceConfig;
   onBack: () => void;
+  /** Open on this tab (e.g. queue from status chips → Activity). */
+  initialTab?: Tab;
 }
 
 function libraryKindLabel(kind: ReturnType<typeof detectArrKind>): string {
@@ -170,11 +172,15 @@ function LibrarySeriesCard({
   );
 }
 
-export function ArrPanel({ service, onBack }: ArrPanelProps) {
+export function ArrPanel({
+  service,
+  onBack,
+  initialTab = "library",
+}: ArrPanelProps) {
   const kind = detectArrKind(service);
   const searchSupported = kind !== "unknown";
 
-  const [tab, setTab] = useState<Tab>("library");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);

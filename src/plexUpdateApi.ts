@@ -26,10 +26,12 @@ export type PlexUpdateStatus = {
   updateAvailable: boolean;
   channel: string | null;
   canInstall: boolean;
+  installMethod?: "pms" | "windows-installer" | null;
   releaseState: string | null;
   downloadURL?: string | null;
   lastChecked: string | null;
   platform?: string;
+  hubLocal?: boolean;
   error: string | null;
   job: PlexUpdateJob;
 };
@@ -97,12 +99,17 @@ function asStatus(raw: unknown): PlexUpdateStatus {
     updateAvailable: Boolean(o.updateAvailable),
     channel: typeof o.channel === "string" ? o.channel : null,
     canInstall: Boolean(o.canInstall),
+    installMethod:
+      o.installMethod === "pms" || o.installMethod === "windows-installer"
+        ? o.installMethod
+        : null,
     releaseState:
       typeof o.releaseState === "string" ? o.releaseState : null,
     downloadURL:
       typeof o.downloadURL === "string" ? o.downloadURL : null,
     lastChecked: typeof o.lastChecked === "string" ? o.lastChecked : null,
     platform: typeof o.platform === "string" ? o.platform : undefined,
+    hubLocal: typeof o.hubLocal === "boolean" ? o.hubLocal : undefined,
     error: typeof o.error === "string" ? o.error : null,
     job: asJob(o.job),
   };

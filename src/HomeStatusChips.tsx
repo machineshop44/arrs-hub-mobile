@@ -44,6 +44,14 @@ function checkResultMessage(next: PlexUpdateStatus): string {
   return "Check finished.";
 }
 
+function plexInstallBlockedDetail(status: PlexUpdateStatus): string {
+  if (status.error?.trim()) return status.error.trim();
+  if (status.updateAvailable && status.channel === "plex.tv") {
+    return "Seen on plex.tv, but Install is unavailable from this hub (need Arrs Hub 1.3.22+ on the Windows PMS PC, or wait for PMS /updater).";
+  }
+  return CANNOT_INSTALL_HINT;
+}
+
 export type HomeChipModule = {
   id: string;
   name: string;
@@ -357,10 +365,7 @@ export function HomeStatusChips({
     if (onHomeNetwork == null)
       return "Home network status unknown — connect on LAN to install.";
     if (plexStatus && !plexStatus.canInstall) {
-      if (plexStatus.updateAvailable && plexStatus.channel === "plex.tv") {
-        return "Seen on plex.tv, but PMS updater has not listed this Release yet — update from Plex Settings on the host.";
-      }
-      return CANNOT_INSTALL_HINT;
+      return plexInstallBlockedDetail(plexStatus);
     }
     return null;
   })();
@@ -902,8 +907,10 @@ export function HomeStatusChips({
                       <p className="dash-plex-badge" role="status">
                         Update available
                         {plexStatus.canInstall
-                          ? ""
-                          : " · cannot install from hub"}
+                          ? plexStatus.installMethod === "windows-installer"
+                            ? " · Windows installer"
+                            : ""
+                          : " · install blocked"}
                       </p>
                     ) : null}
 

@@ -23,6 +23,27 @@ import type { ServiceConfig } from "./services";
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
 type SheetId = "up" | "down" | "queue" | "downloads" | "ombi" | "plex" | null;
 
+const SHEET_CHIPS = [
+  "up",
+  "down",
+  "queue",
+  "downloads",
+  "ombi",
+  "plex",
+] as const satisfies readonly Exclude<SheetId, null>[];
+
+const CANNOT_INSTALL_HINT =
+  "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
+
+function checkResultMessage(next: PlexUpdateStatus): string {
+  if (next.updateAvailable) {
+    return `Update available: ${shortPlexVersion(next.installedVersion)} → ${shortPlexVersion(next.latestVersion)}`;
+  }
+  if (next.ok && next.installedVersion) return "Up to date";
+  if (next.error) return next.error;
+  return "Check finished.";
+}
+
 export type HomeChipModule = {
   id: string;
   name: string;
@@ -74,6 +95,9 @@ export function HomeStatusChips({
   const sheetRef = useRef<HTMLDivElement>(null);
   const didStartupRefresh = useRef(false);
   const lastResumeRefreshAt = useRef(0);
+  /** True while a refresh=1 request is in flight — skip stacking cached polls. */
+  const plexRefreshInFlight = useRef(false);
+  const plexFetchGen = useRef(0);
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
   const onLan = onHomeNetwork === true;
@@ -94,15 +118,6 @@ export function HomeStatusChips({
     setSummary(next);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
-  const checkResultMessage = (next: PlexUpdateStatus): string => {
-    if (next.updateAvailable) {
-      return `Update available: ${shortPlexVersion(next.installedVersion)} → ${shortPlexVersion(next.latestVersion)}`;
-    }
-    if (next.ok && next.installedVersion) return "Up to date";
-    if (next.error) return next.error;
-    return "Check finished.";
-  };
-
   const loadPlex = useCallback(
     async (
       refresh = false,
@@ -112,7 +127,12 @@ export function HomeStatusChips({
         setPlexStatus(null);
         return;
       }
+      // Don't stack a lightweight cached poll on top of a real check.
+      if (!refresh && plexRefreshInFlight.current) return;
+
+      const gen = ++plexFetchGen.current;
       if (refresh) {
+        plexRefreshInFlight.current = true;
         setPlexChecking(true);
         if (opts.announce) {
           setPlexError(null);
@@ -127,41 +147,44 @@ export function HomeStatusChips({
           // Real PMS + plex.tv check can take a bit longer than cached polls.
           timeoutMs: refresh ? 45000 : 20000,
         });
+        if (gen !== plexFetchGen.current) return;
         setPlexStatus(next);
+        setPlexError(next.error || null);
         if (refresh && opts.announce) {
           setPlexActionMsg(checkResultMessage(next));
-          // Hub may return a non-fatal advisory in error while still ok.
-          setPlexError(next.error || null);
-        } else if (refresh) {
-          setPlexError(next.error || null);
-        } else {
-          setPlexError(next.error || null);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setPlexError(msg);
-        if (refresh && opts.announce) {
-          setPlexActionMsg(null);
-        }
+        if (gen !== plexFetchGen.current) return;
+        setPlexError(err instanceof Error ? err.message : String(err));
+        if (refresh && opts.announce) setPlexActionMsg(null);
       } finally {
-        if (refresh) setPlexChecking(false);
-        else setPlexLoading(false);
+        if (refresh) {
+          // Only the latest refresh owns checking / in-flight.
+          if (gen === plexFetchGen.current) {
+            plexRefreshInFlight.current = false;
+            setPlexChecking(false);
+          }
+        } else {
+          // Always clear; a newer request may still be in flight.
+          setPlexLoading(false);
+        }
       }
     },
     [hubBaseUrl, hubDown],
   );
 
-  // Cached badge polls (no refresh=1).
+  // Cached badge polls (no refresh=1). Skip initial plex fetch when a
+  // startup refresh=1 will cover the first paint — avoids duplicate calls.
   useEffect(() => {
     void load();
-    void loadPlex(false);
+    if (!allowPlexRefresh) void loadPlex(false);
     if (hubDown) return;
     const timer = window.setInterval(() => {
       void load();
       void loadPlex(false);
     }, 20000);
     return () => window.clearInterval(timer);
-  }, [load, loadPlex, hubDown]);
+  }, [load, loadPlex, hubDown, allowPlexRefresh]);
 
   // One real check at home mount (refresh=1) when hub reachable (+ prefer LAN).
   useEffect(() => {
@@ -306,15 +329,14 @@ export function HomeStatusChips({
   const plexJob = plexStatus?.job;
   const plexChipValue = (() => {
     if (hubDown) return "—";
-    if (pendingPlex || (plexChecking && !plexStatus)) return "…";
+    if (plexChecking || pendingPlex) return "…";
     if (!plexStatus) return "—";
-    if (plexChecking) return "…";
     if (plexJobBusy(plexJob)) {
       return `${Math.round(plexJob?.progress ?? 0)}%`;
     }
     if (plexStatus.updateAvailable) return "upd";
     if (plexStatus.ok && plexStatus.installedVersion) return "ok";
-    if (plexStatus.error && !plexStatus.updateAvailable) return "err";
+    if (plexStatus.error) return "err";
     return "—";
   })();
 
@@ -334,14 +356,12 @@ export function HomeStatusChips({
       return "Not on home LAN — install only from the home network.";
     if (onHomeNetwork == null)
       return "Home network status unknown — connect on LAN to install.";
-    if (plexStatus?.updateAvailable && !plexStatus.canInstall) {
-      if (plexStatus.channel === "plex.tv") {
+    if (plexStatus && !plexStatus.canInstall) {
+      if (plexStatus.updateAvailable && plexStatus.channel === "plex.tv") {
         return "Seen on plex.tv, but PMS updater has not listed this Release yet — update from Plex Settings on the host.";
       }
-      return "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
+      return CANNOT_INSTALL_HINT;
     }
-    if (plexStatus && !plexStatus.canInstall)
-      return "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
     return null;
   })();
 
@@ -532,15 +552,8 @@ export function HomeStatusChips({
       onOpenStreams();
       return;
     }
-    if (
-      chipId === "up" ||
-      chipId === "down" ||
-      chipId === "queue" ||
-      chipId === "downloads" ||
-      chipId === "ombi" ||
-      chipId === "plex"
-    ) {
-      openSheet(chipId);
+    if ((SHEET_CHIPS as readonly string[]).includes(chipId)) {
+      openSheet(chipId as Exclude<SheetId, null>);
     }
   };
 
@@ -548,13 +561,9 @@ export function HomeStatusChips({
     <section className="dash-status" aria-label="Hub status summary">
       <div className="dash-chips">
         {chips.map((chip) => {
-          const expandsSheet =
-            chip.id === "up" ||
-            chip.id === "down" ||
-            chip.id === "queue" ||
-            chip.id === "downloads" ||
-            chip.id === "ombi" ||
-            chip.id === "plex";
+          const expandsSheet = (SHEET_CHIPS as readonly string[]).includes(
+            chip.id,
+          );
           const expanded = expandsSheet && sheet === chip.id;
           return (
             <div key={chip.id} className="dash-chip-wrap">

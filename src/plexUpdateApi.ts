@@ -41,6 +41,15 @@ export type PlexUpdateStartBody = {
   tonight?: boolean;
 };
 
+const JOB_PHASES: PlexUpdateJobPhase[] = [
+  "idle",
+  "checking",
+  "downloading",
+  "applying",
+  "done",
+  "error",
+];
+
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
@@ -56,7 +65,7 @@ function asObject(data: unknown): Record<string, unknown> {
         return parsed as Record<string, unknown>;
       }
     } catch {
-      // keep empty
+      // Non-JSON string body — treat as empty.
     }
   }
   return {};
@@ -67,16 +76,7 @@ function asJob(raw: unknown): PlexUpdateJob {
   const phase = String(o.phase || "idle") as PlexUpdateJobPhase;
   return {
     id: typeof o.id === "string" ? o.id : null,
-    phase: [
-      "idle",
-      "checking",
-      "downloading",
-      "applying",
-      "done",
-      "error",
-    ].includes(phase)
-      ? phase
-      : "idle",
+    phase: JOB_PHASES.includes(phase) ? phase : "idle",
     progress: typeof o.progress === "number" ? o.progress : 0,
     message: typeof o.message === "string" ? o.message : "",
     error: typeof o.error === "string" ? o.error : null,
@@ -123,6 +123,56 @@ function httpError(
   );
 }
 
+function missingApiFallback(status: number, otherwise: string): string {
+  return status === 404
+    ? "Hub missing Plex update API — update Arrs Hub on the PC."
+    : otherwise;
+}
+
+async function plexJson(
+  hubBaseUrl: string,
+  pathWithQuery: string,
+  options: {
+    method?: "GET" | "POST";
+    data?: unknown;
+    timeoutMs?: number;
+    errorFallback: (status: number) => string;
+  },
+): Promise<Record<string, unknown>> {
+  const base = normalizeBase(hubBaseUrl);
+  if (!base) {
+    throw new Error("Arrs Hub URL is not set.");
+  }
+  const url = `${base}${pathWithQuery}`;
+  try {
+    const res = await httpRequest(url, {
+      method: options.method ?? "GET",
+      headers: {
+        Accept: "application/json",
+        ...(options.data !== undefined
+          ? { "Content-Type": "application/json" }
+          : {}),
+      },
+      ...(options.data !== undefined ? { data: options.data } : {}),
+      timeoutMs: options.timeoutMs ?? 20000,
+    });
+    const json = asObject(res.data);
+    if (res.status < 200 || res.status >= 300) {
+      throw httpError(
+        url,
+        res.status,
+        json,
+        options.errorFallback(res.status),
+      );
+    }
+    return json;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason}\nTried: ${url}`);
+  }
+}
+
 /** Short display version (strip build suffix after -). */
 export function shortPlexVersion(version: string | null | undefined): string {
   if (!version) return "—";
@@ -143,35 +193,16 @@ export async function fetchPlexUpdateStatus(
   hubBaseUrl: string,
   options: { refresh?: boolean; timeoutMs?: number } = {},
 ): Promise<PlexUpdateStatus> {
-  const base = normalizeBase(hubBaseUrl);
-  if (!base) {
-    throw new Error("Arrs Hub URL is not set.");
-  }
   const qs = options.refresh ? "?refresh=1" : "";
-  const url = `${base}/api/plex/update-status${qs}`;
-  try {
-    const res = await httpRequest(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      timeoutMs: options.timeoutMs ?? 20000,
-    });
-    const json = asObject(res.data);
-    if (res.status < 200 || res.status >= 300) {
-      throw httpError(
-        url,
-        res.status,
-        json,
-        res.status === 404
-          ? "Hub missing Plex update API — update Arrs Hub on the PC."
-          : `Hub returned HTTP ${res.status}. Is Arrs Hub online?`,
-      );
-    }
-    return asStatus(json);
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("Tried:")) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`${reason}\nTried: ${url}`);
-  }
+  const json = await plexJson(hubBaseUrl, `/api/plex/update-status${qs}`, {
+    timeoutMs: options.timeoutMs ?? 20000,
+    errorFallback: (status) =>
+      missingApiFallback(
+        status,
+        `Hub returned HTTP ${status}. Is Arrs Hub online?`,
+      ),
+  });
+  return asStatus(json);
 }
 
 /**
@@ -183,40 +214,19 @@ export async function startPlexUpdateJob(
   body: PlexUpdateStartBody = {},
   timeoutMs = 15000,
 ): Promise<{ ok: boolean; job: PlexUpdateJob }> {
-  const base = normalizeBase(hubBaseUrl);
-  if (!base) {
-    throw new Error("Arrs Hub URL is not set.");
-  }
-  const url = `${base}/api/plex/update`;
-  try {
-    const res = await httpRequest(url, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      data: body,
-      timeoutMs,
-    });
-    const json = asObject(res.data);
-    if (res.status < 200 || res.status >= 300) {
-      throw httpError(
-        url,
-        res.status,
-        json,
-        res.status === 404
-          ? "Hub missing Plex update API — update Arrs Hub on the PC."
-          : res.status === 409
-            ? "A Plex update job is already running."
-            : `Hub returned HTTP ${res.status}.`,
-      );
-    }
-    return { ok: json.ok !== false, job: asJob(json.job) };
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("Tried:")) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`${reason}\nTried: ${url}`);
-  }
+  const json = await plexJson(hubBaseUrl, "/api/plex/update", {
+    method: "POST",
+    data: body,
+    timeoutMs,
+    errorFallback: (status) =>
+      missingApiFallback(
+        status,
+        status === 409
+          ? "A Plex update job is already running."
+          : `Hub returned HTTP ${status}.`,
+      ),
+  });
+  return { ok: json.ok !== false, job: asJob(json.job) };
 }
 
 /** GET /api/plex/update-job — poll in-progress job. */
@@ -224,32 +234,10 @@ export async function fetchPlexUpdateJob(
   hubBaseUrl: string,
   timeoutMs = 10000,
 ): Promise<PlexUpdateJob> {
-  const base = normalizeBase(hubBaseUrl);
-  if (!base) {
-    throw new Error("Arrs Hub URL is not set.");
-  }
-  const url = `${base}/api/plex/update-job`;
-  try {
-    const res = await httpRequest(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      timeoutMs,
-    });
-    const json = asObject(res.data);
-    if (res.status < 200 || res.status >= 300) {
-      throw httpError(
-        url,
-        res.status,
-        json,
-        res.status === 404
-          ? "Hub missing Plex update API — update Arrs Hub on the PC."
-          : `Hub returned HTTP ${res.status}.`,
-      );
-    }
-    return asJob(json.job);
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("Tried:")) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`${reason}\nTried: ${url}`);
-  }
+  const json = await plexJson(hubBaseUrl, "/api/plex/update-job", {
+    timeoutMs,
+    errorFallback: (status) =>
+      missingApiFallback(status, `Hub returned HTTP ${status}.`),
+  });
+  return asJob(json.job);
 }

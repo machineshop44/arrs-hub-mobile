@@ -446,3 +446,42 @@ function resolvePlaylistUrl(
   if (raw.startsWith("/") && base) return `${base}${raw}`;
   return raw || (base && proxyPath ? `${base}${proxyPath}` : "");
 }
+
+/**
+ * Mark hub media URLs for VLC direct play (less / no browser-oriented transcode).
+ *
+ * Hub agent note — honor on `GET /api/workouts/media/:ratingKey`:
+ * - `mode=direct` and/or `player=vlc` → proxy the raw Plex part (Matroska/AC3 OK).
+ * - Default (no flag) stays browser-safe (may transcode to H.264+AAC MP4).
+ * Until hub ships that, these query params are ignored and the existing
+ * browser-oriented resolve still runs.
+ */
+export function withVlcDirectStreamUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const next = new URL(trimmed, "http://local.invalid");
+    if (!next.pathname.includes("/api/workouts/media/")) {
+      return trimmed;
+    }
+    next.searchParams.set("mode", "direct");
+    next.searchParams.set("player", "vlc");
+    if (trimmed.startsWith("/")) {
+      return `${next.pathname}${next.search}`;
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return next.toString();
+    }
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/** Apply {@link withVlcDirectStreamUrl} to each playlist item. */
+export function playlistForVlc(items: PlaylistItem[]): PlaylistItem[] {
+  return items.map((item) => ({
+    ...item,
+    url: withVlcDirectStreamUrl(item.url),
+  }));
+}

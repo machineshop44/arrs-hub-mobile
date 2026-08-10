@@ -32,7 +32,7 @@ export async function isEmbeddedVlcAvailable(): Promise<boolean> {
 
 /**
  * Open fullscreen in-app libVLC for hub stream URLs.
- * Resolves when the native player is closed (back / ✕ / playlist end).
+ * Used when the external VLC app is unavailable; resolves when closed.
  */
 export async function playEmbeddedVlc(
   items: VlcPlaylistItem[],

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { useAndroidBackHandler } from "./androidBack";
 import {
+  openPlaylistInVlc,
   openStreamExternally,
   openStreamInVlc,
   openVlcInstallPage,
@@ -17,8 +18,10 @@ import {
   fetchWorkoutDiscover,
   fetchWorkoutSettings,
   LOCAL_CLIENT_ID,
+  playlistForVlc,
   playWorkoutDay,
   probeHubReachable,
+  withVlcDirectStreamUrl,
   type PlaylistItem,
   type WorkoutClient,
   type WorkoutDay,
@@ -172,7 +175,7 @@ function WorkoutPlayer({
     }
     setExternalHint(null);
     try {
-      const result = await openStreamInVlc(item.url);
+      const result = await openStreamInVlc(withVlcDirectStreamUrl(item.url));
       if (!result.opened) {
         if (result.vlcInstalled === false) {
           setExternalHint(
@@ -248,8 +251,8 @@ function WorkoutPlayer({
             {native ? (
               <span>
                 {" "}
-                Try <strong>Play in VLC</strong> (external app) below if the
-                built-in player can’t decode this stream.
+                Prefer <strong>Play in VLC</strong> below — it handles
+                Matroska/AC3 that this built-in player often can’t.
               </span>
             ) : null}
           </div>
@@ -498,14 +501,46 @@ export function WorkoutsPanel({
           );
         }
 
-        // Primary (Android): in-process libVLC fullscreen — stays in-app.
+        // Android play order: external VLC app → embedded libVLC → HTML5.
+        // VLC URLs request mode=direct (hub may still transcode until it honors that).
         if (Capacitor.isNativePlatform()) {
+          const vlcItems = playlistForVlc(result.playlist);
+
+          try {
+            const external = await openPlaylistInVlc(vlcItems);
+            if (external.opened) {
+              setPlayingDay(null);
+              setMessage(
+                `Opened in VLC: ${result.warmup} → ${result.day}`,
+              );
+              return;
+            }
+            if (external.vlcInstalled === false) {
+              setMessage(
+                "VLC app not installed — trying in-app VLC, then built-in player. Install VLC for Android for the most reliable workouts.",
+              );
+            } else {
+              setMessage(
+                `Could not open VLC app (${external.message || "unknown"}) — trying in-app VLC.`,
+              );
+            }
+          } catch (extErr) {
+            console.warn("External VLC failed, trying embedded", extErr);
+            setMessage(
+              `VLC app failed — trying in-app VLC. ${
+                extErr instanceof Error ? extErr.message : String(extErr)
+              }`,
+            );
+          }
+
           try {
             const embedOk = await isEmbeddedVlcAvailable();
             if (embedOk) {
               setPlayingDay(null);
-              setMessage(`Playing here (VLC): ${result.warmup} → ${result.day}`);
-              const outcome = await playEmbeddedVlc(result.playlist, 0);
+              setMessage(
+                `Playing here (in-app VLC): ${result.warmup} → ${result.day}`,
+              );
+              const outcome = await playEmbeddedVlc(vlcItems, 0);
               setMessage(
                 outcome.finished
                   ? "Workout finished."
@@ -516,17 +551,21 @@ export function WorkoutsPanel({
           } catch (embedErr) {
             console.warn("Embedded VLC unavailable, falling back", embedErr);
             setMessage(
-              `Embedded VLC failed — using built-in player. ${
+              `VLC unavailable — using built-in player. ${
                 embedErr instanceof Error ? embedErr.message : String(embedErr)
               }`,
             );
           }
         }
 
-        // Fallback: HTML5 overlay (+ Intent VLC / external on native).
+        // Last resort: HTML5 overlay (browser-oriented hub URLs; may transcode).
         setPlaylist(result.playlist);
         setPlaylistIndex(0);
-        setMessage(`Playing here: ${result.warmup} → ${result.day}`);
+        setMessage(
+          Capacitor.isNativePlatform()
+            ? `VLC unavailable — built-in player: ${result.warmup} → ${result.day}`
+            : `Playing here: ${result.warmup} → ${result.day}`,
+        );
       } else {
         setMessage(
           `Playing on ${result.client}: ${result.warmup} → ${result.day}`,
@@ -596,8 +635,8 @@ export function WorkoutsPanel({
       {!loading && hubUp && settings && (
         <div className="workouts-body">
           <p className="hint" style={{ paddingTop: "0.35rem" }}>
-            Warm-up plays first, then the day you pick. Playback streams through
-            Arrs Hub (not a direct Plex localhost URL).
+            Warm-up plays first, then the day you pick. On Android, Play opens
+            the VLC app first (hub stream URL). Built-in player is a fallback.
           </p>
 
           {configured && (

@@ -13,7 +13,7 @@ import org.json.JSONObject;
 
 /**
  * Capacitor bridge for in-app libVLC ({@link VlcPlayerActivity}).
- * Primary path for hub workout media; Intent-to-VLC remains a separate fallback.
+ * Secondary path after Intent-to-VLC app; HTML5 is last resort.
  */
 @CapacitorPlugin(name = "VlcPlayer")
 public class VlcPlayerPlugin extends Plugin {

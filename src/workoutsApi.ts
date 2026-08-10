@@ -453,8 +453,8 @@ function resolvePlaylistUrl(
  * Hub agent note — honor on `GET /api/workouts/media/:ratingKey`:
  * - `mode=direct` and/or `player=vlc` → proxy the raw Plex part (Matroska/AC3 OK).
  * - Default (no flag) stays browser-safe (may transcode to H.264+AAC MP4).
- * Until hub ships that, these query params are ignored and the existing
- * browser-oriented resolve still runs.
+ * Observed without hub support: HTTP 502 `PLEX_EMPTY` / chrome-mp4-only when
+ * source audio is AC3 — VLC opens a black screen because the body is JSON.
  */
 export function withVlcDirectStreamUrl(url: string): string {
   const trimmed = url.trim();
@@ -484,4 +484,127 @@ export function playlistForVlc(items: PlaylistItem[]): PlaylistItem[] {
     ...item,
     url: withVlcDirectStreamUrl(item.url),
   }));
+}
+
+export type MediaStreamProbe = {
+  ok: boolean;
+  url: string;
+  status: number;
+  detail: string;
+  code?: string;
+};
+
+function mediaErrorDetail(data: unknown, status: number): {
+  detail: string;
+  code?: string;
+} {
+  const json = asObject(data);
+  const code =
+    typeof json.code === "string" && json.code.trim()
+      ? json.code.trim()
+      : undefined;
+  const error =
+    typeof json.error === "string" && json.error.trim()
+      ? json.error.trim()
+      : "";
+  if (error) {
+    const hubHint =
+      code === "PLEX_EMPTY" || /empty media body|transcod/i.test(error)
+        ? " Hub must honor mode=direct&player=vlc and proxy the raw Plex file for VLC (browser MP4 transcode cannot handle AC3/Matroska)."
+        : "";
+    return {
+      detail: `${error}${hubHint}`,
+      code,
+    };
+  }
+  if (typeof data === "string" && data.trim().startsWith("{")) {
+    try {
+      return mediaErrorDetail(JSON.parse(data), status);
+    } catch {
+      // fall through
+    }
+  }
+  return {
+    detail: `Hub media returned HTTP ${status || "error"} (not a playable stream).`,
+    code,
+  };
+}
+
+/**
+ * Pre-flight the hub media URL before handing it to VLC.
+ * Avoids "Opened in VLC" + black screen when the hub returns JSON 502.
+ */
+export async function probeWorkoutMediaStream(
+  url: string,
+): Promise<MediaStreamProbe> {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      url: "",
+      status: 0,
+      detail: "No stream URL to probe.",
+    };
+  }
+  try {
+    const res = await httpRequest(trimmed, {
+      method: "GET",
+      headers: {
+        Accept: "*/*",
+        Range: "bytes=0-1023",
+      },
+      timeoutMs: 20000,
+    });
+    const status = res.status;
+    if (status >= 200 && status < 400) {
+      const json = asObject(res.data);
+      // Hub sometimes returns 200 with an error object (unlikely) — treat as fail.
+      if (typeof json.error === "string" && json.error.trim()) {
+        const parsed = mediaErrorDetail(res.data, status);
+        return {
+          ok: false,
+          url: trimmed,
+          status,
+          detail: parsed.detail,
+          code: parsed.code,
+        };
+      }
+      // JSON body with code PLEX_EMPTY etc.
+      if (
+        typeof json.code === "string" &&
+        /PLEX_|EMPTY|ERROR/i.test(json.code)
+      ) {
+        const parsed = mediaErrorDetail(res.data, status);
+        return {
+          ok: false,
+          url: trimmed,
+          status,
+          detail: parsed.detail,
+          code: parsed.code,
+        };
+      }
+      return {
+        ok: true,
+        url: trimmed,
+        status,
+        detail: `HTTP ${status}`,
+      };
+    }
+    const parsed = mediaErrorDetail(res.data, status);
+    return {
+      ok: false,
+      url: trimmed,
+      status,
+      detail: parsed.detail,
+      code: parsed.code,
+    };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      url: trimmed,
+      status: 0,
+      detail: `Stream unreachable (${reason}). If you are away from home / on VPN, confirm Arrs Hub host is the reachable WAN/VPN address — not LAN-only.`,
+    };
+  }
 }

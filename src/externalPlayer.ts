@@ -38,7 +38,9 @@ export async function openStreamInVlc(url: string): Promise<{
 
 /**
  * Open warm-up + day (or any list) in the VLC app.
- * Single URL uses ACTION_VIEW; multiple URLs use a temp M3U via FileProvider.
+ * Always prefers a single HTTP(S) ACTION_VIEW Intent — Android VLC often
+ * blacks out on content:// M3U FileProvider playlists even when entries are valid.
+ * Multi-item: opens the first URL; caller should note remaining items.
  */
 export async function openPlaylistInVlc(
   items: VlcPlaylistItem[],
@@ -46,6 +48,8 @@ export async function openPlaylistInVlc(
   opened: boolean;
   vlcInstalled: boolean;
   message?: string;
+  openedCount: number;
+  totalCount: number;
 }> {
   assertNative();
   const playlist = items
@@ -55,10 +59,12 @@ export async function openPlaylistInVlc(
     }))
     .filter((item) => item.url);
   if (!playlist.length) throw new Error("No stream URL to open.");
-  if (playlist.length === 1) {
-    return ExternalPlayer.openInVlc({ url: playlist[0].url });
-  }
-  return ExternalPlayer.openPlaylistInVlc({ items: playlist });
+  const result = await ExternalPlayer.openInVlc({ url: playlist[0].url });
+  return {
+    ...result,
+    openedCount: result.opened ? 1 : 0,
+    totalCount: playlist.length,
+  };
 }
 
 /** System chooser for any installed video player. */

@@ -21,6 +21,7 @@ import {
   playlistForVlc,
   playWorkoutDay,
   probeHubReachable,
+  probeWorkoutMediaStream,
   withVlcDirectStreamUrl,
   type PlaylistItem,
   type WorkoutClient,
@@ -175,7 +176,17 @@ function WorkoutPlayer({
     }
     setExternalHint(null);
     try {
-      const result = await openStreamInVlc(withVlcDirectStreamUrl(item.url));
+      const streamUrl = withVlcDirectStreamUrl(item.url);
+      const probe = await probeWorkoutMediaStream(streamUrl);
+      if (!probe.ok) {
+        setExternalHint(
+          `Stream not playable.\n${probe.detail}\nTried: ${probe.url}${
+            probe.status ? ` (HTTP ${probe.status})` : ""
+          }`,
+        );
+        return;
+      }
+      const result = await openStreamInVlc(streamUrl);
       if (!result.opened) {
         if (result.vlcInstalled === false) {
           setExternalHint(
@@ -501,17 +512,63 @@ export function WorkoutsPanel({
           );
         }
 
-        // Android play order: external VLC app → embedded libVLC → HTML5.
-        // VLC URLs request mode=direct (hub may still transcode until it honors that).
+        // Android: probe hub media first (avoid VLC black screen on JSON 502).
+        // Single clip → external VLC HTTP Intent. Multi (warm-up+day) →
+        // in-app libVLC queue first (content:// M3U is unreliable), then external.
+        // VLC URLs request mode=direct (hub must honor that for AC3/Matroska).
         if (Capacitor.isNativePlatform()) {
           const vlcItems = playlistForVlc(result.playlist);
+          const probe = await probeWorkoutMediaStream(vlcItems[0].url);
+          if (!probe.ok) {
+            throw new Error(
+              `Workout stream not playable in VLC.\n${probe.detail}\nTried: ${probe.url}${
+                probe.status ? ` (HTTP ${probe.status})` : ""
+              }`,
+            );
+          }
+
+          const preferEmbeddedQueue = vlcItems.length > 1;
+
+          if (preferEmbeddedQueue) {
+            try {
+              const embedOk = await isEmbeddedVlcAvailable();
+              if (embedOk) {
+                setPlayingDay(null);
+                setMessage(
+                  `Playing here (in-app VLC): ${result.warmup} → ${result.day}`,
+                );
+                const outcome = await playEmbeddedVlc(vlcItems, 0);
+                setMessage(
+                  outcome.finished
+                    ? "Workout finished."
+                    : `Stopped: ${result.warmup} → ${result.day}`,
+                );
+                return;
+              }
+            } catch (embedErr) {
+              console.warn(
+                "Embedded VLC unavailable for queue, trying external",
+                embedErr,
+              );
+              setMessage(
+                `In-app VLC unavailable — opening first clip in VLC app. ${
+                  embedErr instanceof Error
+                    ? embedErr.message
+                    : String(embedErr)
+                }`,
+              );
+            }
+          }
 
           try {
             const external = await openPlaylistInVlc(vlcItems);
             if (external.opened) {
               setPlayingDay(null);
+              const total = external.totalCount ?? vlcItems.length;
               setMessage(
-                `Opened in VLC: ${result.warmup} → ${result.day}`,
+                total > 1
+                  ? `Opened in VLC: ${result.warmup} (first clip). Finish warm-up, then tap the day again for the workout.`
+                  : `Opened in VLC: ${result.warmup} → ${result.day}`,
               );
               return;
             }
@@ -533,28 +590,32 @@ export function WorkoutsPanel({
             );
           }
 
-          try {
-            const embedOk = await isEmbeddedVlcAvailable();
-            if (embedOk) {
-              setPlayingDay(null);
+          if (!preferEmbeddedQueue) {
+            try {
+              const embedOk = await isEmbeddedVlcAvailable();
+              if (embedOk) {
+                setPlayingDay(null);
+                setMessage(
+                  `Playing here (in-app VLC): ${result.warmup} → ${result.day}`,
+                );
+                const outcome = await playEmbeddedVlc(vlcItems, 0);
+                setMessage(
+                  outcome.finished
+                    ? "Workout finished."
+                    : `Stopped: ${result.warmup} → ${result.day}`,
+                );
+                return;
+              }
+            } catch (embedErr) {
+              console.warn("Embedded VLC unavailable, falling back", embedErr);
               setMessage(
-                `Playing here (in-app VLC): ${result.warmup} → ${result.day}`,
+                `VLC unavailable — using built-in player. ${
+                  embedErr instanceof Error
+                    ? embedErr.message
+                    : String(embedErr)
+                }`,
               );
-              const outcome = await playEmbeddedVlc(vlcItems, 0);
-              setMessage(
-                outcome.finished
-                  ? "Workout finished."
-                  : `Stopped: ${result.warmup} → ${result.day}`,
-              );
-              return;
             }
-          } catch (embedErr) {
-            console.warn("Embedded VLC unavailable, falling back", embedErr);
-            setMessage(
-              `VLC unavailable — using built-in player. ${
-                embedErr instanceof Error ? embedErr.message : String(embedErr)
-              }`,
-            );
           }
         }
 

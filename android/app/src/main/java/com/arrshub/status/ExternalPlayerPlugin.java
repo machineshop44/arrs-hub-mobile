@@ -5,17 +5,12 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.util.Log;
-import androidx.core.content.FileProvider;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 /**
@@ -99,8 +94,10 @@ public class ExternalPlayerPlugin extends Plugin {
     }
 
     /**
-     * Warm-up + day playlist for the VLC app via a temporary M3U.
-     * Single-item playlists should use {@link #openInVlc} from JS.
+     * Warm-up + day playlist for the VLC app.
+     * Prefers a single HTTP(S) stream Intent (reliable). content:// M3U via
+     * FileProvider often opens VLC to a black screen on modern Android.
+     * When multiple items are passed, opens the first HTTP URL only.
      */
     @PluginMethod
     public void openPlaylistInVlc(PluginCall call) {
@@ -115,46 +112,34 @@ public class ExternalPlayerPlugin extends Plugin {
         }
 
         try {
-            StringBuilder m3u = new StringBuilder("#EXTM3U\n");
+            String firstUrl = null;
             int count = 0;
             for (int i = 0; i < items.length(); i++) {
                 JSONObject raw = items.getJSONObject(i);
                 String url = raw.optString("url", "").trim();
                 if (url.isEmpty()) continue;
-                String title = raw.optString("title", "").trim();
-                if (title.isEmpty()) title = "Item " + (count + 1);
-                m3u.append("#EXTINF:-1,").append(title.replace('\n', ' ')).append('\n');
-                m3u.append(url).append('\n');
+                if (firstUrl == null) firstUrl = url;
                 count++;
             }
-            if (count == 0) {
+            if (firstUrl == null) {
                 call.reject("No stream URLs in playlist");
                 return;
             }
 
-            File dir = new File(getContext().getCacheDir(), "vlc");
-            if (!dir.exists() && !dir.mkdirs()) {
-                call.reject("Could not create VLC playlist cache");
-                return;
-            }
-            File m3uFile = new File(dir, "workout-playlist.m3u");
-            try (OutputStreamWriter writer =
-                    new OutputStreamWriter(
-                            new FileOutputStream(m3uFile, false), StandardCharsets.UTF_8)) {
-                writer.write(m3u.toString());
-            }
-
-            String authority = getContext().getPackageName() + ".fileprovider";
-            Uri uri = FileProvider.getUriForFile(getContext(), authority, m3uFile);
-            getContext()
-                    .grantUriPermission(
-                            VLC_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            launchVlcView(uri, "audio/x-mpegurl", true);
-            Log.i(TAG, "Opened VLC playlist (" + count + " items): " + uri);
+            // Always hand VLC a real http(s) media URL — not a local M3U.
+            launchVlcView(Uri.parse(firstUrl), "video/*", false);
+            Log.i(
+                    TAG,
+                    "Opened in VLC (first of "
+                            + count
+                            + "): "
+                            + firstUrl);
 
             JSObject result = new JSObject();
             result.put("opened", true);
             result.put("vlcInstalled", true);
+            result.put("openedCount", 1);
+            result.put("totalCount", count);
             call.resolve(result);
         } catch (ActivityNotFoundException err) {
             Log.e(TAG, "VLC playlist launch failed", err);

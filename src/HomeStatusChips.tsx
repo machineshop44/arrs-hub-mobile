@@ -29,6 +29,7 @@ import {
   type PlexUpdateStatus,
 } from "./plexUpdateApi";
 import { createPlexPollController } from "./plexPollGuard";
+import type { HubWatchdogStatus } from "./probe";
 import type { ServiceConfig } from "./services";
 
 /** Match desktop hub: *arr Activity Queue lives at /activity/queue. */
@@ -100,6 +101,8 @@ type HomeStatusChipsProps = {
   hubBaseUrl: string;
   hubReachable: boolean | null;
   hubLastError?: string | null;
+  hubVersion?: string | null;
+  hubWatchdog?: HubWatchdogStatus | null;
   /** Prefer true for install/download; false disables apply with a clear reason. */
   onHomeNetwork: boolean | null;
   services: ServiceConfig[];
@@ -128,6 +131,8 @@ export const HomeStatusChips = forwardRef<
     hubBaseUrl,
     hubReachable,
     hubLastError = null,
+    hubVersion = null,
+    hubWatchdog = null,
     onHomeNetwork,
     services,
     resolveUrl,
@@ -702,6 +707,21 @@ export const HomeStatusChips = forwardRef<
     }
   };
 
+  const downloaderPcs = (hubWatchdog?.settingsPcs ?? []).filter(
+    (pc) => pc.companionUrl || pc.companionId,
+  );
+
+  function companionStatusLabel(pcId: string): string {
+    const live = hubWatchdog?.pcs[pcId];
+    if (!live || live.online === null) return "Unknown";
+    const msg = (live.message || "").toLowerCase();
+    if (msg.includes("companion online") || live.method?.includes("companion")) {
+      return "Online";
+    }
+    if (live.online === true) return "Online";
+    return "Offline";
+  }
+
   const sheetTitle =
     sheet === "hub"
       ? "Arrs Hub"
@@ -807,6 +827,16 @@ export const HomeStatusChips = forwardRef<
                     </strong>
                   </li>
                   <li>
+                    <span>Version</span>
+                    <strong>
+                      {hubVersion
+                        ? `Hub ${hubVersion}`
+                        : hubReachable === true
+                          ? "Unknown"
+                          : "Unreachable"}
+                    </strong>
+                  </li>
+                  <li>
                     <span>URL</span>
                     <strong className="dash-hub-url">
                       {hubBaseUrl.trim() || "Not configured"}
@@ -819,6 +849,31 @@ export const HomeStatusChips = forwardRef<
                     </li>
                   ) : null}
                 </ul>
+                {downloaderPcs.length > 0 ? (
+                  <>
+                    <p className="dash-chip-popover-title">Downloader PCs</p>
+                    <ul className="dash-queue-breakdown">
+                      {downloaderPcs.map((pc) => {
+                        const companionOnline = companionStatusLabel(pc.id);
+                        return (
+                          <li key={pc.id}>
+                            <span>{pc.name || "Downloader PC"}</span>
+                            <strong>
+                              Companion {companionOnline}
+                              {pc.lastRegisterAt
+                                ? ` · ${new Date(pc.lastRegisterAt).toLocaleString()}`
+                                : ""}
+                            </strong>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </>
+                ) : hubReachable === true ? (
+                  <p className="dash-chip-popover-hint">
+                    No Companion downloader PC registered on this hub yet.
+                  </p>
+                ) : null}
                 <p className="dash-chip-popover-hint">
                   Pull down on Home to refresh, or reconnect below.
                 </p>

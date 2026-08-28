@@ -212,11 +212,11 @@ export function ArrPanel({
     null,
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<ArrLibraryItem[]> => {
     if (!service.apiKey.trim()) {
       setError("Add an API key in Settings for this app.");
       setLoading(false);
-      return;
+      return [];
     }
     setLoading(true);
     setError(null);
@@ -235,8 +235,10 @@ export function ArrPanel({
       setCalendar(data.calendar);
       setLibrary(data.library);
       if (addProfiles) setProfiles(addProfiles);
+      return data.library;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return [];
     } finally {
       setLoading(false);
     }
@@ -288,12 +290,15 @@ export function ArrPanel({
     return false;
   });
 
-  const openLibraryItem = async (item: ArrLibraryItem) => {
+  const openLibraryItem = async (
+    item: ArrLibraryItem,
+    opts?: { detailTab?: DetailTab },
+  ) => {
     setSelected(item);
     setSelectedAlbum(null);
     setSelectedBook(null);
     setLookupPreview(null);
-    setDetailTab("overview");
+    setDetailTab(opts?.detailTab ?? "overview");
     setSeasonFilter("all");
     clearReleases();
     setEpisodes([]);
@@ -424,7 +429,10 @@ export function ArrPanel({
       }
       const lib = library.find((l) => l.id === item.addedId);
       if (lib) {
-        await openLibraryItem(lib);
+        await openLibraryItem(
+          lib,
+          kind === "series" ? { detailTab: "episodes" } : undefined,
+        );
         return;
       }
     }
@@ -468,6 +476,18 @@ export function ArrPanel({
     }
   };
 
+  const findAddedLibraryItem = (
+    items: ArrLibraryItem[],
+    lookup: ArrLookupItem,
+  ): ArrLibraryItem | undefined => {
+    const title = lookup.title.trim().toLowerCase();
+    return items.find(
+      (row) =>
+        row.title.trim().toLowerCase() === title &&
+        (!lookup.year || row.year === lookup.year),
+    );
+  };
+
   const onAddSearch = async (item: ArrLookupItem) => {
     if (!profiles) {
       setError("Could not load quality profiles / root folders.");
@@ -477,7 +497,15 @@ export function ArrPanel({
     setError(null);
     try {
       setMessage(await addAndSearch(service, item, profiles));
-      await load();
+      const lib = await load();
+      if (kind === "series") {
+        const added = findAddedLibraryItem(lib, item);
+        if (added) {
+          setTab("library");
+          await openLibraryItem(added, { detailTab: "episodes" });
+          return;
+        }
+      }
       setTab("library");
       closeDetail();
     } catch (err) {
@@ -1252,7 +1280,14 @@ export function ArrPanel({
                 key={item.id}
                 kind={kind}
                 item={item}
-                onOpen={(next) => void openLibraryItem(next)}
+                onOpen={(next) =>
+                  void openLibraryItem(
+                    next,
+                    kind === "series" && libraryFilter.trim()
+                      ? { detailTab: "episodes" }
+                      : undefined,
+                  )
+                }
               />
             ))}
         </ul>
@@ -1284,19 +1319,25 @@ export function ArrPanel({
           <ul className="arr-list">
             {results.map((item) => (
               <li key={item.key} className="arr-item">
-                <strong>
-                  {item.title}
-                  {item.year ? ` (${item.year})` : ""}
-                </strong>
-                <span className="meta">
-                  {[
-                    item.subtitle,
-                    item.mediaType,
-                    item.alreadyAdded ? "In library" : "Not in library",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
+                <button
+                  type="button"
+                  className="arr-row-btn"
+                  onClick={() => void openLookupDetails(item)}
+                >
+                  <strong>
+                    {item.title}
+                    {item.year ? ` (${item.year})` : ""}
+                  </strong>
+                  <span className="meta">
+                    {[
+                      item.subtitle,
+                      item.mediaType,
+                      item.alreadyAdded ? "In library" : "Not in library",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </button>
                 <div className="arr-item-actions">
                   <button
                     type="button"

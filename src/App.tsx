@@ -21,15 +21,21 @@ import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import { consumeAndroidBack } from "./androidBack";
 import {
-  fetchHubWatchdogServices,
+  fetchHubHealth,
+  fetchHubWatchdogStatus,
   hubStatusForService,
   loadModuleOrder,
   loadServices,
   probeService,
   saveModuleOrder,
   saveServices,
+  type HubWatchdogStatus,
   type ProbeResult,
 } from "./probe";
+import {
+  applyCompanionUrlHints,
+  fetchCompanionUrlHints,
+} from "./companionHints";
 import {
   DEFAULT_PATHING,
   loadPathSettings,
@@ -263,6 +269,10 @@ export function App() {
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
   const [hubReachable, setHubReachable] = useState<boolean | null>(null);
   const [hubLastError, setHubLastError] = useState<string | null>(null);
+  const [hubVersion, setHubVersion] = useState<string | null>(null);
+  const [hubWatchdog, setHubWatchdog] = useState<HubWatchdogStatus | null>(
+    null,
+  );
   const [wakeBusy, setWakeBusy] = useState(false);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
@@ -588,7 +598,8 @@ export function App() {
     const status =
       homeNet ?? (await detectHomeNetwork(wol, pathing.homeBaseUrl));
     setHomeNet(status);
-    const preferHub = status.onHomeNetwork === false && wol.hubUrl.trim();
+    const preferHub =
+      status.onHomeNetwork === false && Boolean(wol.hubUrl.trim());
     if (status.warnRemote && !preferHub) {
       const proceed = window.confirm(
         `${status.message}\n\nSend Wake-on-LAN anyway? Direct magic packets only work on home LAN / VPN. Hub relay needs Arrs Hub reachable and awake.`,
@@ -617,6 +628,43 @@ export function App() {
     [services, wol.hubUrl],
   );
 
+  const resolveHubBase = useCallback((): string => {
+    const workoutsUrl =
+      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
+    const hubRaw = wol.hubUrl.trim()
+      ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
+      : workoutsUrl
+        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
+        : "";
+    if (!hubRaw) return "";
+    return resolveServiceUrl(
+      hubRaw,
+      pathing.homeBaseUrl,
+      homeNet?.onHomeNetwork ?? null,
+      pathing.connectionPreference,
+    );
+  }, [
+    enabled,
+    wol.hubUrl,
+    wol.hubPort,
+    pathing.homeBaseUrl,
+    pathing.connectionPreference,
+    homeNet?.onHomeNetwork,
+  ]);
+
+  const syncCompanionUrlHints = useCallback(async () => {
+    const hubBase = resolveHubBase();
+    if (!hubBase) return;
+    const hints = await fetchCompanionUrlHints(hubBase);
+    if (!hints || Object.keys(hints).length === 0) return;
+    setServices((prev) => {
+      const next = applyCompanionUrlHints(prev, hints);
+      if (next === prev) return prev;
+      void saveServices(next);
+      return next;
+    });
+  }, [resolveHubBase]);
+
   const refresh = useCallback(
     async (opts?: { announce?: boolean; boot?: boolean }) => {
       const gen = ++probeGen.current;
@@ -633,24 +681,14 @@ export function App() {
 
       // Hub primary: one watchdog board fetch when configured. Direct probes
       // fill anything still unknown / missing / hub unreachable. Panels open direct.
-      const workoutsUrl =
-        enabled.find((s) => s.id === "workouts")?.url.trim() || "";
-      const hubRaw = wol.hubUrl.trim()
-        ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
-        : workoutsUrl
-          ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
-          : "";
-      const hubBase = hubRaw
-        ? resolveServiceUrl(
-            hubRaw,
-            pathing.homeBaseUrl,
-            homeNet?.onHomeNetwork ?? null,
-            pathing.connectionPreference,
-          )
-        : "";
-      const hubServices = hubBase
-        ? await fetchHubWatchdogServices(hubBase)
-        : null;
+      const hubBase = resolveHubBase();
+      const [hubStatus, hubHealth] = hubBase
+        ? await Promise.all([
+            fetchHubWatchdogStatus(hubBase),
+            fetchHubHealth(hubBase),
+          ])
+        : [null, null];
+      const hubServices = hubStatus?.services ?? null;
 
       if (gen !== probeGen.current) {
         if (announce) {
@@ -663,12 +701,18 @@ export function App() {
       if (!hubBase) {
         setHubReachable(false);
         setHubLastError("Hub URL not configured");
+        setHubVersion(null);
+        setHubWatchdog(null);
       } else if (hubServices == null) {
         setHubReachable(false);
         setHubLastError("Watchdog unreachable");
+        setHubVersion(hubHealth?.version ?? null);
+        setHubWatchdog(null);
       } else {
         setHubReachable(true);
         setHubLastError(null);
+        setHubVersion(hubHealth?.version ?? null);
+        setHubWatchdog(hubStatus);
       }
 
       if (hubServices) {
@@ -716,13 +760,16 @@ export function App() {
     [
       enabled,
       withEffectiveUrl,
-      wol.hubUrl,
-      wol.hubPort,
-      pathing.homeBaseUrl,
-      pathing.connectionPreference,
-      homeNet?.onHomeNetwork,
+      resolveHubBase,
     ],
   );
+
+  useEffect(() => {
+    if (!ready || hubReachable !== true) return;
+    void syncCompanionUrlHints();
+    const timer = setInterval(() => void syncCompanionUrlHints(), 60_000);
+    return () => clearInterval(timer);
+  }, [ready, hubReachable, syncCompanionUrlHints]);
 
   const runFullReconnect = useCallback(async () => {
     if (pullRefreshingRef.current) return;
@@ -732,13 +779,14 @@ export function App() {
       await Promise.all([
         refresh({ announce: true }),
         refreshHomeNet(wol, pathing.homeBaseUrl),
+        syncCompanionUrlHints(),
       ]);
       await chipsRef.current?.refreshAll({ plexRefresh: true });
     } finally {
       setPullRefreshing(false);
       setPullPx(0);
     }
-  }, [refresh, refreshHomeNet, wol, pathing.homeBaseUrl]);
+  }, [refresh, refreshHomeNet, syncCompanionUrlHints, wol, pathing.homeBaseUrl]);
 
   useEffect(() => {
     if (!ready) return;
@@ -999,29 +1047,7 @@ export function App() {
     return groups;
   }, [modules]);
 
-  const hubBaseForChips = useMemo(() => {
-    const workoutsUrl =
-      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
-    const hubRaw = wol.hubUrl.trim()
-      ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
-      : workoutsUrl
-        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
-        : "";
-    if (!hubRaw) return "";
-    return resolveServiceUrl(
-      hubRaw,
-      pathing.homeBaseUrl,
-      homeNet?.onHomeNetwork ?? null,
-      pathing.connectionPreference,
-    );
-  }, [
-    enabled,
-    wol.hubUrl,
-    wol.hubPort,
-    pathing.homeBaseUrl,
-    pathing.connectionPreference,
-    homeNet?.onHomeNetwork,
-  ]);
+  const hubBaseForChips = useMemo(() => resolveHubBase(), [resolveHubBase]);
 
   const connectionMode = resolveConnectionMode(
     "auto",
@@ -2035,6 +2061,8 @@ export function App() {
               hubBaseUrl={hubBaseForChips}
               hubReachable={hubReachable}
               hubLastError={hubLastError}
+              hubVersion={hubVersion}
+              hubWatchdog={hubWatchdog}
               onHomeNetwork={homeNet?.onHomeNetwork ?? null}
               services={services}
               resolveUrl={(s) => withEffectiveUrl(s).url}

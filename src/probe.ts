@@ -25,6 +25,37 @@ export type HubWatchdogServiceMap = Record<
   { up: boolean | null; latencyMs: number | null; message: string }
 >;
 
+export type HubWatchdogPcConfig = {
+  id: string;
+  name: string;
+  host: string;
+  mac: string;
+  monitor: boolean;
+  wakeOnLan: boolean;
+  companionUrl: string;
+  companionApiKeySet: boolean;
+  companionId: string;
+  lastRegisterAt: string | null;
+};
+
+export type HubWatchdogPcLive = {
+  online: boolean | null;
+  lastChecked?: string | null;
+  message?: string;
+  method?: string | null;
+};
+
+export type HubWatchdogStatus = {
+  services: HubWatchdogServiceMap;
+  pcs: Record<string, HubWatchdogPcLive>;
+  settingsPcs: HubWatchdogPcConfig[];
+};
+
+export type HubHealthInfo = {
+  ok: boolean;
+  version: string | null;
+};
+
 /**
  * Hub watchdog ids that may differ from mobile catalog ids.
  * Lookup is applied both directions when merging hub-first status.
@@ -65,31 +96,24 @@ export function hubStatusForService(
   return undefined;
 }
 
-/**
- * Fetch Arrs Hub watchdog board once. Primary status source when Hub is
- * configured; callers fall back to direct probes for missing/unknown rows.
- */
-export async function fetchHubWatchdogServices(
+async function hubGet(
   hubBaseUrl: string,
+  path: string,
   timeoutMs = 6000,
-): Promise<HubWatchdogServiceMap | null> {
+): Promise<{ status: number; data: unknown; started: number } | null> {
   const base = normalizeBase(hubBaseUrl);
   if (!base) return null;
 
+  const started = performance.now();
   try {
-    const started = performance.now();
-    let status = 0;
-    let data: unknown = null;
-
     if (Capacitor.isNativePlatform()) {
       const res = await CapacitorHttp.get({
-        url: `${base}/api/watchdog/status`,
+        url: `${base}${path}`,
         headers: { Accept: "application/json" },
         connectTimeout: timeoutMs,
         readTimeout: timeoutMs,
       });
-      status = res.status;
-      data =
+      const data =
         typeof res.data === "string"
           ? (() => {
               try {
@@ -99,62 +123,161 @@ export async function fetchHubWatchdogServices(
               }
             })()
           : res.data;
-    } else {
-      const res = await fetch(`${base}/api/watchdog/status`, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(timeoutMs),
-        cache: "no-store",
-      });
-      status = res.status;
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
+      return { status: res.status, data, started };
     }
 
-    if (status < 200 || status >= 400 || !data || typeof data !== "object") {
-      return null;
+    const res = await fetch(`${base}${path}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
     }
-
-    const services = (data as { services?: unknown }).services;
-    if (!services || typeof services !== "object" || Array.isArray(services)) {
-      return null;
-    }
-
-    const out: HubWatchdogServiceMap = {};
-    for (const [id, raw] of Object.entries(
-      services as Record<string, unknown>,
-    )) {
-      if (!raw || typeof raw !== "object") continue;
-      const row = raw as {
-        up?: unknown;
-        latencyMs?: unknown;
-        message?: unknown;
-      };
-      const up =
-        row.up === true ? true : row.up === false ? false : null;
-      out[id] = {
-        up,
-        latencyMs:
-          typeof row.latencyMs === "number"
-            ? row.latencyMs
-            : Math.round(performance.now() - started),
-        message:
-          typeof row.message === "string" && row.message.trim()
-            ? row.message
-            : up === true
-              ? "Up"
-              : up === false
-                ? "Down"
-                : "Unknown",
-      };
-    }
-    return out;
+    return { status: res.status, data, started };
   } catch {
     return null;
   }
+}
+
+function parseWatchdogServices(
+  services: unknown,
+  started: number,
+): HubWatchdogServiceMap | null {
+  if (!services || typeof services !== "object" || Array.isArray(services)) {
+    return null;
+  }
+
+  const out: HubWatchdogServiceMap = {};
+  for (const [id, raw] of Object.entries(services as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as {
+      up?: unknown;
+      latencyMs?: unknown;
+      message?: unknown;
+    };
+    const up = row.up === true ? true : row.up === false ? false : null;
+    out[id] = {
+      up,
+      latencyMs:
+        typeof row.latencyMs === "number"
+          ? row.latencyMs
+          : Math.round(performance.now() - started),
+      message:
+        typeof row.message === "string" && row.message.trim()
+          ? row.message
+          : up === true
+            ? "Up"
+            : up === false
+              ? "Down"
+              : "Unknown",
+    };
+  }
+  return out;
+}
+
+function parseWatchdogPcs(raw: unknown): Record<string, HubWatchdogPcLive> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, HubWatchdogPcLive> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const row = value as {
+      online?: unknown;
+      lastChecked?: unknown;
+      message?: unknown;
+      method?: unknown;
+    };
+    out[id] = {
+      online:
+        row.online === true ? true : row.online === false ? false : null,
+      lastChecked:
+        typeof row.lastChecked === "string" ? row.lastChecked : null,
+      message: typeof row.message === "string" ? row.message : undefined,
+      method: typeof row.method === "string" ? row.method : null,
+    };
+  }
+  return out;
+}
+
+function parseSettingsPcs(raw: unknown): HubWatchdogPcConfig[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const pc = item as Record<string, unknown>;
+      return {
+        id: String(pc.id || ""),
+        name: String(pc.name || "PC").trim() || "PC",
+        host: String(pc.host || "").trim(),
+        mac: String(pc.mac || "").trim(),
+        monitor: pc.monitor !== false,
+        wakeOnLan: pc.wakeOnLan !== false,
+        companionUrl: String(pc.companionUrl || "").trim(),
+        companionApiKeySet: Boolean(pc.companionApiKeySet),
+        companionId: String(pc.companionId || "").trim(),
+        lastRegisterAt:
+          typeof pc.lastRegisterAt === "string" ? pc.lastRegisterAt : null,
+      };
+    })
+    .filter((pc) => pc.id);
+}
+
+/** Parse Arrs Hub version from GET /api/health. */
+export async function fetchHubHealth(
+  hubBaseUrl: string,
+  timeoutMs = 6000,
+): Promise<HubHealthInfo | null> {
+  const res = await hubGet(hubBaseUrl, "/api/health", timeoutMs);
+  if (!res || res.status < 200 || res.status >= 400) return null;
+  if (!res.data || typeof res.data !== "object") return null;
+  const json = res.data as { ok?: unknown; version?: unknown };
+  return {
+    ok: json.ok === true,
+    version: typeof json.version === "string" ? json.version : null,
+  };
+}
+
+/**
+ * Full watchdog status: service board, live PC probes, and settings PCs
+ * (includes Companion-registered downloader PCs).
+ */
+export async function fetchHubWatchdogStatus(
+  hubBaseUrl: string,
+  timeoutMs = 6000,
+): Promise<HubWatchdogStatus | null> {
+  const res = await hubGet(hubBaseUrl, "/api/watchdog/status", timeoutMs);
+  if (!res || res.status < 200 || res.status >= 400) return null;
+  if (!res.data || typeof res.data !== "object") return null;
+
+  const json = res.data as {
+    services?: unknown;
+    pcs?: unknown;
+    settings?: { pcs?: unknown };
+  };
+  const services = parseWatchdogServices(json.services, res.started);
+  if (!services) return null;
+
+  return {
+    services,
+    pcs: parseWatchdogPcs(json.pcs),
+    settingsPcs: parseSettingsPcs(json.settings?.pcs),
+  };
+}
+
+/**
+ * Fetch Arrs Hub watchdog board once. Primary status source when Hub is
+ * configured; callers fall back to direct probes for missing/unknown rows.
+ */
+export async function fetchHubWatchdogServices(
+  hubBaseUrl: string,
+  timeoutMs = 6000,
+): Promise<HubWatchdogServiceMap | null> {
+  const status = await fetchHubWatchdogStatus(hubBaseUrl, timeoutMs);
+  return status?.services ?? null;
 }
 
 function normalizeBase(url: string): string {

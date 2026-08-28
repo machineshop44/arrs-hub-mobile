@@ -124,7 +124,13 @@ fs.mkdirSync(path.dirname(localOut), { recursive: true });
 fs.writeFileSync(localOut, json, "utf8");
 
 const wolFilled = Boolean(
-  wol.mac || wol.targetHost || wol.homeCidr || wol.hubUrl || wol.enabled,
+  wol.enabled ||
+    wol.hubUrl ||
+    wol.homeCidr ||
+    wol.plex?.mac ||
+    wol.downloader?.mac ||
+    wol.plex?.targetHost ||
+    wol.downloader?.targetHost,
 );
 
 console.log("Wrote", outPath);
@@ -136,7 +142,7 @@ console.log(
 console.log(
   "WOL fields:",
   wolFilled
-    ? `enabled=${wol.enabled} mac=${wol.mac || "(empty)"} hub=${wol.hubUrl || "(empty)"}:${wol.hubPort || 3000}`
+    ? `enabled=${wol.enabled} plex=${wol.plex?.mac || "(empty)"} dl=${wol.downloader?.mac || "(empty)"} hub=${wol.hubUrl || "(empty)"}:${wol.hubPort || 3000}`
     : "present but empty (not configured on this seed)",
 );
 console.log("storageKeys:", Object.values(STORAGE_KEYS).join(", "));

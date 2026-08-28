@@ -9,17 +9,28 @@ import {
 } from "./pathing";
 
 /** Capacitor Preferences key for Wake-on-LAN settings. */
-export const WOL_STORAGE_KEY = "arrs-mobile-wol-v1";
+export const WOL_STORAGE_KEY = "arrs-mobile-wol-v2";
+
+/** Legacy key — migrated into v2 on load. */
+export const WOL_STORAGE_KEY_LEGACY = "arrs-mobile-wol-v1";
 
 /** Default TCP port Arrs Hub listens on (desktop). */
 export const DEFAULT_HUB_PORT = 3000;
 
-export type WolSettings = {
+export type WolTargetKey = "plex" | "downloader";
+
+export type WolTarget = {
   enabled: boolean;
   /** Target NIC MAC, e.g. AA:BB:CC:DD:EE:FF */
   mac: string;
   /** Optional host/IP used to guess directed broadcast */
   targetHost: string;
+  /** Port Watch PC id when waking via hub relay */
+  hubPcId: string;
+};
+
+export type WolSettings = {
+  enabled: boolean;
   broadcastIp: string;
   port: number;
   /**
@@ -34,8 +45,8 @@ export type WolSettings = {
   hubUrl: string;
   /** TCP port Arrs Hub listens on (default 3000). Overrides any port in hubUrl. */
   hubPort: number;
-  /** Optional watchdog PC id when waking via hub */
-  hubPcId: string;
+  plex: WolTarget;
+  downloader: WolTarget;
 };
 
 export type HomeNetworkStatus = {
@@ -56,17 +67,161 @@ export type WakeResult = {
   addresses?: string[];
 };
 
-export const DEFAULT_WOL: WolSettings = {
-  enabled: false,
+export const DEFAULT_WOL_TARGET: WolTarget = {
+  enabled: true,
   mac: "",
   targetHost: "",
+  hubPcId: "",
+};
+
+export const DEFAULT_WOL: WolSettings = {
+  enabled: false,
   broadcastIp: "255.255.255.255",
   port: 9,
   homeCidr: "",
   hubUrl: "",
   hubPort: DEFAULT_HUB_PORT,
-  hubPcId: "",
+  plex: { ...DEFAULT_WOL_TARGET },
+  downloader: { ...DEFAULT_WOL_TARGET },
 };
+
+export type WolWakeSettings = WolSettings & {
+  mac: string;
+  targetHost: string;
+  hubPcId: string;
+};
+
+export function wolTargetLabel(key: WolTargetKey): string {
+  return key === "plex" ? "Plex PC" : "Downloader PC";
+}
+
+export function targetWakeReady(target: WolTarget): boolean {
+  return Boolean(normalizeMac(target.mac) || target.hubPcId.trim());
+}
+
+/** Flatten one target into legacy-shaped settings for wake helpers. */
+export function settingsForTarget(
+  settings: WolSettings,
+  targetKey: WolTargetKey,
+): WolWakeSettings {
+  const target = settings[targetKey];
+  return {
+    ...settings,
+    mac: target.mac,
+    targetHost: target.targetHost,
+    hubPcId: target.hubPcId,
+  };
+}
+
+export function updateWolTarget(
+  settings: WolSettings,
+  targetKey: WolTargetKey,
+  patch: Partial<WolTarget>,
+): WolSettings {
+  return {
+    ...settings,
+    [targetKey]: { ...settings[targetKey], ...patch },
+  };
+}
+
+type HubPcSeed = {
+  id?: string;
+  name?: string;
+  host?: string;
+  mac?: string;
+  companionUrl?: string;
+  companionId?: string;
+};
+
+/** Fill blank MAC/host/pcId from Arrs Hub Port Watch PCs (does not overwrite user values). */
+export function applyHubPcsToWolTargets(
+  settings: WolSettings,
+  pcs: HubPcSeed[],
+): WolSettings {
+  if (!pcs.length) return settings;
+
+  let plex = { ...settings.plex };
+  let downloader = { ...settings.downloader };
+
+  const companionPc =
+    pcs.find((pc) => pc.companionUrl || pc.companionId) ||
+    pcs.find((pc) => /download|retro|qbit|sab/i.test(String(pc.name || "")));
+  const plexPc =
+    pcs.find(
+      (pc) =>
+        !pc.companionUrl &&
+        !pc.companionId &&
+        /plex|hub|media/i.test(String(pc.name || "")),
+    ) || pcs.find((pc) => !pc.companionUrl && !pc.companionId);
+
+  const fill = (target: WolTarget, pc: HubPcSeed | undefined): WolTarget => {
+    if (!pc) return target;
+    const mac = normalizeMac(pc.mac || "") || target.mac;
+    return {
+      ...target,
+      mac: target.mac.trim() ? target.mac : mac || target.mac,
+      targetHost: target.targetHost.trim()
+        ? target.targetHost
+        : String(pc.host || "").trim() || target.targetHost,
+      hubPcId: target.hubPcId.trim()
+        ? target.hubPcId
+        : String(pc.id || "").trim() || target.hubPcId,
+    };
+  };
+
+  plex = fill(plex, plexPc);
+  downloader = fill(downloader, companionPc);
+
+  return { ...settings, plex, downloader };
+}
+
+function normalizeWolTarget(raw: Partial<WolTarget> | undefined): WolTarget {
+  return {
+    enabled: raw?.enabled !== false,
+    mac: String(raw?.mac ?? ""),
+    targetHost: String(raw?.targetHost ?? ""),
+    hubPcId: String(raw?.hubPcId ?? ""),
+  };
+}
+
+export function normalizeWolSettings(raw: Partial<WolSettings> | undefined): WolSettings {
+  const wolRaw = raw ?? {};
+  const rawHubUrl = String(wolRaw.hubUrl ?? "");
+  const hubParts = splitHubHostAndPort(rawHubUrl);
+  const hubPort =
+    wolRaw.hubPort != null
+      ? normalizeHubPort(wolRaw.hubPort)
+      : hubParts.port ?? DEFAULT_WOL.hubPort;
+
+  const legacy = wolRaw as Partial<WolSettings> & {
+    mac?: string;
+    targetHost?: string;
+    hubPcId?: string;
+  };
+
+  let plex = normalizeWolTarget(wolRaw.plex);
+  let downloader = normalizeWolTarget(wolRaw.downloader);
+
+  if (!wolRaw.plex && !wolRaw.downloader && (legacy.mac || legacy.targetHost || legacy.hubPcId)) {
+    downloader = {
+      ...downloader,
+      mac: String(legacy.mac ?? ""),
+      targetHost: String(legacy.targetHost ?? ""),
+      hubPcId: String(legacy.hubPcId ?? ""),
+    };
+  }
+
+  return {
+    enabled: Boolean(wolRaw.enabled),
+    broadcastIp: String(wolRaw.broadcastIp || DEFAULT_WOL.broadcastIp),
+    port: Number(wolRaw.port) || DEFAULT_WOL.port,
+    homeCidr: String(wolRaw.homeCidr ?? ""),
+    hubUrl: hubParts.host || rawHubUrl,
+    hubPort,
+    plex,
+    downloader,
+  };
+}
 
 export function normalizeHubPort(port: unknown): number {
   const n = Number(port);
@@ -220,8 +375,10 @@ export function resolveHomeCidr(
   if (fromHome) return fromHome;
 
   const target =
-    parseIpv4(settings.targetHost.trim())?.join(".") ||
-    hostFromUrl(settings.targetHost);
+    parseIpv4(settings.downloader.targetHost.trim())?.join(".") ||
+    parseIpv4(settings.plex.targetHost.trim())?.join(".") ||
+    hostFromUrl(settings.downloader.targetHost) ||
+    hostFromUrl(settings.plex.targetHost);
   if (target && isPrivateIpv4(target)) {
     const parts = parseIpv4(target)!;
     return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
@@ -257,36 +414,16 @@ async function loadWolSeed(): Promise<Partial<WolSettings>> {
 
 export async function loadWolSettings(): Promise<WolSettings> {
   const seed = await loadWolSeed();
-  const base: WolSettings = { ...DEFAULT_WOL, ...seed };
+  const base = normalizeWolSettings({ ...DEFAULT_WOL, ...seed });
   try {
-    const { value } = await Preferences.get({ key: WOL_STORAGE_KEY });
+    let { value } = await Preferences.get({ key: WOL_STORAGE_KEY });
+    if (!value) {
+      const legacy = await Preferences.get({ key: WOL_STORAGE_KEY_LEGACY });
+      value = legacy.value;
+    }
     if (!value) return base;
     const parsed = JSON.parse(value) as Partial<WolSettings>;
-    const rawHubUrl =
-      (typeof parsed.hubUrl === "string" && parsed.hubUrl.trim()) ||
-      base.hubUrl;
-    const hubParts = splitHubHostAndPort(rawHubUrl);
-    const hubPort =
-      parsed.hubPort != null
-        ? normalizeHubPort(parsed.hubPort)
-        : hubParts.port ?? normalizeHubPort(base.hubPort);
-    return {
-      enabled: parsed.enabled ?? base.enabled,
-      mac: (typeof parsed.mac === "string" && parsed.mac.trim()) || base.mac,
-      targetHost:
-        (typeof parsed.targetHost === "string" && parsed.targetHost.trim()) ||
-        base.targetHost,
-      broadcastIp: parsed.broadcastIp || base.broadcastIp || "255.255.255.255",
-      port: Number(parsed.port) || base.port || 9,
-      homeCidr:
-        (typeof parsed.homeCidr === "string" && parsed.homeCidr.trim()) ||
-        base.homeCidr,
-      hubUrl: hubParts.host || rawHubUrl,
-      hubPort,
-      hubPcId:
-        (typeof parsed.hubPcId === "string" && parsed.hubPcId.trim()) ||
-        base.hubPcId,
-    };
+    return normalizeWolSettings({ ...base, ...parsed });
   } catch {
     return base;
   }
@@ -394,7 +531,7 @@ export async function detectHomeNetwork(
 }
 
 export async function sendDirectWakeOnLan(
-  settings: WolSettings,
+  settings: WolWakeSettings,
 ): Promise<WakeResult> {
   if (!Capacitor.isNativePlatform()) {
     return {
@@ -480,7 +617,7 @@ export async function sendDirectWakeOnLan(
 
 async function resolveHubPcId(
   hubBase: string,
-  settings: WolSettings,
+  settings: WolWakeSettings,
 ): Promise<string | null> {
   if (settings.hubPcId.trim()) return settings.hubPcId.trim();
   const mac = normalizeMac(settings.mac);
@@ -505,7 +642,7 @@ async function resolveHubPcId(
 }
 
 export async function sendHubWakeOnLan(
-  settings: WolSettings,
+  settings: WolWakeSettings,
 ): Promise<WakeResult> {
   const hubBase = buildHubBaseUrl(settings.hubUrl, settings.hubPort);
   if (!hubBase) {
@@ -562,11 +699,27 @@ export async function sendHubWakeOnLan(
   }
 }
 
+export async function wakePcByTarget(
+  settings: WolSettings,
+  targetKey: WolTargetKey,
+  options?: { preferHub?: boolean },
+): Promise<WakeResult> {
+  const target = settings[targetKey];
+  if (!target.enabled) {
+    return {
+      ok: false,
+      method: "none",
+      message: `${wolTargetLabel(targetKey)} wake is disabled in settings.`,
+    };
+  }
+  return wakePc(settingsForTarget(settings, targetKey), options);
+}
+
 /**
  * Wake a PC — direct LAN magic packet when home, or hub relay when configured.
  */
 export async function wakePc(
-  settings: WolSettings,
+  settings: WolWakeSettings,
   options?: { preferHub?: boolean },
 ): Promise<WakeResult> {
   const preferHub = options?.preferHub === true;

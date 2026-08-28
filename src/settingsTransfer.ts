@@ -19,10 +19,10 @@ import type { ServiceConfig } from "./services";
 import {
   DEFAULT_WOL,
   loadWolSettings,
+  normalizeWolSettings,
   saveWolSettings,
+  targetWakeReady,
   WOL_STORAGE_KEY,
-  normalizeHubPort,
-  splitHubHostAndPort,
   type WolSettings,
 } from "./wol";
 
@@ -76,27 +76,6 @@ function pickServiceFields(services: ServiceConfig[]): SettingsBundle["services"
   }));
 }
 
-function normalizeWol(raw: Partial<WolSettings> | undefined): WolSettings {
-  const wolRaw = raw ?? {};
-  const rawHubUrl = String(wolRaw.hubUrl ?? "");
-  const hubParts = splitHubHostAndPort(rawHubUrl);
-  const hubPort =
-    wolRaw.hubPort != null
-      ? normalizeHubPort(wolRaw.hubPort)
-      : hubParts.port ?? DEFAULT_WOL.hubPort;
-  return {
-    enabled: Boolean(wolRaw.enabled),
-    mac: String(wolRaw.mac ?? ""),
-    targetHost: String(wolRaw.targetHost ?? ""),
-    broadcastIp: String(wolRaw.broadcastIp || DEFAULT_WOL.broadcastIp),
-    port: Number(wolRaw.port) || DEFAULT_WOL.port,
-    homeCidr: String(wolRaw.homeCidr ?? ""),
-    hubUrl: hubParts.host || rawHubUrl,
-    hubPort,
-    hubPcId: String(wolRaw.hubPcId ?? ""),
-  };
-}
-
 function normalizePathing(raw: Partial<PathSettings> | undefined): PathSettings {
   const pathRaw = raw ?? {};
   return {
@@ -135,7 +114,7 @@ export async function buildSettingsBundle(
     storageKeys: { ...PERSISTED_STORAGE_KEYS },
     services: pickServiceFields(services),
     moduleOrder: [...moduleOrder],
-    wol: normalizeWol(wol),
+    wol: normalizeWolSettings(wol),
     pathing: normalizePathing(pathing),
   };
 }
@@ -211,7 +190,7 @@ export function parseSettingsBundle(raw: string): SettingsBundle {
     storageKeys: { ...PERSISTED_STORAGE_KEYS },
     services,
     moduleOrder,
-    wol: normalizeWol(wolRaw),
+    wol: normalizeWolSettings(wolRaw),
     pathing: normalizePathing(pathRaw),
   };
 }
@@ -240,7 +219,7 @@ export async function applySettingsBundle(
     };
   });
 
-  const wol = normalizeWol(bundle.wol);
+  const wol = normalizeWolSettings(bundle.wol);
   const pathing = normalizePathing(bundle.pathing);
 
   await Promise.all([
@@ -291,11 +270,14 @@ export function summarizeBundle(bundle: SettingsBundle): string {
   const withKeys = bundle.services.filter(
     (s) => s.apiKey.trim() || s.password.trim() || s.url.trim(),
   ).length;
-  const wol = bundle.wol.mac.trim()
-    ? `WOL ${bundle.wol.mac}`
-    : bundle.wol.enabled
-      ? "WOL on (no MAC)"
-      : "WOL off/empty";
+  const wolTargets = (["plex", "downloader"] as const)
+    .filter((key) => bundle.wol[key].enabled && targetWakeReady(bundle.wol[key]))
+    .map((key) => (key === "plex" ? "Plex" : "DL"));
+  const wol = !bundle.wol.enabled
+    ? "WOL off"
+    : wolTargets.length
+      ? `WOL ${wolTargets.join("+")}`
+      : "WOL on (no MAC)";
   const home = bundle.pathing.homeBaseUrl.trim() || "no LAN base";
   const hub = bundle.wol.hubUrl.trim()
     ? `hub :${bundle.wol.hubPort || DEFAULT_WOL.hubPort}`

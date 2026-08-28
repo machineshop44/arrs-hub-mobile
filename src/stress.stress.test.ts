@@ -403,7 +403,10 @@ describe("settingsTransfer — import/export roundtrip (no secret leakage in sum
       wol: {
         ...DEFAULT_WOL,
         enabled: true,
-        mac: "AA:BB:CC:DD:EE:FF",
+        downloader: {
+          ...DEFAULT_WOL.downloader,
+          mac: "AA:BB:CC:DD:EE:FF",
+        },
         hubUrl: "http://192.168.1.50",
         hubPort: 3000,
       },
@@ -427,7 +430,7 @@ describe("settingsTransfer — import/export roundtrip (no secret leakage in sum
     const parsed = parseSettingsBundle(json);
     expect(parsed.services).toEqual(bundle.services);
     expect(parsed.moduleOrder).toEqual(bundle.moduleOrder);
-    expect(parsed.wol.mac).toBe("AA:BB:CC:DD:EE:FF");
+    expect(parsed.wol.downloader.mac).toBe("AA:BB:CC:DD:EE:FF");
     expect(parsed.pathing.homeBaseUrl).toBe("http://192.168.1.50");
     expect(parsed.pathing.connectionPreference).toBe("auto");
 

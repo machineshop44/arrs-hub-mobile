@@ -1503,6 +1503,13 @@ input[type="text"] {
   margin: 0.65rem 0.75rem 0.25rem;
 }
 
+.wol-btn-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.45rem;
+  width: 100%;
+}
+
 .wol-btn {
   display: inline-flex;
   align-items: center;

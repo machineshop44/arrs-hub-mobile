@@ -18,8 +18,8 @@ const seed: CredentialSeed = {
 /** Optional WOL defaults (MAC is fine to keep locally; not a secret). */
 export const wolDefaults: Partial<WolSettings> = {
   // enabled: true,
-  // mac: "AA:BB:CC:DD:EE:FF",
-  // targetHost: "192.168.1.10",
+  // plex: { enabled: true, mac: "AA:BB:…", targetHost: "192.168.1.10", hubPcId: "" },
+  // downloader: { enabled: true, mac: "BB:CC:…", targetHost: "192.168.1.20", hubPcId: "" },
   // homeCidr: "192.168.1.0/24",
   // hubUrl: "http://192.168.1.10",
   // hubPort: 3000,

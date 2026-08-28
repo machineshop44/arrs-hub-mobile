@@ -78,6 +78,7 @@ import {
 import {
   DEFAULT_HUB_PORT,
   DEFAULT_WOL,
+  applyHubPcsToWolTargets,
   buildHubBaseUrl,
   detectHomeNetwork,
   formatMacInput,
@@ -87,9 +88,12 @@ import {
   resolveHomeCidr,
   saveWolSettings,
   splitHubHostAndPort,
-  wakePc,
+  targetWakeReady,
+  wakePcByTarget,
+  wolTargetLabel,
   type HomeNetworkStatus,
   type WolSettings,
+  type WolTargetKey,
 } from "./wol";
 
 type Screen =
@@ -273,7 +277,9 @@ export function App() {
   const [hubWatchdog, setHubWatchdog] = useState<HubWatchdogStatus | null>(
     null,
   );
-  const [wakeBusy, setWakeBusy] = useState(false);
+  const [wakeBusyTarget, setWakeBusyTarget] = useState<WolTargetKey | null>(
+    null,
+  );
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [moduleOrder, setModuleOrder] = useState<string[]>([]);
   const [reordering, setReordering] = useState(false);
@@ -482,7 +488,8 @@ export function App() {
     ready,
     wol.enabled,
     wol.homeCidr,
-    wol.targetHost,
+    wol.plex.targetHost,
+    wol.downloader.targetHost,
     pathing.homeBaseUrl,
     refreshHomeNet,
   ]);
@@ -587,11 +594,22 @@ export function App() {
     ],
   );
 
-  const onWakePc = async () => {
-    if (wakeBusy) return;
-    if (!normalizeMac(wol.mac) && !wol.hubUrl.trim()) {
+  useEffect(() => {
+    if (!hubWatchdog?.settingsPcs?.length) return;
+    setWol((prev) => {
+      const next = applyHubPcsToWolTargets(prev, hubWatchdog.settingsPcs);
+      if (JSON.stringify(next) === JSON.stringify(prev)) return prev;
+      void saveWolSettings(next);
+      return next;
+    });
+  }, [hubWatchdog?.settingsPcs]);
+
+  const onWakeTarget = async (targetKey: WolTargetKey) => {
+    if (wakeBusyTarget) return;
+    const target = wol[targetKey];
+    if (!targetWakeReady(target) && !wol.hubUrl.trim()) {
       setWakeMessage(
-        "Add a MAC in Settings → Wake-on-LAN, or an Arrs Hub URL for relay.",
+        `Add a MAC for ${wolTargetLabel(targetKey)} in Settings → Wake-on-LAN, or an Arrs Hub URL for relay.`,
       );
       return;
     }
@@ -602,19 +620,30 @@ export function App() {
       status.onHomeNetwork === false && Boolean(wol.hubUrl.trim());
     if (status.warnRemote && !preferHub) {
       const proceed = window.confirm(
-        `${status.message}\n\nSend Wake-on-LAN anyway? Direct magic packets only work on home LAN / VPN. Hub relay needs Arrs Hub reachable and awake.`,
+        `${status.message}\n\nSend Wake-on-LAN to ${wolTargetLabel(targetKey)} anyway? Direct magic packets only work on home LAN / VPN. Hub relay needs Arrs Hub reachable and awake.`,
       );
       if (!proceed) return;
     }
-    setWakeBusy(true);
+    setWakeBusyTarget(targetKey);
     setWakeMessage(null);
     try {
-      const result = await wakePc(wol, { preferHub });
+      const result = await wakePcByTarget(wol, targetKey, { preferHub });
       setWakeMessage(result.message);
     } finally {
-      setWakeBusy(false);
+      setWakeBusyTarget(null);
     }
   };
+
+  const wakeReadyForTarget = useCallback(
+    (targetKey: WolTargetKey) =>
+      wol.enabled &&
+      wol[targetKey].enabled &&
+      targetWakeReady(wol[targetKey]) &&
+      (homeNet === null ||
+        homeNet.onHomeNetwork !== false ||
+        wol.hubUrl.trim()),
+    [wol, homeNet],
+  );
 
   const enabled = useMemo(
     () =>
@@ -998,11 +1027,7 @@ export function App() {
 
   /** Wake when enabled and we can direct-WOL or relay through an awake hub. */
   const showWakeControl =
-    wol.enabled &&
-    (normalizeMac(wol.mac) || wol.hubUrl.trim()) &&
-    (homeNet === null ||
-      homeNet.onHomeNetwork !== false ||
-      wol.hubUrl.trim());
+    wakeReadyForTarget("plex") || wakeReadyForTarget("downloader");
 
   const persistModuleOrder = async (ids: string[]) => {
     setModuleOrder(ids);
@@ -1283,11 +1308,21 @@ export function App() {
       }
       return hub ? `${path} · Hub ${hub}` : `${path} · Remote URLs only`;
     })();
-    const wolMac = normalizeMac(wol.mac);
+    const wolPlexMac = normalizeMac(wol.plex.mac);
+    const wolDlMac = normalizeMac(wol.downloader.mac);
     const wolSummary = wol.enabled
-      ? wolMac
-        ? `On · ${wolMac}`
-        : "On · MAC needed"
+      ? [
+          wol.plex.enabled
+            ? wolPlexMac
+              ? `Plex ${wolPlexMac}`
+              : "Plex · MAC needed"
+            : "Plex off",
+          wol.downloader.enabled
+            ? wolDlMac
+              ? `DL ${wolDlMac}`
+              : "DL · MAC needed"
+            : "DL off",
+        ].join(" · ")
       : "Off";
     const derivedCidr = resolveHomeCidr(
       { ...wol, homeCidr: "" },
@@ -1499,7 +1534,7 @@ export function App() {
             <div className="settings-accordion-body">
               <div className="top-row" style={{ marginTop: "0.65rem" }}>
                 <span className="hint" style={{ padding: 0 }}>
-                  Magic packet on home LAN / VPN
+                  Magic packet on home LAN / VPN · hub relay when away
                 </span>
                 <label
                   className="toggle"
@@ -1515,39 +1550,120 @@ export function App() {
                   <span>On</span>
                 </label>
               </div>
-              <label className="field">
-                <span>Target MAC</span>
-                <input
-                  value={wol.mac}
-                  placeholder="AA:BB:CC:DD:EE:FF"
-                  autoComplete="off"
-                  spellCheck={false}
-                  inputMode="text"
-                  onChange={(e) => {
-                    const mac = formatMacInput(e.target.value);
-                    setWol((prev) => ({ ...prev, mac }));
-                  }}
-                  onBlur={(e) => {
-                    const mac = formatMacInput(e.target.value);
-                    void persistWol({ ...wol, mac });
-                  }}
-                />
-              </label>
-              <label className="field">
-                <span>PC host / IP (optional)</span>
-                <input
-                  value={wol.targetHost}
-                  placeholder="192.168.1.10"
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) =>
-                    setWol((prev) => ({ ...prev, targetHost: e.target.value }))
-                  }
-                  onBlur={(e) =>
-                    void persistWol({ ...wol, targetHost: e.target.value })
-                  }
-                />
-              </label>
+              {(["plex", "downloader"] as const).map((targetKey) => {
+                const target = wol[targetKey];
+                const label = wolTargetLabel(targetKey);
+                return (
+                  <div key={targetKey} className="card slim">
+                    <div className="top-row" style={{ marginBottom: "0.45rem" }}>
+                      <strong>{label}</strong>
+                      <label
+                        className="toggle"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={target.enabled}
+                          onChange={(e) => {
+                            void persistWol({
+                              ...wol,
+                              [targetKey]: {
+                                ...target,
+                                enabled: e.target.checked,
+                              },
+                            });
+                          }}
+                        />
+                        <span>On</span>
+                      </label>
+                    </div>
+                    <label className="field">
+                      <span>Target MAC</span>
+                      <input
+                        value={target.mac}
+                        placeholder="AA:BB:CC:DD:EE:FF"
+                        autoComplete="off"
+                        spellCheck={false}
+                        inputMode="text"
+                        onChange={(e) => {
+                          const mac = formatMacInput(e.target.value);
+                          setWol((prev) => ({
+                            ...prev,
+                            [targetKey]: { ...prev[targetKey], mac },
+                          }));
+                        }}
+                        onBlur={(e) => {
+                          const mac = formatMacInput(e.target.value);
+                          void persistWol({
+                            ...wol,
+                            [targetKey]: { ...target, mac },
+                          });
+                        }}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>PC host / IP (optional)</span>
+                      <input
+                        value={target.targetHost}
+                        placeholder={
+                          targetKey === "plex"
+                            ? "192.168.1.10"
+                            : "192.168.1.20"
+                        }
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(e) =>
+                          setWol((prev) => ({
+                            ...prev,
+                            [targetKey]: {
+                              ...prev[targetKey],
+                              targetHost: e.target.value,
+                            },
+                          }))
+                        }
+                        onBlur={(e) =>
+                          void persistWol({
+                            ...wol,
+                            [targetKey]: {
+                              ...target,
+                              targetHost: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                    {settingsWolAdvanced && (
+                      <label className="field">
+                        <span>Hub PC id ({label})</span>
+                        <input
+                          value={target.hubPcId}
+                          placeholder="pc-…"
+                          autoComplete="off"
+                          spellCheck={false}
+                          onChange={(e) =>
+                            setWol((prev) => ({
+                              ...prev,
+                              [targetKey]: {
+                                ...prev[targetKey],
+                                hubPcId: e.target.value,
+                              },
+                            }))
+                          }
+                          onBlur={(e) =>
+                            void persistWol({
+                              ...wol,
+                              [targetKey]: {
+                                ...target,
+                                hubPcId: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
               <button
                 type="button"
                 className="settings-advanced-toggle"
@@ -1686,26 +1802,9 @@ export function App() {
                   </label>
                   <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                     Same as Network → Arrs Hub. Port Arrs Hub listens on
-                    (default {DEFAULT_HUB_PORT}).
+                    (default {DEFAULT_HUB_PORT}). Relay wakes either PC via hub
+                    when away from home.
                   </p>
-                  <label className="field">
-                    <span>Hub PC id</span>
-                    <input
-                      value={wol.hubPcId}
-                      placeholder="pc-…"
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) =>
-                        setWol((prev) => ({
-                          ...prev,
-                          hubPcId: e.target.value,
-                        }))
-                      }
-                      onBlur={(e) =>
-                        void persistWol({ ...wol, hubPcId: e.target.value })
-                      }
-                    />
-                  </label>
                 </>
               )}
               {homeNet && (
@@ -2083,19 +2182,36 @@ export function App() {
           )}
           {showWakeControl && (
             <div className="wol-bar home-wol">
-              <button
-                type="button"
-                className="btn primary wol-btn"
-                disabled={wakeBusy}
-                onClick={() => void onWakePc()}
-              >
-                <IconPower size={18} color="currentColor" />
-                {wakeBusy ? "Sending…" : "Turn on PC"}
-              </button>
+              <div className="wol-btn-row">
+                {wakeReadyForTarget("plex") && (
+                  <button
+                    type="button"
+                    className="btn primary wol-btn"
+                    disabled={wakeBusyTarget !== null}
+                    onClick={() => void onWakeTarget("plex")}
+                  >
+                    <IconPower size={18} color="currentColor" />
+                    {wakeBusyTarget === "plex" ? "Sending…" : "Turn on Plex PC"}
+                  </button>
+                )}
+                {wakeReadyForTarget("downloader") && (
+                  <button
+                    type="button"
+                    className="btn primary wol-btn"
+                    disabled={wakeBusyTarget !== null}
+                    onClick={() => void onWakeTarget("downloader")}
+                  >
+                    <IconPower size={18} color="currentColor" />
+                    {wakeBusyTarget === "downloader"
+                      ? "Sending…"
+                      : "Turn on Downloader PC"}
+                  </button>
+                )}
+              </div>
               <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
                 {wakeMessage ||
                   homeNet?.message ||
-                  "UDP magic packet on home LAN / VPN"}
+                  "UDP magic packet on home LAN / VPN · hub relay when away"}
               </small>
             </div>
           )}

@@ -517,12 +517,13 @@ export async function sendHubWakeOnLan(
   }
 
   const pcId = await resolveHubPcId(hubBase, settings);
-  if (!pcId) {
+  const mac = normalizeMac(settings.mac);
+  if (!pcId && !mac) {
     return {
       ok: false,
       method: "hub",
       message:
-        "Hub relay needs a PC id (or a matching MAC in Arrs Hub Watchdog).",
+        "Hub relay needs a MAC address or a matching PC in Arrs Hub Port Watch.",
     };
   }
 
@@ -530,7 +531,9 @@ export async function sendHubWakeOnLan(
     const res = await CapacitorHttp.post({
       url: `${hubBase}/api/watchdog/wol`,
       headers: { "Content-Type": "application/json" },
-      data: { pcId },
+      data: pcId
+        ? { pcId }
+        : { mac, host: settings.targetHost.trim() },
       connectTimeout: 6000,
       readTimeout: 6000,
     });
@@ -560,9 +563,31 @@ export async function sendHubWakeOnLan(
 }
 
 /**
- * Prefer direct LAN magic packet; fall back to hub relay when configured.
+ * Wake a PC — direct LAN magic packet when home, or hub relay when configured.
  */
-export async function wakePc(settings: WolSettings): Promise<WakeResult> {
+export async function wakePc(
+  settings: WolSettings,
+  options?: { preferHub?: boolean },
+): Promise<WakeResult> {
+  const preferHub = options?.preferHub === true;
+
+  if (preferHub && settings.hubUrl.trim()) {
+    const hub = await sendHubWakeOnLan(settings);
+    if (hub.ok) return hub;
+    const direct = await sendDirectWakeOnLan(settings);
+    if (direct.ok) {
+      return {
+        ...direct,
+        message: `${direct.message} (hub failed: ${hub.message})`,
+      };
+    }
+    return {
+      ok: false,
+      method: "none",
+      message: `Hub: ${hub.message}. Direct: ${direct.message}`,
+    };
+  }
+
   const direct = await sendDirectWakeOnLan(settings);
   if (direct.ok) return direct;
 

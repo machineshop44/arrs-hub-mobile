@@ -579,14 +579,17 @@ export function App() {
 
   const onWakePc = async () => {
     if (wakeBusy) return;
-    if (!normalizeMac(wol.mac)) {
-      setWakeMessage("Add a valid MAC in Settings → Wake-on-LAN.");
+    if (!normalizeMac(wol.mac) && !wol.hubUrl.trim()) {
+      setWakeMessage(
+        "Add a MAC in Settings → Wake-on-LAN, or an Arrs Hub URL for relay.",
+      );
       return;
     }
     const status =
       homeNet ?? (await detectHomeNetwork(wol, pathing.homeBaseUrl));
     setHomeNet(status);
-    if (status.warnRemote) {
+    const preferHub = status.onHomeNetwork === false && wol.hubUrl.trim();
+    if (status.warnRemote && !preferHub) {
       const proceed = window.confirm(
         `${status.message}\n\nSend Wake-on-LAN anyway? Direct magic packets only work on home LAN / VPN. Hub relay needs Arrs Hub reachable and awake.`,
       );
@@ -595,7 +598,7 @@ export function App() {
     setWakeBusy(true);
     setWakeMessage(null);
     try {
-      const result = await wakePc(wol);
+      const result = await wakePc(wol, { preferHub });
       setWakeMessage(result.message);
     } finally {
       setWakeBusy(false);
@@ -945,9 +948,13 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [showBlockingConnect, modules]);
 
-  /** Wake on Home only when on home LAN, or uncertain (with confirm). Hide off-home. */
+  /** Wake when enabled and we can direct-WOL or relay through an awake hub. */
   const showWakeControl =
-    wol.enabled && homeNet != null && homeNet.onHomeNetwork !== false;
+    wol.enabled &&
+    (normalizeMac(wol.mac) || wol.hubUrl.trim()) &&
+    (homeNet === null ||
+      homeNet.onHomeNetwork !== false ||
+      wol.hubUrl.trim());
 
   const persistModuleOrder = async (ids: string[]) => {
     setModuleOrder(ids);
@@ -2055,7 +2062,7 @@ export function App() {
                 onClick={() => void onWakePc()}
               >
                 <IconPower size={18} color="currentColor" />
-                {wakeBusy ? "Sending…" : "Wake PC"}
+                {wakeBusy ? "Sending…" : "Turn on PC"}
               </button>
               <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
                 {wakeMessage ||

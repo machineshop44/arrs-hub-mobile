@@ -137,6 +137,7 @@ const BRAND_SRC: Record<string, string> = {
   ombi: ombiLogo,
   tautulli: tautulliLogo,
   fileflows: fileflowsLogo,
+  "fileflows-node": fileflowsLogo,
   plex: plexLogo,
   calibre: calibreLogo,
   overseerr: overseerrLogo,

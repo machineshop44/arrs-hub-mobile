@@ -16,6 +16,7 @@ Official (or official-derived) product marks used by `ServiceIcon`.
 | ombi | ombi.png | https://raw.githubusercontent.com/Ombi-app/Ombi/develop/src/Ombi/wwwroot/images/favicon/android-chrome-512x512.png (official PWA app icon) |
 | tautulli | tautulli.png | https://raw.githubusercontent.com/Tautulli/Tautulli/master/data/interfaces/default/images/logo-circle.png |
 | fileflows | fileflows.png | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/fileflows.png (FileFlows app mark; product source not published as open logo kit) |
+| fileflows-node | fileflows.png | Same FileFlows mark (processing node has no separate product logo) |
 | plex | plex.png | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/plex.png (classic Plex chevron app mark) |
 | calibre | calibre.svg | https://raw.githubusercontent.com/kovidgoyal/calibre/master/resources/images/calibre.svg |
 | overseerr | overseerr.svg | https://raw.githubusercontent.com/sct/overseerr/develop/public/os_icon.svg |

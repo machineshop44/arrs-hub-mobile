@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -19,6 +20,23 @@ import {
   type HubStatusSummary,
   type OmbiPendingItem,
 } from "./hubSummary";
+import {
+  fetchChipVersions,
+  fetchAppUpdateJob,
+  startAppUpdate,
+  CLICK_UPDATE_APP_IDS,
+  COMPANION_CLICK_UPDATE_IDS,
+  type AppUpdateJobState,
+  type ChipVersionsPayload,
+} from "./chipVersions";
+import {
+  buildCompanionPcStatus,
+  companionAppHealthLabel,
+  companionChipMeta,
+  mergeCompanionDisplayApps,
+} from "./companionStatus";
+import { useAndroidBackHandler } from "./androidBack";
+import { hubStatusForService } from "./probe";
 import {
   fetchPlexUpdateJob,
   fetchPlexUpdateStatus,
@@ -42,11 +60,13 @@ function activityQueueUrl(baseUrl: string | undefined): string | null {
 export type HomeStatusChipsHandle = {
   /** Re-fetch hub summary + plex (refresh=1 when allowed). */
   refreshAll: (opts?: { plexRefresh?: boolean }) => Promise<void>;
+  openCompanion: () => void;
 };
 
 type ChipTone = "good" | "bad" | "accent" | "warn" | "muted";
 type SheetId =
   | "hub"
+  | "companion"
   | "up"
   | "down"
   | "queue"
@@ -57,6 +77,7 @@ type SheetId =
 
 const SHEET_CHIPS = [
   "hub",
+  "companion",
   "up",
   "down",
   "queue",
@@ -149,6 +170,13 @@ export const HomeStatusChips = forwardRef<
   ref,
 ) {
   const [summary, setSummary] = useState<HubStatusSummary | null>(null);
+  const [chipVersions, setChipVersions] = useState<ChipVersionsPayload | null>(
+    null,
+  );
+  const [appUpdateJobs, setAppUpdateJobs] = useState<
+    Record<string, AppUpdateJobState>
+  >({});
+  const [appUpdateNotice, setAppUpdateNotice] = useState<string | null>(null);
   const [sheet, setSheet] = useState<SheetId>(null);
   const [ombiItems, setOmbiItems] = useState<OmbiPendingItem[]>([]);
   const [ombiLoading, setOmbiLoading] = useState(false);
@@ -172,15 +200,16 @@ export const HomeStatusChips = forwardRef<
   const load = useCallback(async () => {
     if (hubDown) {
       setSummary(null);
+      setChipVersions(null);
       setPlexStatus(null);
       return;
     }
-    const next = await fetchHubStatusSummary(
-      hubBaseUrl,
-      services,
-      resolveUrl,
-    );
+    const [next, versions] = await Promise.all([
+      fetchHubStatusSummary(hubBaseUrl, services, resolveUrl),
+      fetchChipVersions(hubBaseUrl, services, resolveUrl),
+    ]);
     setSummary(next);
+    setChipVersions(versions);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
   const loadPlex = useCallback(
@@ -248,6 +277,9 @@ export const HomeStatusChips = forwardRef<
           load(),
           loadPlex(plexRefresh, { announce: false }),
         ]);
+      },
+      openCompanion: () => {
+        setSheet("companion");
       },
     }),
     [allowPlexRefresh, load, loadPlex],
@@ -395,6 +427,82 @@ export const HomeStatusChips = forwardRef<
     };
   }, [sheet]);
 
+  useAndroidBackHandler(() => {
+    if (!sheet) return false;
+    setSheet(null);
+    return true;
+  }, Boolean(sheet));
+
+  const startStackAppUpdate = useCallback(
+    async (appId: string, pcId?: string) => {
+      if (!CLICK_UPDATE_APP_IDS.has(appId)) return;
+      setAppUpdateNotice(null);
+      setAppUpdateJobs((prev) => ({
+        ...prev,
+        [appId]: {
+          id: null,
+          appId,
+          phase: "running",
+          message: "Starting update…",
+          error: null,
+        },
+      }));
+      try {
+        const job = await startAppUpdate(
+          hubBaseUrl,
+          appId,
+          services,
+          resolveUrl,
+          pcId,
+        );
+        setAppUpdateJobs((prev) => ({ ...prev, [appId]: job }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setAppUpdateJobs((prev) => ({
+          ...prev,
+          [appId]: {
+            id: null,
+            appId,
+            phase: "error",
+            message,
+            error: message,
+          },
+        }));
+        setAppUpdateNotice(message);
+      }
+    },
+    [hubBaseUrl, services, resolveUrl],
+  );
+
+  useEffect(() => {
+    const runningIds = Object.entries(appUpdateJobs)
+      .filter(([, job]) => job.phase === "running")
+      .map(([id]) => id);
+    if (runningIds.length === 0 || hubDown) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      for (const appId of runningIds) {
+        const job = await fetchAppUpdateJob(hubBaseUrl, appId);
+        if (cancelled || !job) continue;
+        setAppUpdateJobs((prev) => ({ ...prev, [appId]: job }));
+        if (job.phase === "done") {
+          setAppUpdateNotice(job.message || "Update started.");
+          void load();
+        } else if (job.phase === "error") {
+          setAppUpdateNotice(job.error || job.message || "Update failed.");
+        }
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [appUpdateJobs, hubDown, hubBaseUrl, load]);
+
   const streams = summary?.streams?.streamCount ?? null;
   const downloads = summary?.downloads?.active ?? null;
   const ombiPending = summary?.ombi?.pending ?? null;
@@ -451,15 +559,83 @@ export const HomeStatusChips = forwardRef<
   const remoteInstall =
     onHomeNetwork !== true && canRunInstall;
 
+  const companionHealth = useMemo(() => {
+    const map: Record<string, { up: boolean | null; message?: string }> = {};
+    for (const mod of modules) {
+      map[mod.id] = { up: mod.up };
+    }
+    const hubServices = hubWatchdog?.services;
+    if (hubServices) {
+      for (const svc of services) {
+        const row = hubStatusForService(hubServices, svc.id);
+        if (!row) continue;
+        const existing = map[svc.id];
+        if (!existing || existing.up == null) {
+          map[svc.id] = { up: row.up, message: row.message };
+        }
+      }
+      for (const [id, row] of Object.entries(hubServices)) {
+        if (!map[id]) map[id] = { up: row.up, message: row.message };
+      }
+    }
+    return map;
+  }, [modules, hubWatchdog?.services, services]);
+
+  const companionStatus = useMemo(
+    () =>
+      buildCompanionPcStatus(
+        hubWatchdog?.settingsPcs ?? [],
+        hubWatchdog?.pcs ?? {},
+        companionHealth,
+        hubWatchdog?.watchServices ?? {},
+        services,
+        resolveUrl,
+      ),
+    [
+      hubWatchdog?.settingsPcs,
+      hubWatchdog?.pcs,
+      hubWatchdog?.watchServices,
+      companionHealth,
+      services,
+      resolveUrl,
+    ],
+  );
+
+  const companionChip = useMemo(
+    () => companionChipMeta(companionStatus, scanning),
+    [companionStatus, scanning],
+  );
+
+  const arrUpdateCount = chipVersions?.hub?.arrUpdateCount ?? 0;
+  const arrStatusRows = chipVersions?.arrs ?? [];
+  const arrUpdates = arrStatusRows.filter((entry) => entry.updateAvailable);
+  const companionAppVersions = chipVersions?.companion?.apps ?? [];
+  const companionAppUpdateCount =
+    chipVersions?.companion?.appUpdateCount ??
+    companionAppVersions.filter((entry) => entry.updateAvailable).length;
+  const companionAppUpdates = companionAppVersions.filter(
+    (entry) => entry.updateAvailable,
+  );
+
   const hubChipValue = scanning
     ? "…"
     : hubReachable === true
-      ? "Up"
+      ? arrUpdateCount > 0
+        ? arrUpdateCount === 1
+          ? "upd"
+          : `${arrUpdateCount} upd`
+        : "Up"
       : hubReachable === false
         ? "Down"
         : "—";
   const hubChipTone: ChipTone =
-    hubReachable === true ? "good" : hubReachable === false ? "bad" : "muted";
+    hubReachable === true && arrUpdateCount > 0
+      ? "warn"
+      : hubReachable === true
+        ? "good"
+        : hubReachable === false
+          ? "bad"
+          : "muted";
 
   const runPlexAction = async (
     body: { download?: boolean; apply?: boolean; tonight?: boolean },
@@ -517,14 +693,38 @@ export const HomeStatusChips = forwardRef<
     value: string;
     tone: ChipTone;
     title: string;
+    version?: string | null;
   }[] = [
     {
       id: "hub",
       label: "Hub",
       value: hubChipValue,
       tone: hubChipTone,
-      title: "Arrs Hub connectivity",
+      title:
+        arrUpdateCount > 0
+          ? `Arrs Hub — ${arrUpdateCount} *arr update(s) available`
+          : "Arrs Hub connectivity",
+      version: chipVersions?.hub?.version || hubVersion || null,
     },
+    ...(companionStatus && companionChip
+      ? [
+          {
+            id: "companion",
+            label: companionStatus.pc.name || "Companion",
+            value:
+              companionAppUpdateCount > 0 && companionChip.tone !== "bad"
+                ? companionAppUpdateCount === 1
+                  ? "upd"
+                  : `${companionAppUpdateCount} upd`
+                : companionChip.value,
+            tone: (companionAppUpdateCount > 0 && companionChip.tone !== "bad"
+              ? "warn"
+              : companionChip.tone) as ChipTone,
+            title: `${companionStatus.pc.name} Companion PC — tap for app status`,
+            version: chipVersions?.companion?.version || null,
+          },
+        ]
+      : []),
     {
       id: "up",
       label: "Up",
@@ -707,37 +907,26 @@ export const HomeStatusChips = forwardRef<
     }
   };
 
-  const downloaderPcs = (hubWatchdog?.settingsPcs ?? []).filter(
-    (pc) => pc.companionUrl || pc.companionId,
-  );
-
-  function companionStatusLabel(pcId: string): string {
-    const live = hubWatchdog?.pcs[pcId];
-    if (!live || live.online === null) return "Unknown";
-    const msg = (live.message || "").toLowerCase();
-    if (msg.includes("companion online") || live.method?.includes("companion")) {
-      return "Online";
-    }
-    if (live.online === true) return "Online";
-    return "Offline";
-  }
-
   const sheetTitle =
     sheet === "hub"
       ? "Arrs Hub"
-      : sheet === "up"
-        ? "Online modules"
-        : sheet === "down"
-          ? "Offline modules"
-          : sheet === "queue"
-            ? "Queue by app"
-            : sheet === "downloads"
-              ? "Active downloads"
-              : sheet === "ombi"
-                ? "Ombi pending"
-                : sheet === "plex"
-                  ? "Plex Media Server"
-                  : "";
+      : sheet === "companion"
+        ? companionStatus?.pc.name
+          ? `${companionStatus.pc.name} Companion`
+          : "Companion"
+        : sheet === "up"
+          ? "Online modules"
+          : sheet === "down"
+            ? "Offline modules"
+            : sheet === "queue"
+              ? "Queue by app"
+              : sheet === "downloads"
+                ? "Active downloads"
+                : sheet === "ombi"
+                  ? "Ombi pending"
+                  : sheet === "plex"
+                    ? "Plex Media Server"
+                    : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -772,6 +961,9 @@ export const HomeStatusChips = forwardRef<
               >
                 <span className="dash-chip-value">{chip.value}</span>
                 <span className="dash-chip-label">{chip.label}</span>
+                {chip.version ? (
+                  <span className="dash-chip-meta">v{chip.version}</span>
+                ) : null}
               </button>
             </div>
           );
@@ -849,30 +1041,70 @@ export const HomeStatusChips = forwardRef<
                     </li>
                   ) : null}
                 </ul>
-                {downloaderPcs.length > 0 ? (
+                {arrStatusRows.length > 0 ? (
                   <>
-                    <p className="dash-chip-popover-title">Downloader PCs</p>
+                    <p className="dash-chip-popover-title">Stack versions</p>
                     <ul className="dash-queue-breakdown">
-                      {downloaderPcs.map((pc) => {
-                        const companionOnline = companionStatusLabel(pc.id);
+                      {arrStatusRows.map((app) => {
+                        const job = appUpdateJobs[app.id];
+                        const updating = job?.phase === "running";
+                        const canClickUpdate =
+                          Boolean(app.updateAvailable) &&
+                          CLICK_UPDATE_APP_IDS.has(app.id) &&
+                          !updating;
+                        const value = updating
+                          ? "updating…"
+                          : job?.phase === "error"
+                            ? "err"
+                            : !app.configured
+                              ? "need key"
+                              : !app.ok
+                                ? app.error
+                                  ? "err"
+                                  : "—"
+                                : app.updateAvailable
+                                  ? app.version
+                                    ? `${app.version} → upd ${app.latestVersion || "?"}`
+                                    : `upd → ${app.latestVersion || "?"}`
+                                  : app.version || "—";
                         return (
-                          <li key={pc.id}>
-                            <span>{pc.name || "Downloader PC"}</span>
-                            <strong>
-                              Companion {companionOnline}
-                              {pc.lastRegisterAt
-                                ? ` · ${new Date(pc.lastRegisterAt).toLocaleString()}`
-                                : ""}
-                            </strong>
+                          <li key={app.id}>
+                            {canClickUpdate ? (
+                              <button
+                                type="button"
+                                className="dash-sheet-row-btn dash-queue-app-update"
+                                disabled={updating}
+                                onClick={() =>
+                                  void startStackAppUpdate(app.id)
+                                }
+                              >
+                                <span>{app.label}</span>
+                                <strong>{value}</strong>
+                              </button>
+                            ) : (
+                              <span className="dash-queue-app-static">
+                                <span>{app.label}</span>
+                                <strong>{value}</strong>
+                              </span>
+                            )}
                           </li>
                         );
                       })}
                     </ul>
+                    {arrUpdates.length > 0 ? (
+                      <p className="dash-chip-popover-hint dash-chip-popover-hint-warn">
+                        Yellow *arr / Tautulli rows: tap to update in the
+                        background via the hub.
+                      </p>
+                    ) : (
+                      <p className="dash-chip-popover-hint">
+                        Enabled *arr apps with a Home URL appear here.
+                      </p>
+                    )}
                   </>
-                ) : hubReachable === true ? (
-                  <p className="dash-chip-popover-hint">
-                    No Companion downloader PC registered on this hub yet.
-                  </p>
+                ) : null}
+                {appUpdateNotice ? (
+                  <p className="dash-chip-popover-hint">{appUpdateNotice}</p>
                 ) : null}
                 <p className="dash-chip-popover-hint">
                   Pull down on Home to refresh, or reconnect below.
@@ -891,6 +1123,188 @@ export const HomeStatusChips = forwardRef<
                       {reconnecting ? "Reconnecting…" : "Reconnect"}
                     </button>
                   </div>
+                ) : null}
+              </>
+            )}
+
+            {sheet === "companion" && !companionStatus && (
+              <p className="dash-chip-popover-empty">
+                No Companion downloader PC registered on this hub yet.
+              </p>
+            )}
+
+            {sheet === "companion" && companionStatus && (
+              <>
+                <p className="dash-chip-popover-title">
+                  {companionStatus.pc.name}
+                  {companionStatus.pc.host
+                    ? ` · ${companionStatus.pc.host}`
+                    : ""}
+                </p>
+                <ul className="dash-queue-breakdown">
+                  <li>
+                    <span className="dash-queue-app-static">
+                      <span>Companion</span>
+                      <strong>
+                        {companionStatus.online === true
+                          ? "Online"
+                          : companionStatus.online === false
+                            ? "Offline"
+                            : "Checking…"}
+                        {chipVersions?.companion?.version
+                          ? ` · v${chipVersions.companion.version}`
+                          : ""}
+                      </strong>
+                    </span>
+                  </li>
+                  {companionStatus.pc.companionUrl ? (
+                    <li>
+                      <span className="dash-queue-app-static">
+                        <span>LAN API</span>
+                        <strong>
+                          {companionStatus.pc.companionUrl.replace(
+                            /^https?:\/\//,
+                            "",
+                          )}
+                        </strong>
+                      </span>
+                    </li>
+                  ) : null}
+                </ul>
+                {companionStatus.message ? (
+                  <p className="dash-chip-popover-hint">
+                    {companionStatus.message}
+                  </p>
+                ) : null}
+                <p className="dash-chip-popover-title">Apps on this PC</p>
+                {(() => {
+                  const displayApps = mergeCompanionDisplayApps(
+                    companionStatus.apps,
+                    companionAppVersions,
+                  );
+                  if (displayApps.length === 0) {
+                    return (
+                      <p className="dash-chip-popover-empty">
+                        No companion apps wired yet. In Hub Port Watch, set
+                        Restart on → {companionStatus.pc.name} for qBit, SAB,
+                        or FileFlows Node.
+                      </p>
+                    );
+                  }
+                  return (
+                    <ul className="dash-queue-breakdown">
+                      {displayApps.map((app) => {
+                        const verInfo = companionAppVersions.find(
+                          (entry) => entry.id === app.id,
+                        );
+                        const job = appUpdateJobs[app.id];
+                        const updating = job?.phase === "running";
+                        const health =
+                          app.up === null && verInfo?.version
+                            ? "installed"
+                            : companionAppHealthLabel(app.up);
+                        let value = health;
+                        if (updating) {
+                          value = "updating…";
+                        } else if (job?.phase === "error") {
+                          value = "err";
+                        } else if (verInfo?.updateAvailable) {
+                          value = `upd → ${verInfo.latestVersion || "?"}`;
+                        } else if (verInfo?.version) {
+                          value =
+                            app.up === null
+                              ? `v${verInfo.version}`
+                              : `${health} · v${verInfo.version}`;
+                        } else if (
+                          verInfo &&
+                          !verInfo.ok &&
+                          verInfo.configured
+                        ) {
+                          value = `${health} · ver?`;
+                        }
+                        const hasUpdate = Boolean(verInfo?.updateAvailable);
+                        const canClickUpdate =
+                          hasUpdate &&
+                          COMPANION_CLICK_UPDATE_IDS.has(app.id) &&
+                          !updating;
+                        const canOpen =
+                          Boolean(app.openUrl) &&
+                          app.id !== "fileflows-node" &&
+                          app.id !== "surfshark";
+                        const rowClass = hasUpdate || updating
+                          ? "dash-sheet-row-btn dash-queue-app-update"
+                          : "dash-sheet-row-btn";
+                        const staticClass = [
+                          "dash-queue-app-static",
+                          hasUpdate || updating
+                            ? "dash-queue-app-update"
+                            : "",
+                          updating ? "dash-queue-app-updating" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ");
+                        return (
+                          <li key={app.id}>
+                            {canClickUpdate ? (
+                              <button
+                                type="button"
+                                className={rowClass}
+                                disabled={updating}
+                                onClick={() =>
+                                  void startStackAppUpdate(
+                                    app.id,
+                                    companionStatus.pc.id,
+                                  )
+                                }
+                              >
+                                <span>{app.label}</span>
+                                <strong>{value}</strong>
+                              </button>
+                            ) : canOpen ? (
+                              <button
+                                type="button"
+                                className={rowClass}
+                                onClick={() => {
+                                  setSheet(null);
+                                  onOpenService(app.id);
+                                }}
+                              >
+                                <span>{app.label}</span>
+                                <strong>{value}</strong>
+                              </button>
+                            ) : (
+                              <span
+                                className={staticClass}
+                                title={
+                                  job?.error || app.message || undefined
+                                }
+                              >
+                                <span>{app.label}</span>
+                                <strong>{value}</strong>
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  );
+                })()}
+                {companionAppUpdates.length > 0 ? (
+                  <p className="dash-chip-popover-hint dash-chip-popover-hint-warn">
+                    {companionAppUpdates.some((a) =>
+                      COMPANION_CLICK_UPDATE_IDS.has(a.id),
+                    )
+                      ? "Yellow qBit/SAB rows: tap to update in the background on this PC (winget via Companion)."
+                      : `${companionAppUpdates.map((a) => a.label).join(", ")} have updates — install on ${companionStatus.pc.name}.`}
+                  </p>
+                ) : (
+                  <p className="dash-chip-popover-hint">
+                    Status from Hub Port Watch. FileFlows Node uses Companion
+                    service/process probe (no web UI).
+                  </p>
+                )}
+                {appUpdateNotice ? (
+                  <p className="dash-chip-popover-hint">{appUpdateNotice}</p>
                 ) : null}
               </>
             )}

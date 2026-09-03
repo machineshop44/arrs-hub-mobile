@@ -1,4 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { statusUrlMap } from "./chipVersions";
 import type { ServiceConfig } from "./services";
 
 export type ArrQueueIssue = {
@@ -57,29 +58,6 @@ export type HubStatusSummary = {
 
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
-}
-
-function summaryUrlMap(
-  services: ServiceConfig[],
-  resolveUrl: (service: ServiceConfig) => string,
-): Record<string, string> {
-  const ids = [
-    "sonarr",
-    "radarr",
-    "lidarr",
-    "qbittorrent",
-    "sabnzbd",
-    "ombi",
-    "tautulli",
-  ];
-  const out: Record<string, string> = {};
-  for (const id of ids) {
-    const service = services.find((s) => s.id === id && s.enabled);
-    if (!service) continue;
-    const url = resolveUrl(service).trim();
-    if (url) out[id] = url;
-  }
-  return out;
 }
 
 async function postJson(
@@ -143,7 +121,7 @@ export async function fetchHubStatusSummary(
   try {
     const { status, data } = await postJson(
       `${base}/api/status/summary`,
-      { urls: summaryUrlMap(services, resolveUrl) },
+      { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
     );
     if (status < 200 || status >= 300 || !data || typeof data !== "object") {
@@ -173,7 +151,7 @@ export async function fetchOmbiPending(
   try {
     const { status, data } = await postJson(
       `${base}/api/activity/ombi/pending`,
-      { urls: summaryUrlMap(services, resolveUrl) },
+      { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
     );
     if (status < 200 || status >= 300 || !data || typeof data !== "object") {
@@ -217,7 +195,7 @@ export async function approveOmbiRequest(
       {
         type: item.type,
         id: item.id,
-        urls: summaryUrlMap(services, resolveUrl),
+        urls: statusUrlMap(services, resolveUrl),
       },
       timeoutMs,
     ));

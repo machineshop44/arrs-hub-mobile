@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
-import type { ServiceConfig } from "./services";
+import { isCompanionOnlyUrl, type ServiceConfig } from "./services";
 
 export function isLocalServiceUrl(url: string): boolean {
   try {
@@ -30,6 +30,11 @@ export function applyCompanionUrlHints(
     const hint = hints[service.id];
     if (!hint?.trim()) return service;
     const current = service.url.trim();
+    if (isCompanionOnlyUrl(current) && isCompanionOnlyUrl(hint)) {
+      changed = true;
+      return { ...service, url: hint.trim() };
+    }
+    if (isCompanionOnlyUrl(current) || isCompanionOnlyUrl(hint)) return service;
     if (!isLocalServiceUrl(current)) return service;
     changed = true;
     return { ...service, url: hint.trim() };

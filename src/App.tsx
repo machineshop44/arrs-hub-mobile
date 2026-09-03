@@ -48,6 +48,7 @@ import {
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
+  isCompanionOnlyService,
   serviceCategory,
   type ServiceCategory,
   type ServiceConfig,
@@ -135,6 +136,7 @@ const DEFAULT_MODULE_ORDER = [
   "ytarr",
   "workouts",
   "fileflows",
+  "fileflows-node",
   "calibre",
 ];
 
@@ -165,6 +167,7 @@ const MODULE_COPY: Record<string, string> = {
   bazarr: "Manage Subtitles",
   ombi: "Media Requests",
   fileflows: "File Processing",
+  "fileflows-node": "Processing node · status via Companion",
   calibre: "Ebook Library",
   overseerr: "Media Requests",
   whisparr: "Manage Adult Movies",
@@ -649,6 +652,7 @@ export function App() {
     () =>
       services.filter((s) => {
         if (!s.enabled) return false;
+        if (isCompanionOnlyService(s)) return true;
         if (s.id === "workouts") {
           return Boolean(s.url.trim() || wol.hubUrl.trim());
         }
@@ -962,6 +966,10 @@ export function App() {
     setDrawer(false);
     setReordering(false);
     const resolved = withEffectiveUrl(service);
+    if (isCompanionOnlyService(resolved)) {
+      chipsRef.current?.openCompanion();
+      return;
+    }
     if (service.id === "tautulli") {
       setArrInitialTab(undefined);
       setActive(resolved);
@@ -1971,6 +1979,11 @@ export function App() {
                           })()}
                         </p>
                       </>
+                    ) : service.id === "fileflows-node" ? (
+                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                        No web UI — status comes from Arrs Hub Companion
+                        (Windows service / process on the downloader PC).
+                      </p>
                     ) : service.id === "flaresolverr" ? (
                       <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                         Status prefers Arrs Hub watchdog; direct probe on port

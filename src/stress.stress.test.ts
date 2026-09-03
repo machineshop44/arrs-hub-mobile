@@ -351,10 +351,12 @@ describe("probe — hubStatusForService aliases", () => {
     const map = {
       qbit: { up: true, latencyMs: 10, message: "ok" },
       "yt-arr": { up: false, latencyMs: null, message: "down" },
+      "fileflows-node": { up: true, latencyMs: 4, message: "ok" },
     };
     for (let i = 0; i < 100; i++) {
       expect(hubStatusForService(map, "qbittorrent")?.up).toBe(true);
       expect(hubStatusForService(map, "ytarr")?.up).toBe(false);
+      expect(hubStatusForService(map, "fileflows-node")?.up).toBe(true);
       expect(hubStatusForService(map, "missing")).toBeUndefined();
     }
   });

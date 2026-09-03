@@ -3,6 +3,7 @@ import { Preferences } from "@capacitor/preferences";
 import {
   arrApiVersion,
   buildDefaultConfigs,
+  isCompanionOnlyService,
   type ProbeKind,
   type ServiceConfig,
 } from "./services";
@@ -45,10 +46,16 @@ export type HubWatchdogPcLive = {
   method?: string | null;
 };
 
+export type HubWatchdogWatchService = {
+  restartPcId?: string;
+  monitor?: boolean;
+};
+
 export type HubWatchdogStatus = {
   services: HubWatchdogServiceMap;
   pcs: Record<string, HubWatchdogPcLive>;
   settingsPcs: HubWatchdogPcConfig[];
+  watchServices: Record<string, HubWatchdogWatchService>;
 };
 
 export type HubHealthInfo = {
@@ -66,6 +73,7 @@ const HUB_SERVICE_ID_ALIASES: Record<string, string[]> = {
   qbittorrent: ["qbittorrent", "qbit", "qbittorrent-nox"],
   sabnzbd: ["sabnzbd", "sab"],
   fileflows: ["fileflows", "file-flows"],
+  "fileflows-node": ["fileflows-node", "fileflows_node", "fileflowsnode"],
 };
 
 /** Resolve hub watchdog row for a mobile service id (exact id, then aliases). */
@@ -226,6 +234,23 @@ function parseSettingsPcs(raw: unknown): HubWatchdogPcConfig[] {
     .filter((pc) => pc.id);
 }
 
+function parseWatchServices(
+  raw: unknown,
+): Record<string, HubWatchdogWatchService> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, HubWatchdogWatchService> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!id || !value || typeof value !== "object") continue;
+    const row = value as { restartPcId?: unknown; monitor?: unknown };
+    out[id] = {
+      restartPcId:
+        typeof row.restartPcId === "string" ? row.restartPcId.trim() : "",
+      monitor: row.monitor !== false,
+    };
+  }
+  return out;
+}
+
 /** Parse Arrs Hub version from GET /api/health. */
 export async function fetchHubHealth(
   hubBaseUrl: string,
@@ -256,7 +281,7 @@ export async function fetchHubWatchdogStatus(
   const json = res.data as {
     services?: unknown;
     pcs?: unknown;
-    settings?: { pcs?: unknown };
+    settings?: { pcs?: unknown; services?: unknown };
   };
   const services = parseWatchdogServices(json.services, res.started);
   if (!services) return null;
@@ -265,6 +290,7 @@ export async function fetchHubWatchdogStatus(
     services,
     pcs: parseWatchdogPcs(json.pcs),
     settingsPcs: parseSettingsPcs(json.settings?.pcs),
+    watchServices: parseWatchServices(json.settings?.services),
   };
 }
 
@@ -325,6 +351,14 @@ async function httpGet(
 }
 
 export async function probeService(service: ServiceConfig): Promise<ProbeResult> {
+  if (isCompanionOnlyService(service)) {
+    return {
+      up: null,
+      latencyMs: null,
+      message: "Status via Companion (no web UI)",
+    };
+  }
+
   const base = normalizeBase(service.url);
   if (!base) {
     return { up: null, latencyMs: null, message: "No URL" };

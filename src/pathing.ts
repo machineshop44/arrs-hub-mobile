@@ -97,6 +97,7 @@ export function resolveServiceUrl(
 ): string {
   const remote = String(remoteUrl || "").trim();
   if (!remote) return remote;
+  if (/^companion:/i.test(remote)) return remote;
   const mode = resolveConnectionMode(preference, onHomeNetwork);
   if (mode !== "home") return remote;
   const homeHost = hostFromUrlOrHost(homeBaseUrl);

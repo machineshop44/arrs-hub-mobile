@@ -7,8 +7,8 @@ android {
         applicationId "com.arrshub.status"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 32
-        versionName "1.0.32"
+        versionCode 34
+        versionName "1.0.34"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Fat / universal APK: include common ABIs so one artifact installs on
         // Pixel (arm64), tablets, and emulators (mirrors Ava Bedtime approach).

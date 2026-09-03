@@ -182,6 +182,17 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     defaultEnabled: true,
   },
   {
+    id: "fileflows-node",
+    name: "FileFlows Node",
+    /** No web UI — Hub / Companion report Windows service status. */
+    defaultUrl: "companion://local",
+    color: "#059669",
+    probe: "http",
+    auth: "none",
+    category: "monitoring",
+    defaultEnabled: true,
+  },
+  {
     id: "plex",
     name: "Plex",
     defaultUrl: `${REMOTE_HOST}:32400`,
@@ -257,6 +268,20 @@ const CATEGORY_BY_ID = Object.fromEntries(
 
 export function serviceCategory(id: string): ServiceCategory {
   return CATEGORY_BY_ID[id] || "other";
+}
+
+export function isCompanionOnlyUrl(url: string): boolean {
+  return String(url || "")
+    .trim()
+    .toLowerCase()
+    .startsWith("companion:");
+}
+
+/** FileFlows Node (and any companion:// URL) has no HTTP UI to probe or open. */
+export function isCompanionOnlyService(
+  service: Pick<ServiceConfig, "id" | "url">,
+): boolean {
+  return service.id === "fileflows-node" || isCompanionOnlyUrl(service.url);
 }
 
 export function buildDefaultConfigs(seed: CredentialSeed = {}): ServiceConfig[] {

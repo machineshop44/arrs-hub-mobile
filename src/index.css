@@ -768,6 +768,35 @@ body {
   letter-spacing: 0.04em;
 }
 
+.dash-chip-meta {
+  font-size: 0.62rem;
+  line-height: 1.25;
+  color: color-mix(in srgb, var(--muted) 90%, #e2e8f0);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-queue-app-static {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0;
+}
+
+.dash-queue-app-update,
+.dash-queue-app-update strong {
+  color: #fbbf24;
+}
+
+.dash-queue-app-updating,
+.dash-queue-app-updating strong {
+  color: #fcd34d;
+}
+
+.dash-chip-popover-hint-warn {
+  color: #fbbf24;
+}
+
 .dash-chip.tone-good {
   border-color: color-mix(in srgb, #4ade80 40%, var(--line));
   background: color-mix(in srgb, #22c55e 12%, var(--bg2));
@@ -884,6 +913,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+}
+
+.dash-queue-breakdown > li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
 }
 
 .dash-queue-breakdown strong {

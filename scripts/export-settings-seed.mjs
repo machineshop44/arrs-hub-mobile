@@ -22,6 +22,7 @@ const DEFAULTS = [
   ["ombi", `${REMOTE}:5000`, true],
   ["tautulli", `${REMOTE}:8181`, true],
   ["fileflows", `${REMOTE}:19200`, true],
+  ["fileflows-node", "companion://local", true],
   ["plex", `${REMOTE}:32400`, true],
   ["calibre", `${REMOTE}:8080`, false],
   ["overseerr", `${REMOTE}:5055`, false],

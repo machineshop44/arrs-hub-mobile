@@ -134,7 +134,7 @@ export function PhotoDumpPanel({
           return;
         }
 
-        const settings = await fetchPhotoDumpSettings(hubUrl);
+        const settings = await fetchPhotoDumpSettings(hubUrl, key);
         if (gen !== refreshGen.current) return;
         setHubSettings(settings);
         setRootPath(settings.rootPath || "");

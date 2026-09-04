@@ -87,6 +87,7 @@ export type PhotoDumpUploadResult = {
 
 export async function fetchPhotoDumpSettings(
   hubUrl: string,
+  apiKey?: string,
 ): Promise<PhotoDumpPublicSettings> {
   const base = normalizeBase(hubUrl);
   if (!base) {
@@ -95,9 +96,14 @@ export async function fetchPhotoDumpSettings(
     );
   }
   const url = `${base}/api/photo-dump/settings`;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const key = apiKey?.trim();
+  if (key) {
+    headers["X-Arrs-Hub-Key"] = key;
+  }
   const res = await httpRequest(url, {
     method: "GET",
-    headers: { Accept: "application/json" },
+    headers,
     timeoutMs: 15000,
   });
   const json = asObject(res.data);

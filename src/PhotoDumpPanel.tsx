@@ -10,10 +10,11 @@ import {
   loadPhotoDumpApiKey,
   savePhotoDumpApiKey,
   sha256Hex,
-  tryRemoveLocalCopy,
   uploadPhotoDumpFile,
   type PhotoDumpPublicSettings,
 } from "./photoDumpApi";
+import { PhotoDumpQrScan } from "./PhotoDumpQrScan";
+import type { PhotoDumpSetupPayload } from "./photoDumpSetupQr";
 
 interface PhotoDumpPanelProps {
   service: ServiceConfig;
@@ -21,14 +22,14 @@ interface PhotoDumpPanelProps {
   onOpenSettings: () => void;
   /** Persist key onto the photo-dump service so Settings stays in sync. */
   onApiKeyChange?: (apiKey: string) => void;
+  /** Apply scanned Hub setup QR (API key + Hub URL). */
+  onSetupApplied?: (payload: PhotoDumpSetupPayload) => void | Promise<void>;
 }
 
 type FileStatus =
   | "pending"
   | "hashing"
   | "uploading"
-  | "verified"
-  | "deleted"
   | "manual-remove"
   | "error";
 
@@ -39,6 +40,17 @@ type QueueItem = {
   message?: string;
   remotePath?: string;
 };
+
+let queueIdSeq = 0;
+
+function nextQueueId(fileName: string): string {
+  queueIdSeq += 1;
+  const rand =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${queueIdSeq}`;
+  return `${rand}-${fileName}`;
+}
 
 function joinRelative(parent: string, child: string): string {
   const p = parent.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -62,10 +74,6 @@ function statusLabel(status: FileStatus): string {
       return "Hashing…";
     case "uploading":
       return "Uploading…";
-    case "verified":
-      return "Verified";
-    case "deleted":
-      return "Uploaded, verified & removed";
     case "manual-remove":
       return "Uploaded & verified — remove from gallery manually";
     case "error":
@@ -80,9 +88,12 @@ export function PhotoDumpPanel({
   onBack,
   onOpenSettings,
   onApiKeyChange,
+  onSetupApplied,
 }: PhotoDumpPanelProps) {
   const hubUrl = service.url.trim();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const refreshGen = useRef(0);
+  const mountedRef = useRef(true);
 
   const [apiKey, setApiKey] = useState(service.apiKey || "");
   const [hubSettings, setHubSettings] = useState<PhotoDumpPublicSettings | null>(
@@ -101,29 +112,20 @@ export function PhotoDumpPanel({
   const [showKeyField, setShowKeyField] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const stored = await loadPhotoDumpApiKey();
-      if (cancelled) return;
-      const next = stored || service.apiKey.trim();
-      setApiKey(next);
-      if (stored && stored !== service.apiKey.trim()) {
-        onApiKeyChange?.(stored);
-      } else if (!stored && service.apiKey.trim()) {
-        await savePhotoDumpApiKey(service.apiKey.trim());
-      }
-    })();
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
-  }, [service.apiKey, onApiKeyChange]);
+  }, []);
 
   const refresh = useCallback(
     async (path = relativePath, key = apiKey) => {
+      const gen = ++refreshGen.current;
       setLoading(true);
       setError(null);
       try {
         if (!hubUrl) {
+          if (gen !== refreshGen.current) return;
           setHubSettings(null);
           setFolders([]);
           setError(
@@ -133,6 +135,7 @@ export function PhotoDumpPanel({
         }
 
         const settings = await fetchPhotoDumpSettings(hubUrl);
+        if (gen !== refreshGen.current) return;
         setHubSettings(settings);
         setRootPath(settings.rootPath || "");
 
@@ -150,7 +153,7 @@ export function PhotoDumpPanel({
           setFolders([]);
           setShowKeyField(true);
           setMessage(
-            "Paste the photo dump API key from Hub Settings → Photo dump.",
+            "Scan the Hub setup QR or paste the photo dump API key from Hub Settings → Photo dump.",
           );
           return;
         }
@@ -163,27 +166,46 @@ export function PhotoDumpPanel({
         }
 
         const list = await listPhotoDumpFolders(hubUrl, key, path);
+        if (gen !== refreshGen.current) return;
         setFolders(list.folders);
         setRootPath(list.rootPath || settings.rootPath);
         setRelativePath(list.path || path);
         setMessage(null);
       } catch (err) {
+        if (gen !== refreshGen.current) return;
         setFolders([]);
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (gen === refreshGen.current) setLoading(false);
       }
     },
     [hubUrl, apiKey, relativePath],
   );
 
   useEffect(() => {
-    void refresh("", apiKey);
-    // Initial load only when hub URL / key identity changes.
+    let cancelled = false;
+    void (async () => {
+      const stored = await loadPhotoDumpApiKey();
+      if (cancelled) return;
+      const next = stored || service.apiKey.trim();
+      setApiKey(next);
+      if (stored && stored !== service.apiKey.trim()) {
+        onApiKeyChange?.(stored);
+      } else if (!stored && service.apiKey.trim()) {
+        await savePhotoDumpApiKey(service.apiKey.trim());
+      }
+      // Re-fetch folders once the Preferences key is resolved (may be empty at mount).
+      await refresh("", next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Initial load when hub URL / key identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hubUrl]);
+  }, [hubUrl, service.apiKey]);
 
   useAndroidBackHandler(() => {
+    if (uploading) return true;
     if (relativePath) {
       const parent = parentRelative(relativePath);
       setRelativePath(parent);
@@ -200,13 +222,27 @@ export function PhotoDumpPanel({
     onApiKeyChange?.(trimmed);
   };
 
+  const applySetupQr = async (payload: PhotoDumpSetupPayload) => {
+    if (onSetupApplied) {
+      await onSetupApplied(payload);
+    } else {
+      await persistKey(payload.key);
+    }
+    setApiKey(payload.key.trim());
+    setShowKeyField(false);
+    setMessage("Setup QR applied — Hub URL and API key saved.");
+    // Parent updates service.url / apiKey; the hubUrl effect reloads folders.
+  };
+
   const openFolder = (name: string) => {
+    if (uploading) return;
     const next = joinRelative(relativePath, name);
     setRelativePath(next);
     void refresh(next);
   };
 
   const goUp = () => {
+    if (uploading) return;
     const parent = parentRelative(relativePath);
     setRelativePath(parent);
     void refresh(parent);
@@ -214,7 +250,7 @@ export function PhotoDumpPanel({
 
   const createFolder = async () => {
     const name = newFolderName.trim().replace(/[\\/]+/g, "");
-    if (!name || busy) return;
+    if (!name || busy || uploading) return;
     setBusy(true);
     setError(null);
     try {
@@ -232,8 +268,8 @@ export function PhotoDumpPanel({
 
   const onPickFiles = (files: FileList | null) => {
     if (!files?.length) return;
-    const next: QueueItem[] = Array.from(files).map((file, i) => ({
-      id: `${Date.now()}-${i}-${file.name}`,
+    const next: QueueItem[] = Array.from(files).map((file) => ({
+      id: nextQueueId(file.name),
       file,
       status: "pending" as const,
     }));
@@ -242,6 +278,7 @@ export function PhotoDumpPanel({
   };
 
   const updateItem = (id: string, patch: Partial<QueueItem>) => {
+    if (!mountedRef.current) return;
     setQueue((prev) =>
       prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
@@ -249,7 +286,9 @@ export function PhotoDumpPanel({
 
   const runUpload = async () => {
     if (uploading) return;
-    const pending = queue.filter((q) => q.status === "pending" || q.status === "error");
+    const pending = queue.filter(
+      (q) => q.status === "pending" || q.status === "error",
+    );
     if (!pending.length) {
       setMessage("Nothing to upload — pick photos/videos first.");
       return;
@@ -264,14 +303,19 @@ export function PhotoDumpPanel({
     setError(null);
     setMessage(null);
 
+    const folderAtStart = relativePath;
     let okCount = 0;
     let failCount = 0;
 
     for (const item of pending) {
+      if (!mountedRef.current) break;
       try {
         updateItem(item.id, { status: "hashing", message: undefined });
         const bytes = await item.file.arrayBuffer();
-        if (hubSettings?.maxFileBytes && bytes.byteLength > hubSettings.maxFileBytes) {
+        if (
+          hubSettings?.maxFileBytes &&
+          bytes.byteLength > hubSettings.maxFileBytes
+        ) {
           throw new Error(
             `File exceeds Hub max size (${formatBytes(hubSettings.maxFileBytes)}).`,
           );
@@ -280,20 +324,14 @@ export function PhotoDumpPanel({
         updateItem(item.id, { status: "uploading" });
         const result = await uploadPhotoDumpFile(hubUrl, apiKey, {
           fileName: item.file.name,
-          relativeFolder: relativePath,
+          relativeFolder: folderAtStart,
           bytes,
           sha256: hash,
         });
         updateItem(item.id, {
-          status: "verified",
+          status: "manual-remove",
           remotePath: result.path,
-          message: `${result.fileName} · ${formatBytes(result.size)}`,
-        });
-
-        const local = await tryRemoveLocalCopy(item.file);
-        updateItem(item.id, {
-          status: local.removed ? "deleted" : "manual-remove",
-          message: local.detail,
+          message: `${result.fileName} · ${formatBytes(result.size)}. WebView cannot delete gallery originals — remove from Photos manually.`,
         });
         okCount += 1;
       } catch (err) {
@@ -305,33 +343,36 @@ export function PhotoDumpPanel({
       }
     }
 
-    setUploading(false);
-    setMessage(
-      failCount === 0
-        ? `Uploaded & verified ${okCount} file${okCount === 1 ? "" : "s"}.`
-        : `Done: ${okCount} verified, ${failCount} failed (phone copies kept on errors).`,
-    );
+    if (mountedRef.current) {
+      setUploading(false);
+      setMessage(
+        failCount === 0
+          ? `Uploaded & verified ${okCount} file${okCount === 1 ? "" : "s"}.`
+          : `Done: ${okCount} verified, ${failCount} failed (phone copies kept on errors).`,
+      );
+    }
   };
 
   const clearFinished = () => {
-    setQueue((prev) =>
-      prev.filter(
-        (q) =>
-          q.status !== "verified" &&
-          q.status !== "deleted" &&
-          q.status !== "manual-remove",
-      ),
-    );
+    setQueue((prev) => prev.filter((q) => q.status !== "manual-remove"));
   };
 
   const breadcrumb = relativePath
     ? relativePath.split("/").filter(Boolean)
     : [];
 
+  const navLocked = uploading;
+
   return (
     <div className="page luna-page">
       <header className="luna-top">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back">
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onBack}
+          disabled={navLocked}
+          aria-label="Back"
+        >
           ←
         </button>
         <h1 className="panel-title">
@@ -342,6 +383,7 @@ export function PhotoDumpPanel({
           type="button"
           className="icon-btn"
           onClick={() => void refresh(relativePath)}
+          disabled={navLocked}
           aria-label="Refresh"
         >
           ↻
@@ -370,6 +412,11 @@ export function PhotoDumpPanel({
         </div>
       )}
       {message && !error && <div className="ok banner">{message}</div>}
+      {uploading && (
+        <p className="hint">
+          Upload in progress — folder navigation locked until finished.
+        </p>
+      )}
       {loading && <p className="hint">Loading folders from Arrs Hub…</p>}
 
       {!loading && (
@@ -378,7 +425,7 @@ export function PhotoDumpPanel({
             <button
               type="button"
               className="btn chip"
-              disabled={!relativePath || busy}
+              disabled={!relativePath || busy || navLocked}
               onClick={goUp}
             >
               ↑ Up
@@ -390,6 +437,9 @@ export function PhotoDumpPanel({
             >
               {showKeyField ? "Hide key" : "API key"}
             </button>
+            {onSetupApplied && (
+              <PhotoDumpQrScan onPayload={applySetupQr} />
+            )}
           </div>
 
           {showKeyField && (
@@ -408,7 +458,9 @@ export function PhotoDumpPanel({
                 className="btn primary"
                 style={{ marginTop: "0.5rem" }}
                 onClick={() => {
-                  void persistKey(apiKey).then(() => refresh(relativePath, apiKey));
+                  void persistKey(apiKey).then(() =>
+                    refresh(relativePath, apiKey),
+                  );
                 }}
               >
                 Save key &amp; reload
@@ -420,7 +472,9 @@ export function PhotoDumpPanel({
             <button
               type="button"
               className="photo-dump-crumb"
+              disabled={navLocked}
               onClick={() => {
+                if (navLocked) return;
                 setRelativePath("");
                 void refresh("");
               }}
@@ -435,7 +489,9 @@ export function PhotoDumpPanel({
                   <button
                     type="button"
                     className="photo-dump-crumb"
+                    disabled={navLocked}
                     onClick={() => {
+                      if (navLocked) return;
                       setRelativePath(path);
                       void refresh(path);
                     }}
@@ -458,6 +514,7 @@ export function PhotoDumpPanel({
                 key={name}
                 type="button"
                 className="photo-dump-folder-row"
+                disabled={navLocked}
                 onClick={() => openFolder(name)}
               >
                 <span className="photo-dump-folder-icon" aria-hidden>
@@ -475,6 +532,7 @@ export function PhotoDumpPanel({
               <input
                 value={newFolderName}
                 placeholder="e.g. Vacation2026"
+                disabled={navLocked}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void createFolder();
@@ -484,7 +542,9 @@ export function PhotoDumpPanel({
             <button
               type="button"
               className="btn"
-              disabled={busy || !newFolderName.trim() || !apiKey.trim()}
+              disabled={
+                busy || navLocked || !newFolderName.trim() || !apiKey.trim()
+              }
               onClick={() => void createFolder()}
             >
               Create
@@ -506,6 +566,7 @@ export function PhotoDumpPanel({
             <button
               type="button"
               className="btn"
+              disabled={navLocked}
               onClick={() => fileInputRef.current?.click()}
             >
               Pick photos / videos
@@ -513,26 +574,32 @@ export function PhotoDumpPanel({
             <button
               type="button"
               className="btn primary"
-              disabled={uploading || !queue.some((q) => q.status === "pending" || q.status === "error")}
+              disabled={
+                uploading ||
+                !queue.some(
+                  (q) => q.status === "pending" || q.status === "error",
+                )
+              }
               onClick={() => void runUpload()}
             >
               {uploading ? "Uploading…" : "Upload & verify"}
             </button>
-            {queue.some(
-              (q) =>
-                q.status === "verified" ||
-                q.status === "deleted" ||
-                q.status === "manual-remove",
-            ) && (
-              <button type="button" className="btn chip" onClick={clearFinished}>
+            {queue.some((q) => q.status === "manual-remove") && (
+              <button
+                type="button"
+                className="btn chip"
+                disabled={navLocked}
+                onClick={clearFinished}
+              >
                 Clear finished
               </button>
             )}
           </div>
 
           <p className="hint" style={{ paddingTop: 0 }}>
-            Files upload to the Hub folder above. Phone copies are only marked
-            removable after Hub returns <code>verified: true</code> with matching
+            Files upload to the Hub folder above. Phone copies stay until you
+            remove them from the gallery (WebView cannot delete MediaStore
+            originals). Hub must return <code>verified: true</code> with matching
             size and SHA-256.
           </p>
 

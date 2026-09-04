@@ -13,7 +13,8 @@ export function isLocalServiceUrl(url: string): boolean {
       hostname === "::1"
     );
   } catch {
-    return true;
+    // Invalid URL — do not treat as localhost (avoids overwriting with hints).
+    return false;
   }
 }
 
@@ -78,7 +79,11 @@ async function hubGetJson(
     });
     if (!res.ok) return null;
     return await res.json();
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[companionHints] Failed to fetch URL hints:",
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }

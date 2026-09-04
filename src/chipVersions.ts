@@ -195,7 +195,11 @@ export async function fetchChipVersions(
       return null;
     }
     return data as ChipVersionsPayload;
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[chipVersions] fetch failed:",
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }

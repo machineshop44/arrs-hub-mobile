@@ -1,7 +1,7 @@
 {
   "name": "arrs-hub-mobile",
   "private": true,
-  "version": "1.0.35",
+    "version": "1.0.36",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5174",
@@ -24,6 +24,7 @@
     "@capacitor/network": "^7.0.4",
     "@capacitor/preferences": "^7.0.1",
     "@capgo/inappbrowser": "^7.29.4",
+    "@zxing/browser": "^0.1.5",
     "capacitor-udp-socket": "^7.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

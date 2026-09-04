@@ -128,7 +128,11 @@ export async function fetchHubStatusSummary(
       return null;
     }
     return data as HubStatusSummary;
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[hubSummary] summary fetch failed:",
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }

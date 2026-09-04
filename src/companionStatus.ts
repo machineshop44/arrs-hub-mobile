@@ -60,15 +60,22 @@ function openUrlForService(
   return url;
 }
 
-/** Prefer a Companion-registered downloader PC (URL, then companion id). */
+/** Prefer a Companion-registered downloader PC (URL, then companion id).
+ * When several exist, prefer one currently reported online. */
 export function pickCompanionPc(
   pcConfigs: PcWatchSummary[],
+  pcs: Record<string, { online: boolean | null; message?: string }> = {},
 ): PcWatchSummary | null {
-  return (
-    pcConfigs.find((item) => String(item.companionUrl || "").trim()) ||
-    pcConfigs.find((item) => String(item.companionId || "").trim()) ||
-    null
+  const withUrl = pcConfigs.filter((item) =>
+    String(item.companionUrl || "").trim(),
   );
+  const withId = pcConfigs.filter((item) =>
+    String(item.companionId || "").trim(),
+  );
+  const pool = withUrl.length > 0 ? withUrl : withId;
+  if (pool.length === 0) return null;
+  const online = pool.find((item) => pcs[item.id]?.online === true);
+  return online || pool[0] || null;
 }
 
 export function buildCompanionPcStatus(
@@ -79,7 +86,7 @@ export function buildCompanionPcStatus(
   services: ServiceConfig[],
   resolveUrl: (service: ServiceConfig) => string,
 ): CompanionPcStatus | null {
-  const pc = pickCompanionPc(pcConfigs);
+  const pc = pickCompanionPc(pcConfigs, pcs);
   if (!pc) return null;
 
   const wiredIds = Object.entries(watchServices)

@@ -323,7 +323,7 @@ async function httpGet(
   url: string,
   headers: Record<string, string> = {},
   timeoutMs = 8000,
-): Promise<{ status: number; latencyMs: number }> {
+): Promise<{ status: number; latencyMs: number; data: unknown }> {
   const started = performance.now();
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.get({
@@ -332,9 +332,18 @@ async function httpGet(
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
     });
+    let data: unknown = res.data;
+    if (typeof data === "string" && data.trim()) {
+      try {
+        data = JSON.parse(data);
+      } catch {
+        // keep string body
+      }
+    }
     return {
       status: res.status,
       latencyMs: Math.round(performance.now() - started),
+      data,
     };
   }
 
@@ -344,9 +353,17 @@ async function httpGet(
     signal: AbortSignal.timeout(timeoutMs),
     cache: "no-store",
   });
+  let data: unknown = null;
+  try {
+    const text = await res.text();
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
   return {
     status: res.status,
     latencyMs: Math.round(performance.now() - started),
+    data,
   };
 }
 
@@ -434,29 +451,58 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
     }
 
     if (service.id === "workouts" || service.id === "photo-dump") {
-      // Hub-hosted modules — probe health, then module settings.
+      // Hub-hosted modules — prefer module settings so a healthy Hub alone
+      // does not mark Photo Dump / Workouts Up when the feature is off.
+      const settingsPath =
+        service.id === "photo-dump"
+          ? `${base}/api/photo-dump/settings`
+          : `${base}/api/workouts/settings`;
+      try {
+        const { status, latencyMs, data } = await httpGet(settingsPath);
+        if (status >= 200 && status < 500) {
+          if (service.id === "photo-dump" && data && typeof data === "object") {
+            const settings = (data as { settings?: Record<string, unknown> })
+              .settings;
+            if (settings && settings.enabled === false) {
+              return {
+                up: false,
+                latencyMs,
+                message: "Photo dump disabled on Hub",
+              };
+            }
+            if (settings && settings.rootPathSet === false) {
+              return {
+                up: false,
+                latencyMs,
+                message: "Photo dump root not configured",
+              };
+            }
+          }
+          return {
+            up: true,
+            latencyMs,
+            message: "Online",
+          };
+        }
+      } catch {
+        // Fall through to hub health.
+      }
       try {
         const health = await httpGet(`${base}/api/health`);
         if (health.status >= 200 && health.status < 500) {
           return {
             up: true,
             latencyMs: health.latencyMs,
-            message: "Online",
+            message: "Hub online (module settings unreachable)",
           };
         }
       } catch {
-        // try module settings next
+        // Unreachable below.
       }
-      const settingsPath =
-        service.id === "photo-dump"
-          ? `${base}/api/photo-dump/settings`
-          : `${base}/api/workouts/settings`;
-      const { status, latencyMs } = await httpGet(settingsPath);
-      const up = status >= 200 && status < 500;
       return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
+        up: false,
+        latencyMs: null,
+        message: "Unreachable",
       };
     }
 
@@ -502,7 +548,11 @@ export async function loadServices(): Promise<ServiceConfig[]> {
         name: def.name,
       };
     });
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[probe] Failed to load saved services; using defaults:",
+      err instanceof Error ? err.message : err,
+    );
     return defaults;
   }
 }

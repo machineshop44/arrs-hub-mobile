@@ -170,6 +170,7 @@ export const HomeStatusChips = forwardRef<
   ref,
 ) {
   const [summary, setSummary] = useState<HubStatusSummary | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [chipVersions, setChipVersions] = useState<ChipVersionsPayload | null>(
     null,
   );
@@ -192,6 +193,8 @@ export const HomeStatusChips = forwardRef<
   const didStartupRefresh = useRef(false);
   const lastResumeRefreshAt = useRef(0);
   const plexPoll = useRef(createPlexPollController());
+  const summaryGen = useRef(0);
+  const plexJobPollInFlight = useRef(false);
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
   /** Same gate as chip probes: hub up; skip expensive refresh off home LAN. */
@@ -200,16 +203,25 @@ export const HomeStatusChips = forwardRef<
   const load = useCallback(async () => {
     if (hubDown) {
       setSummary(null);
+      setSummaryError(null);
       setChipVersions(null);
       setPlexStatus(null);
       return;
     }
+    const gen = ++summaryGen.current;
     const [next, versions] = await Promise.all([
       fetchHubStatusSummary(hubBaseUrl, services, resolveUrl),
       fetchChipVersions(hubBaseUrl, services, resolveUrl),
     ]);
-    setSummary(next);
-    setChipVersions(versions);
+    if (gen !== summaryGen.current) return;
+    if (next) {
+      setSummary(next);
+      setSummaryError(null);
+    } else {
+      // Keep last good summary so chips don't flash to "—" / setup on a blip.
+      setSummaryError((prev) => prev ?? "Could not refresh hub activity summary.");
+    }
+    if (versions) setChipVersions(versions);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
   const loadPlex = useCallback(
@@ -299,8 +311,12 @@ export const HomeStatusChips = forwardRef<
   }, [load, loadPlex, hubDown, allowPlexRefresh]);
 
   // One real check at home mount (refresh=1) when hub reachable (+ prefer LAN).
+  // Reset when allowPlexRefresh recovers so reconnect gets a fresh check.
   useEffect(() => {
-    if (!allowPlexRefresh) return;
+    if (!allowPlexRefresh) {
+      didStartupRefresh.current = false;
+      return;
+    }
     if (didStartupRefresh.current) return;
     didStartupRefresh.current = true;
     void loadPlex(true);
@@ -350,6 +366,8 @@ export const HomeStatusChips = forwardRef<
     const busy = plexJobBusy(plexStatus?.job);
     if (!busy) return;
     const timer = window.setInterval(() => {
+      if (plexJobPollInFlight.current) return;
+      plexJobPollInFlight.current = true;
       void (async () => {
         try {
           const job = await fetchPlexUpdateJob(hubBaseUrl);
@@ -367,6 +385,8 @@ export const HomeStatusChips = forwardRef<
         } catch (err) {
           setPlexError(err instanceof Error ? err.message : String(err));
           setPlexBusy(false);
+        } finally {
+          plexJobPollInFlight.current = false;
         }
       })();
     }, 1500);
@@ -379,31 +399,34 @@ export const HomeStatusChips = forwardRef<
     setOmbiLoading(true);
     setOmbiError(null);
     void (async () => {
-      const result = await fetchOmbiPending(hubBaseUrl, services, resolveUrl);
-      if (cancelled) return;
-      if (!result) {
-        setOmbiError("Could not load Ombi pending.");
-        setOmbiItems([]);
-      } else {
-        setOmbiItems(result.items);
-        setOmbiError(result.error || null);
-        if (typeof result.pending === "number") {
-          setSummary((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  ombi: {
-                    ok: result.ok,
-                    configured: result.configured,
-                    pending: result.pending,
-                    error: result.error,
-                  },
-                }
-              : prev,
-          );
+      try {
+        const result = await fetchOmbiPending(hubBaseUrl, services, resolveUrl);
+        if (cancelled) return;
+        if (!result) {
+          setOmbiError("Could not load Ombi pending.");
+          setOmbiItems([]);
+        } else {
+          setOmbiItems(result.items);
+          setOmbiError(result.error || null);
+          if (typeof result.pending === "number") {
+            setSummary((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    ombi: {
+                      ok: result.ok,
+                      configured: result.configured,
+                      pending: result.pending,
+                      error: result.error,
+                    },
+                  }
+                : prev,
+            );
+          }
         }
+      } finally {
+        if (!cancelled) setOmbiLoading(false);
       }
-      setOmbiLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -508,6 +531,7 @@ export const HomeStatusChips = forwardRef<
   const ombiPending = summary?.ombi?.pending ?? null;
   const queueTotal = summary?.arr?.queueTotal ?? null;
   const pendingSummary = !hubDown && summary == null;
+  const pendingGlyph = pendingSummary ? "…" : "—";
   const pendingPlex =
     !hubDown && plexStatus == null && (plexLoading || plexChecking);
 
@@ -745,7 +769,7 @@ export const HomeStatusChips = forwardRef<
       value: hubDown
         ? "—"
         : pendingSummary || streams == null
-          ? "—"
+          ? pendingGlyph
           : summary?.streams?.configured
             ? String(streams)
             : "setup",
@@ -763,7 +787,7 @@ export const HomeStatusChips = forwardRef<
       value: hubDown
         ? "—"
         : pendingSummary || downloads == null
-          ? "—"
+          ? pendingGlyph
           : summary?.downloads?.qbittorrent?.configured ||
               summary?.downloads?.sabnzbd?.configured
             ? String(downloads)
@@ -777,7 +801,7 @@ export const HomeStatusChips = forwardRef<
       value: hubDown
         ? "—"
         : pendingSummary || queueTotal == null
-          ? "—"
+          ? pendingGlyph
           : summary?.arr?.sonarr?.ok || summary?.arr?.radarr?.ok
             ? String(queueTotal)
             : "setup",
@@ -790,7 +814,7 @@ export const HomeStatusChips = forwardRef<
       value: hubDown
         ? "—"
         : pendingSummary || ombiPending == null
-          ? "—"
+          ? pendingGlyph
           : summary?.ombi?.configured
             ? String(ombiPending)
             : "setup",
@@ -847,7 +871,10 @@ export const HomeStatusChips = forwardRef<
     try {
       await Browser.open({ url: openUrl });
     } catch {
-      window.open(openUrl, "_blank", "noopener,noreferrer");
+      const opened = window.open(openUrl, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        setAppUpdateNotice(`Could not open ${openUrl}`);
+      }
     }
   };
 
@@ -1038,6 +1065,12 @@ export const HomeStatusChips = forwardRef<
                     <li>
                       <span>Last error</span>
                       <strong>{hubLastError}</strong>
+                    </li>
+                  ) : null}
+                  {summaryError ? (
+                    <li>
+                      <span>Activity</span>
+                      <strong>{summaryError}</strong>
                     </li>
                   ) : null}
                 </ul>

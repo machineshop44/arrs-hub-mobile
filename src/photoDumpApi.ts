@@ -43,7 +43,11 @@ export async function loadPhotoDumpApiKey(): Promise<string> {
   try {
     const { value } = await Preferences.get({ key: PHOTO_DUMP_API_KEY_STORAGE });
     return value?.trim() || "";
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[photoDump] Failed to read API key from Preferences:",
+      err instanceof Error ? err.message : err,
+    );
     return "";
   }
 }
@@ -281,11 +285,14 @@ export async function uploadPhotoDumpFile(
   let data: unknown;
 
   if (Capacitor.isNativePlatform()) {
+    // Encode once, then drop the ArrayBuffer reference before the HTTP call
+    // so GC can reclaim raw bytes while CapacitorHttp holds base64 only.
+    const base64 = arrayBufferToBase64(opts.bytes);
     const res = await CapacitorHttp.request({
       url,
       method: "POST",
       headers,
-      data: arrayBufferToBase64(opts.bytes),
+      data: base64,
       dataType: "file",
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
@@ -351,19 +358,4 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-/**
- * Best-effort local cleanup after verified upload.
- * WebView / `<input type=file>` cannot delete gallery originals on Android.
- */
-export async function tryRemoveLocalCopy(_file: File): Promise<{
-  removed: boolean;
-  detail: string;
-}> {
-  return {
-    removed: false,
-    detail:
-      "Uploaded & verified — remove from gallery manually (WebView cannot delete MediaStore photos/videos).",
-  };
 }

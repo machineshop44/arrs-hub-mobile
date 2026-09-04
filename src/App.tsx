@@ -63,6 +63,8 @@ import {
   loadPhotoDumpApiKey,
   savePhotoDumpApiKey,
 } from "./photoDumpApi";
+import { PhotoDumpQrScan } from "./PhotoDumpQrScan";
+import type { PhotoDumpSetupPayload } from "./photoDumpSetupQr";
 import {
   HomeStatusChips,
   type HomeStatusChipsHandle,
@@ -195,7 +197,8 @@ function SecretField({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  onBlur: () => void;
+  /** Persist from the input value — not stale React state (paste+blur race). */
+  onBlur: (value: string) => void;
   fieldKey: string;
   revealed: boolean;
   onToggle: (key: string) => void;
@@ -210,7 +213,7 @@ function SecretField({
           autoComplete="off"
           spellCheck={false}
           onChange={(e) => onChange(e.target.value)}
-          onBlur={onBlur}
+          onBlur={(e) => onBlur(e.target.value)}
         />
         <button
           type="button"
@@ -525,6 +528,55 @@ export function App() {
     void refreshHomeNet(next, pathing.homeBaseUrl);
   };
 
+  /** Apply Hub photo-dump setup QR: save API key + Hub host/port like Network settings. */
+  const applyPhotoDumpSetup = useCallback(
+    async (payload: PhotoDumpSetupPayload) => {
+      const key = payload.key.trim();
+      await savePhotoDumpApiKey(key);
+
+      const { host, port } = splitHubHostAndPort(payload.url);
+      const hubHost = (host || payload.url.trim()).trim();
+
+      setServices((prev) => {
+        const next = prev.map((s) =>
+          s.id === "photo-dump"
+            ? {
+                ...s,
+                apiKey: key,
+                ...(hubHost ? { url: hubHost } : {}),
+              }
+            : s,
+        );
+        void saveServices(next);
+        return next;
+      });
+
+      setActive((prev) =>
+        prev?.id === "photo-dump"
+          ? {
+              ...prev,
+              apiKey: key,
+              ...(hubHost ? { url: hubHost } : {}),
+            }
+          : prev,
+      );
+
+      if (hubHost || port != null) {
+        setWol((prev) => {
+          const next = {
+            ...prev,
+            ...(hubHost ? { hubUrl: hubHost } : {}),
+            ...(port != null ? { hubPort: normalizeHubPort(port) } : {}),
+          };
+          void saveWolSettings(next);
+          void refreshHomeNet(next, pathing.homeBaseUrl);
+          return next;
+        });
+      }
+    },
+    [pathing.homeBaseUrl, refreshHomeNet],
+  );
+
   const persistPathing = async (next: PathSettings) => {
     setPathing(next);
     await savePathSettings(next);
@@ -537,17 +589,21 @@ export function App() {
     setTransferMessage(null);
     try {
       // Persist current form values before packaging (full snapshot).
+      const photoDumpKey =
+        services.find((s) => s.id === "photo-dump")?.apiKey.trim() || "";
       await Promise.all([
         saveServices(services),
         saveWolSettings(wol),
         savePathSettings(pathing),
         saveModuleOrder(moduleOrder),
+        savePhotoDumpApiKey(photoDumpKey),
       ]);
       const bundle = await buildSettingsBundle({
         services,
         moduleOrder,
         wol,
         pathing,
+        photoDumpApiKey: photoDumpKey,
       });
       const json = serializeSettingsBundle(bundle);
       await shareSettingsJsonFile(json);
@@ -684,9 +740,10 @@ export function App() {
   );
 
   const resolveHubBase = useCallback((): string => {
+    // Prefer Network → Arrs Hub URL; else any Hub-hosted module URL.
     const hubModuleUrl =
-      enabled.find((s) => s.id === "workouts")?.url.trim() ||
       enabled.find((s) => s.id === "photo-dump")?.url.trim() ||
+      enabled.find((s) => s.id === "workouts")?.url.trim() ||
       "";
     const hubRaw = wol.hubUrl.trim()
       ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
@@ -747,11 +804,26 @@ export function App() {
         : [null, null];
       const hubServices = hubStatus?.services ?? null;
 
-      if (gen !== probeGen.current) {
-        if (announce) {
-          announceCount.current = Math.max(0, announceCount.current - 1);
-          if (announceCount.current === 0) setReconnecting(false);
+      const finishAnnounce = () => {
+        if (!announce) return;
+        announceCount.current = Math.max(0, announceCount.current - 1);
+        if (announceCount.current === 0) setReconnecting(false);
+      };
+
+      /** Clear sticky boot banner when this gen finishes or is superseded. */
+      const clearBootIfOwned = () => {
+        if (
+          bootProbeGen.current != null &&
+          bootProbeGen.current <= gen
+        ) {
+          bootProbeGen.current = null;
+          setBootProbing(false);
         }
+      };
+
+      if (gen !== probeGen.current) {
+        clearBootIfOwned();
+        finishAnnounce();
         return;
       }
 
@@ -795,24 +867,16 @@ export function App() {
       );
 
       if (gen !== probeGen.current) {
-        if (announce) {
-          announceCount.current = Math.max(0, announceCount.current - 1);
-          if (announceCount.current === 0) setReconnecting(false);
-        }
+        clearBootIfOwned();
+        finishAnnounce();
         return;
       }
 
       setHealth(next);
       setHealthSettled(true);
       setInitialSettled(true);
-      if (bootProbeGen.current === gen) {
-        bootProbeGen.current = null;
-        setBootProbing(false);
-      }
-      if (announce) {
-        announceCount.current = Math.max(0, announceCount.current - 1);
-        if (announceCount.current === 0) setReconnecting(false);
-      }
+      clearBootIfOwned();
+      finishAnnounce();
     },
     [
       enabled,
@@ -1235,6 +1299,7 @@ export function App() {
           );
           void savePhotoDumpApiKey(apiKey);
         }}
+        onSetupApplied={applyPhotoDumpSetup}
       />
     );
   }
@@ -1575,22 +1640,23 @@ export function App() {
                     ),
                   );
                 }}
-                onBlur={() => {
-                  const apiKey =
-                    services
-                      .find((s) => s.id === "photo-dump")
-                      ?.apiKey.trim() || "";
-                  const next = services.map((s) =>
-                    s.id === "photo-dump" ? { ...s, apiKey } : s,
-                  );
-                  setServices(next);
-                  void saveServices(next);
-                  void savePhotoDumpApiKey(apiKey);
+                onBlur={(raw) => {
+                  const apiKey = raw.trim();
+                  setServices((prev) => {
+                    const next = prev.map((s) =>
+                      s.id === "photo-dump" ? { ...s, apiKey } : s,
+                    );
+                    void saveServices(next);
+                    void savePhotoDumpApiKey(apiKey);
+                    return next;
+                  });
                 }}
               />
+              <PhotoDumpQrScan onPayload={applyPhotoDumpSetup} />
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
                 Required to browse/upload into the Hub photo-dump root (e.g.
-                N:\PhoneDump). Generate or copy the key on the Plex PC Hub.
+                N:\PhoneDump). Scan the Hub setup QR after generating a key, or
+                paste the key manually.
               </p>
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
@@ -2109,19 +2175,31 @@ export function App() {
                             ),
                           )
                         }
-                        onBlur={() => {
-                          void saveServices(services);
-                          if (service.id === "photo-dump") {
-                            void savePhotoDumpApiKey(service.apiKey);
-                          }
+                        onBlur={(raw) => {
+                          const apiKey = raw.trim();
+                          const id = service.id;
+                          setServices((prev) => {
+                            const next = prev.map((s) =>
+                              s.id === id ? { ...s, apiKey } : s,
+                            );
+                            void saveServices(next);
+                            if (id === "photo-dump") {
+                              void savePhotoDumpApiKey(apiKey);
+                            }
+                            return next;
+                          });
                         }}
                       />
                     )}
                     {service.id === "photo-dump" && (
-                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-                        Paste the key from Hub Settings → Photo dump. Same field
-                        as Network → Photo dump API key.
-                      </p>
+                      <>
+                        <PhotoDumpQrScan onPayload={applyPhotoDumpSetup} />
+                        <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                          Scan the Hub setup QR or paste the key from Hub
+                          Settings → Photo dump. Same field as Network → Photo
+                          dump API key.
+                        </p>
+                      </>
                     )}
                     {service.auth === "userPass" && (
                       <>
@@ -2138,7 +2216,17 @@ export function App() {
                                 ),
                               )
                             }
-                            onBlur={() => void saveServices(services)}
+                            onBlur={(e) => {
+                              const username = e.target.value;
+                              const id = service.id;
+                              setServices((prev) => {
+                                const next = prev.map((s) =>
+                                  s.id === id ? { ...s, username } : s,
+                                );
+                                void saveServices(next);
+                                return next;
+                              });
+                            }}
                           />
                         </label>
                         <SecretField
@@ -2156,7 +2244,17 @@ export function App() {
                               ),
                             )
                           }
-                          onBlur={() => void saveServices(services)}
+                          onBlur={(raw) => {
+                            const password = raw;
+                            const id = service.id;
+                            setServices((prev) => {
+                              const next = prev.map((s) =>
+                                s.id === id ? { ...s, password } : s,
+                              );
+                              void saveServices(next);
+                              return next;
+                            });
+                          }}
                         />
                       </>
                     )}

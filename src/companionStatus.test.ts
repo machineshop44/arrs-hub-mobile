@@ -7,6 +7,7 @@ import {
 } from "./companionStatus";
 import { isCompanionOnlyService, isCompanionOnlyUrl } from "./services";
 import { resolveServiceUrl } from "./pathing";
+import { isLocalServiceUrl } from "./companionHints";
 import type { ServiceConfig } from "./services";
 
 function svc(
@@ -41,6 +42,29 @@ describe("companionStatus", () => {
       buildCompanionPcStatus([], {}, {}, {}, [], () => ""),
     ).toBeNull();
     expect(pickCompanionPc([{ id: "x", name: "PC", host: "" }])).toBeNull();
+  });
+
+  it("prefers an online companion PC when several are registered", () => {
+    const multi = [
+      {
+        id: "dl1",
+        name: "Offline Box",
+        host: "192.168.1.20",
+        companionUrl: "http://192.168.1.20:3901",
+      },
+      {
+        id: "dl2",
+        name: "Online Box",
+        host: "192.168.1.21",
+        companionUrl: "http://192.168.1.21:3901",
+      },
+    ];
+    expect(
+      pickCompanionPc(multi, {
+        dl1: { online: false },
+        dl2: { online: true },
+      })?.id,
+    ).toBe("dl2");
   });
 
   it("falls back to qBit / SAB / FileFlows Node when nothing is wired", () => {
@@ -154,5 +178,11 @@ describe("companion-only URLs", () => {
         url: "http://example:19200",
       }),
     ).toBe(true);
+  });
+
+  it("does not treat invalid URLs as local", () => {
+    expect(isLocalServiceUrl("not a url!!!")).toBe(false);
+    expect(isLocalServiceUrl("http://127.0.0.1:8080")).toBe(true);
+    expect(isLocalServiceUrl("http://192.168.1.10:8080")).toBe(false);
   });
 });

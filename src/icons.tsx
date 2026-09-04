@@ -120,6 +120,18 @@ export function IconWorkouts(props: IconProps) {
   );
 }
 
+/** Photo Dump module mark (image stack) — not a third-party brand. */
+export function IconPhotoDump(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        d="M4 6.5h14v11H4V6.5Zm1.5 1.5v8h11v-8h-11Zm1.8 5.4 2.2-2.8 1.7 2.1 2.4-3.1 2.6 3.8H7.3Zm1.2-4.2a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z"
+      />
+    </Svg>
+  );
+}
+
 /**
  * Official product marks keyed by service id.
  * Sources recorded in src/assets/brands/SOURCES.md
@@ -156,6 +168,9 @@ export function ServiceIcon({
 }) {
   if (id === "workouts") {
     return <IconWorkouts color={color || "#2dd4bf"} size={size} />;
+  }
+  if (id === "photo-dump") {
+    return <IconPhotoDump color={color || "#38bdf8"} size={size} />;
   }
   const src = BRAND_SRC[id];
   if (!src) {

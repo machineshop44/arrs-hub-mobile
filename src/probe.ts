@@ -433,8 +433,8 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
       };
     }
 
-    if (service.id === "workouts") {
-      // Workouts URL is Arrs Hub base — probe health, then workouts settings.
+    if (service.id === "workouts" || service.id === "photo-dump") {
+      // Hub-hosted modules — probe health, then module settings.
       try {
         const health = await httpGet(`${base}/api/health`);
         if (health.status >= 200 && health.status < 500) {
@@ -445,11 +445,13 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
           };
         }
       } catch {
-        // try workouts settings next
+        // try module settings next
       }
-      const { status, latencyMs } = await httpGet(
-        `${base}/api/workouts/settings`,
-      );
+      const settingsPath =
+        service.id === "photo-dump"
+          ? `${base}/api/photo-dump/settings`
+          : `${base}/api/workouts/settings`;
+      const { status, latencyMs } = await httpGet(settingsPath);
       const up = status >= 200 && status < 500;
       return {
         up,

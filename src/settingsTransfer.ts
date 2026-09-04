@@ -25,6 +25,11 @@ import {
   WOL_STORAGE_KEY,
   type WolSettings,
 } from "./wol";
+import {
+  loadPhotoDumpApiKey,
+  PHOTO_DUMP_API_KEY_STORAGE,
+  savePhotoDumpApiKey,
+} from "./photoDumpApi";
 
 const CONFIG_KIND = "arrs-hub-status-settings";
 const CONFIG_VERSION = 1;
@@ -35,6 +40,7 @@ export const PERSISTED_STORAGE_KEYS = {
   moduleOrder: MODULE_ORDER_STORAGE_KEY,
   wol: WOL_STORAGE_KEY,
   pathing: PATHING_STORAGE_KEY,
+  photoDumpApiKey: PHOTO_DUMP_API_KEY_STORAGE,
 } as const;
 
 export type SettingsBundle = {
@@ -54,6 +60,8 @@ export type SettingsBundle = {
   moduleOrder: string[];
   wol: WolSettings;
   pathing: PathSettings;
+  /** Hub photo-dump API key (also on services[photo-dump].apiKey). */
+  photoDumpApiKey?: string;
 };
 
 type ConfigSharePlugin = {
@@ -92,20 +100,29 @@ export async function buildSettingsBundle(
     moduleOrder: string[];
     wol: WolSettings;
     pathing: PathSettings;
+    photoDumpApiKey: string;
   }>,
 ): Promise<SettingsBundle> {
-  const [services, moduleOrder, wol, pathing] = await Promise.all([
-    overrides?.services
-      ? Promise.resolve(overrides.services)
-      : loadServices(),
-    overrides?.moduleOrder
-      ? Promise.resolve(overrides.moduleOrder)
-      : loadModuleOrder(),
-    overrides?.wol ? Promise.resolve(overrides.wol) : loadWolSettings(),
-    overrides?.pathing
-      ? Promise.resolve(overrides.pathing)
-      : loadPathSettings(),
-  ]);
+  const [services, moduleOrder, wol, pathing, photoDumpApiKey] =
+    await Promise.all([
+      overrides?.services
+        ? Promise.resolve(overrides.services)
+        : loadServices(),
+      overrides?.moduleOrder
+        ? Promise.resolve(overrides.moduleOrder)
+        : loadModuleOrder(),
+      overrides?.wol ? Promise.resolve(overrides.wol) : loadWolSettings(),
+      overrides?.pathing
+        ? Promise.resolve(overrides.pathing)
+        : loadPathSettings(),
+      overrides?.photoDumpApiKey !== undefined
+        ? Promise.resolve(overrides.photoDumpApiKey)
+        : loadPhotoDumpApiKey(),
+    ]);
+
+  const fromService =
+    services.find((s) => s.id === "photo-dump")?.apiKey.trim() || "";
+  const key = (photoDumpApiKey || fromService).trim();
 
   return {
     kind: CONFIG_KIND,
@@ -116,6 +133,7 @@ export async function buildSettingsBundle(
     moduleOrder: [...moduleOrder],
     wol: normalizeWolSettings(wol),
     pathing: normalizePathing(pathing),
+    photoDumpApiKey: key,
   };
 }
 
@@ -192,6 +210,10 @@ export function parseSettingsBundle(raw: string): SettingsBundle {
     moduleOrder,
     wol: normalizeWolSettings(wolRaw),
     pathing: normalizePathing(pathRaw),
+    photoDumpApiKey:
+      typeof obj.photoDumpApiKey === "string"
+        ? obj.photoDumpApiKey
+        : services.find((s) => s.id === "photo-dump")?.apiKey || "",
   };
 }
 
@@ -221,16 +243,30 @@ export async function applySettingsBundle(
 
   const wol = normalizeWolSettings(bundle.wol);
   const pathing = normalizePathing(bundle.pathing);
+  const photoDumpKey =
+    (typeof bundle.photoDumpApiKey === "string"
+      ? bundle.photoDumpApiKey
+      : ""
+    ).trim() ||
+    merged.find((s) => s.id === "photo-dump")?.apiKey.trim() ||
+    "";
+
+  const withPhotoKey = merged.map((s) =>
+    s.id === "photo-dump" && photoDumpKey
+      ? { ...s, apiKey: photoDumpKey }
+      : s,
+  );
 
   await Promise.all([
-    saveServices(merged),
+    saveServices(withPhotoKey),
     saveModuleOrder(bundle.moduleOrder),
     saveWolSettings(wol),
     savePathSettings(pathing),
+    savePhotoDumpApiKey(photoDumpKey),
   ]);
 
   return {
-    services: merged,
+    services: withPhotoKey,
     moduleOrder: bundle.moduleOrder,
     wol,
     pathing,

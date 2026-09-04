@@ -253,6 +253,17 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     category: "other",
     defaultEnabled: true,
   },
+  {
+    id: "photo-dump",
+    name: "Photo Dump",
+    /** Arrs Hub host — uploads go to Hub /api/photo-dump/* (default port 3000). */
+    defaultUrl: REMOTE_HOST,
+    color: "#38bdf8",
+    probe: "http",
+    auth: "apiKey",
+    category: "other",
+    defaultEnabled: true,
+  },
 ];
 
 export type CredentialSeed = Partial<

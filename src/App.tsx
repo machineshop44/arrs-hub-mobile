@@ -58,6 +58,11 @@ import { WebPanel } from "./WebPanel";
 import { BazarrPanel } from "./BazarrPanel";
 import { YtarrPanel } from "./YtarrPanel";
 import { WorkoutsPanel } from "./WorkoutsPanel";
+import { PhotoDumpPanel } from "./PhotoDumpPanel";
+import {
+  loadPhotoDumpApiKey,
+  savePhotoDumpApiKey,
+} from "./photoDumpApi";
 import {
   HomeStatusChips,
   type HomeStatusChipsHandle,
@@ -106,6 +111,7 @@ type Screen =
   | "ytarr"
   | "tautulli"
   | "workouts"
+  | "photo-dump"
   | "web";
 
 /** *arr apps with a native ArrPanel (not Prowlarr — web UI only for now). */
@@ -135,6 +141,7 @@ const DEFAULT_MODULE_ORDER = [
   "overseerr",
   "ytarr",
   "workouts",
+  "photo-dump",
   "fileflows",
   "fileflows-node",
   "calibre",
@@ -173,6 +180,7 @@ const MODULE_COPY: Record<string, string> = {
   whisparr: "Manage Adult Movies",
   ytarr: "YouTube Downloads",
   workouts: "Plex workout days",
+  "photo-dump": "Upload photos to Hub PC",
 };
 
 function SecretField({
@@ -238,10 +246,14 @@ function serviceRowSummary(
 ): string {
   const status = service.enabled ? "On" : "Off";
   let url =
-    service.id === "workouts" && !service.url.trim()
+    (service.id === "workouts" || service.id === "photo-dump") &&
+    !service.url.trim()
       ? wolHubUrl
       : service.url;
-  if (service.id === "workouts" && url.trim()) {
+  if (
+    (service.id === "workouts" || service.id === "photo-dump") &&
+    url.trim()
+  ) {
     url = buildHubBaseUrl(url, wolHubPort);
   }
   return `${status} · ${hostSummary(url)}`;
@@ -333,14 +345,24 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const [svc, wolSettings, pathSettings, order, version] = await Promise.all([
-        loadServices(),
-        loadWolSettings(),
-        loadPathSettings(),
-        loadModuleOrder(),
-        getAppVersionInfo(),
-      ]);
-      setServices(svc);
+      const [svc, wolSettings, pathSettings, order, version, dumpKey] =
+        await Promise.all([
+          loadServices(),
+          loadWolSettings(),
+          loadPathSettings(),
+          loadModuleOrder(),
+          getAppVersionInfo(),
+          loadPhotoDumpApiKey(),
+        ]);
+      const photoKey =
+        dumpKey.trim() ||
+        svc.find((s) => s.id === "photo-dump")?.apiKey.trim() ||
+        "";
+      const merged = svc.map((s) =>
+        s.id === "photo-dump" ? { ...s, apiKey: photoKey } : s,
+      );
+      if (photoKey) void savePhotoDumpApiKey(photoKey);
+      setServices(merged);
       setWol(wolSettings);
       setPathing(pathSettings);
       setModuleOrder(order);
@@ -570,7 +592,7 @@ export function App() {
   const withEffectiveUrl = useCallback(
     (service: ServiceConfig): ServiceConfig => {
       let rawUrl = service.url;
-      if (service.id === "workouts") {
+      if (service.id === "workouts" || service.id === "photo-dump") {
         if (!rawUrl.trim() && wol.hubUrl.trim()) {
           rawUrl = wol.hubUrl.trim();
         }
@@ -653,7 +675,7 @@ export function App() {
       services.filter((s) => {
         if (!s.enabled) return false;
         if (isCompanionOnlyService(s)) return true;
-        if (s.id === "workouts") {
+        if (s.id === "workouts" || s.id === "photo-dump") {
           return Boolean(s.url.trim() || wol.hubUrl.trim());
         }
         return Boolean(s.url.trim());
@@ -662,12 +684,14 @@ export function App() {
   );
 
   const resolveHubBase = useCallback((): string => {
-    const workoutsUrl =
-      enabled.find((s) => s.id === "workouts")?.url.trim() || "";
+    const hubModuleUrl =
+      enabled.find((s) => s.id === "workouts")?.url.trim() ||
+      enabled.find((s) => s.id === "photo-dump")?.url.trim() ||
+      "";
     const hubRaw = wol.hubUrl.trim()
       ? buildHubBaseUrl(wol.hubUrl, wol.hubPort)
-      : workoutsUrl
-        ? buildHubBaseUrl(workoutsUrl, wol.hubPort)
+      : hubModuleUrl
+        ? buildHubBaseUrl(hubModuleUrl, wol.hubPort)
         : "";
     if (!hubRaw) return "";
     return resolveServiceUrl(
@@ -994,6 +1018,12 @@ export function App() {
       setScreen("workouts");
       return;
     }
+    if (service.id === "photo-dump") {
+      setArrInitialTab(undefined);
+      setActive(resolved);
+      setScreen("photo-dump");
+      return;
+    }
     if (NATIVE_ARR_IDS.has(service.id)) {
       setArrInitialTab(opts?.initialTab);
       setActive(resolved);
@@ -1179,6 +1209,32 @@ export function App() {
         }}
         onOpenSettings={() => setScreen("settings")}
         onHomeNetwork={homeNet?.onHomeNetwork ?? null}
+      />
+    );
+  }
+
+  if (screen === "photo-dump" && active) {
+    return (
+      <PhotoDumpPanel
+        service={active}
+        onBack={() => {
+          setActive(null);
+          setScreen("modules");
+        }}
+        onOpenSettings={() => setScreen("settings")}
+        onApiKeyChange={(apiKey) => {
+          setServices((prev) => {
+            const next = prev.map((s) =>
+              s.id === "photo-dump" ? { ...s, apiKey } : s,
+            );
+            void saveServices(next);
+            return next;
+          });
+          setActive((prev) =>
+            prev?.id === "photo-dump" ? { ...prev, apiKey } : prev,
+          );
+          void savePhotoDumpApiKey(apiKey);
+        }}
       />
     );
   }
@@ -1498,11 +1554,43 @@ export function App() {
                 ) : null}
               </p>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
-                Hub is optional. Used for Workouts and as the primary status
-                source when configured; direct probes are backup if Hub is
-                unreachable or a service is missing from the watchdog board.
-                Opening Sonarr, Radarr, and other panels still goes direct —
-                never through the hub.
+                Hub is optional. Used for Workouts, Photo Dump, and as the
+                primary status source when configured; direct probes are backup
+                if Hub is unreachable or a service is missing from the watchdog
+                board. Opening Sonarr, Radarr, and other panels still goes
+                direct — never through the hub.
+              </p>
+              <SecretField
+                label="Photo dump API key"
+                value={
+                  services.find((s) => s.id === "photo-dump")?.apiKey || ""
+                }
+                fieldKey="photo-dump:networkKey"
+                revealed={!!revealedSecrets["photo-dump:networkKey"]}
+                onToggle={toggleSecret}
+                onChange={(apiKey) => {
+                  setServices((prev) =>
+                    prev.map((s) =>
+                      s.id === "photo-dump" ? { ...s, apiKey } : s,
+                    ),
+                  );
+                }}
+                onBlur={() => {
+                  const apiKey =
+                    services
+                      .find((s) => s.id === "photo-dump")
+                      ?.apiKey.trim() || "";
+                  const next = services.map((s) =>
+                    s.id === "photo-dump" ? { ...s, apiKey } : s,
+                  );
+                  setServices(next);
+                  void saveServices(next);
+                  void savePhotoDumpApiKey(apiKey);
+                }}
+              />
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                Required to browse/upload into the Hub photo-dump root (e.g.
+                N:\PhoneDump). Generate or copy the key on the Plex PC Hub.
               </p>
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
@@ -1887,7 +1975,8 @@ export function App() {
                     </div>
                     <label className="field">
                       <span>
-                        {service.id === "workouts"
+                        {service.id === "workouts" ||
+                        service.id === "photo-dump"
                           ? "Arrs Hub host"
                           : "Remote URL"}
                       </span>
@@ -1895,7 +1984,8 @@ export function App() {
                         type="url"
                         value={service.url}
                         placeholder={
-                          service.id === "workouts"
+                          service.id === "workouts" ||
+                          service.id === "photo-dump"
                             ? buildHubBaseUrl(wol.hubUrl, wol.hubPort) ||
                               `http://192.168.1.10:${wol.hubPort || DEFAULT_HUB_PORT}`
                             : undefined
@@ -1910,7 +2000,10 @@ export function App() {
                           )
                         }
                         onBlur={(e) => {
-                          if (service.id === "workouts") {
+                          if (
+                            service.id === "workouts" ||
+                            service.id === "photo-dump"
+                          ) {
                             const { host, port } = splitHubHostAndPort(
                               e.target.value,
                             );
@@ -1930,7 +2023,8 @@ export function App() {
                         }}
                       />
                     </label>
-                    {service.id === "workouts" ? (
+                    {service.id === "workouts" ||
+                    service.id === "photo-dump" ? (
                       <>
                         <label className="field">
                           <span>Arrs Hub port</span>
@@ -1961,9 +2055,10 @@ export function App() {
                         </label>
                         <p className="hint" style={{ padding: "0.25rem 0 0" }}>
                           Port Arrs Hub listens on (default {DEFAULT_HUB_PORT}).
-                          Workouts need the hub online at this host/port (home LAN
-                          or forwarded remote / VPN). Empty host falls back to
-                          Network → Arrs Hub host.
+                          {service.id === "photo-dump"
+                            ? " Photo Dump uploads to Hub /api/photo-dump/* at this host/port."
+                            : " Workouts need the hub online at this host/port (home LAN or forwarded remote / VPN)."}{" "}
+                          Empty host falls back to Network → Arrs Hub host.
                           {(() => {
                             const base =
                               service.url.trim() || wol.hubUrl.trim();
@@ -1998,7 +2093,11 @@ export function App() {
                     {(service.auth === "apiKey" ||
                       service.id === "tautulli") && (
                       <SecretField
-                        label="API key"
+                        label={
+                          service.id === "photo-dump"
+                            ? "Photo dump API key"
+                            : "API key"
+                        }
                         value={service.apiKey}
                         fieldKey={`${service.id}:apiKey`}
                         revealed={!!revealedSecrets[`${service.id}:apiKey`]}
@@ -2010,8 +2109,19 @@ export function App() {
                             ),
                           )
                         }
-                        onBlur={() => void saveServices(services)}
+                        onBlur={() => {
+                          void saveServices(services);
+                          if (service.id === "photo-dump") {
+                            void savePhotoDumpApiKey(service.apiKey);
+                          }
+                        }}
                       />
+                    )}
+                    {service.id === "photo-dump" && (
+                      <p className="hint" style={{ padding: "0.25rem 0 0" }}>
+                        Paste the key from Hub Settings → Photo dump. Same field
+                        as Network → Photo dump API key.
+                      </p>
                     )}
                     {service.auth === "userPass" && (
                       <>

@@ -18,8 +18,13 @@ import {
   ServiceIcon,
 } from "./icons";
 import { App as CapApp } from "@capacitor/app";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { consumeAndroidBack } from "./androidBack";
+
+type WindowFlagsPlugin = {
+  setSecure(options: { secure: boolean }): Promise<void>;
+};
+const WindowFlags = registerPlugin<WindowFlagsPlugin>("WindowFlags");
 import {
   fetchHubHealth,
   fetchHubWatchdogStatus,
@@ -48,6 +53,7 @@ import {
 import {
   planPhotoDumpSetupApply,
   preferHubRemoteUrl,
+  isWanHubUrl,
 } from "./photoDumpSetupApply";
 import {
   CATEGORY_LABELS,
@@ -67,6 +73,10 @@ import {
   loadPhotoDumpApiKey,
   savePhotoDumpApiKey,
 } from "./photoDumpApi";
+import {
+  loadHubApiToken,
+  saveHubApiToken,
+} from "./hubAuth";
 import { PhotoDumpQrScan } from "./PhotoDumpQrScan";
 import type { PhotoDumpSetupPayload } from "./photoDumpSetupQr";
 import {
@@ -83,6 +93,7 @@ import {
   applySettingsBundle,
   buildSettingsBundle,
   parseSettingsBundle,
+  redactSettingsBundle,
   serializeSettingsBundle,
   shareSettingsJsonFile,
   summarizeBundle,
@@ -102,6 +113,7 @@ import {
   splitHubHostAndPort,
   targetWakeReady,
   wakePcByTarget,
+  wolSettingsEqual,
   wolTargetLabel,
   type HomeNetworkStatus,
   type WolSettings,
@@ -290,6 +302,7 @@ export function App() {
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>(
     {},
   );
+  const [hubApiToken, setHubApiToken] = useState("");
   const [wol, setWol] = useState<WolSettings>(DEFAULT_WOL);
   const [pathing, setPathing] = useState<PathSettings>(DEFAULT_PATHING);
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
@@ -328,8 +341,10 @@ export function App() {
   const bootProbeGen = useRef<number | null>(null);
   const pullStartY = useRef<number | null>(null);
   const pullArmed = useRef(false);
+  const pullPxRef = useRef(0);
   const pullRefreshingRef = useRef(false);
   const reorderingPullRef = useRef(false);
+  const resumeGateAt = useRef(0);
 
   // Keep latest nav state for the Capacitor backButton listener.
   const screenRef = useRef(screen);
@@ -352,7 +367,7 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const [svc, wolSettings, pathSettings, order, version, dumpKey] =
+      const [svc, wolSettings, pathSettings, order, version, dumpKey, hubToken] =
         await Promise.all([
           loadServices(),
           loadWolSettings(),
@@ -360,6 +375,7 @@ export function App() {
           loadModuleOrder(),
           getAppVersionInfo(),
           loadPhotoDumpApiKey(),
+          loadHubApiToken(),
         ]);
       const photoKey =
         dumpKey.trim() ||
@@ -374,6 +390,7 @@ export function App() {
       setPathing(pathSettings);
       setModuleOrder(order);
       setAppVersion(version);
+      setHubApiToken(hubToken);
       setReady(true);
     })();
   }, []);
@@ -532,6 +549,27 @@ export function App() {
     void refreshHomeNet(next, pathing.homeBaseUrl);
   };
 
+  /** Persist WOL using blurred field + latest state (avoids stale closures). */
+  const persistWolFromBlur = (patch: (prev: WolSettings) => WolSettings) => {
+    setWol((prev) => {
+      const next = patch(prev);
+      void saveWolSettings(next);
+      void refreshHomeNet(next, pathing.homeBaseUrl);
+      return next;
+    });
+  };
+
+  const persistPathingFromBlur = (
+    patch: (prev: PathSettings) => PathSettings,
+  ) => {
+    setPathing((prev) => {
+      const next = patch(prev);
+      void savePathSettings(next);
+      void refreshHomeNet(wol, next.homeBaseUrl);
+      return next;
+    });
+  };
+
   /** Apply Hub photo-dump setup QR: save API key; LAN→homeBaseUrl, WAN→canonical Hub. */
   const applyPhotoDumpSetup = useCallback(
     async (payload: PhotoDumpSetupPayload) => {
@@ -602,18 +640,20 @@ export function App() {
     [pathing, refreshHomeNet, services, wol],
   );
 
-  const persistPathing = async (next: PathSettings) => {
-    setPathing(next);
-    await savePathSettings(next);
-    void refreshHomeNet(wol, next.homeBaseUrl);
-  };
-
-  const runExportConfig = async () => {
+  const runExportConfig = async (redacted = false) => {
     if (transferBusy) return;
+    if (
+      !window.confirm(
+        redacted
+          ? "Export a redacted settings file (API keys, passwords, and Hub token blanked). Continue?"
+          : "Export includes API keys, passwords, and Hub API token. Only share with devices you trust.\n\nContinue with full export?",
+      )
+    ) {
+      return;
+    }
     setTransferBusy(true);
     setTransferMessage(null);
     try {
-      // Persist current form values before packaging (full snapshot).
       const photoDumpKey =
         services.find((s) => s.id === "photo-dump")?.apiKey.trim() || "";
       await Promise.all([
@@ -622,17 +662,27 @@ export function App() {
         savePathSettings(pathing),
         saveModuleOrder(moduleOrder),
         savePhotoDumpApiKey(photoDumpKey),
+        saveHubApiToken(hubApiToken),
       ]);
-      const bundle = await buildSettingsBundle({
+      let bundle = await buildSettingsBundle({
         services,
         moduleOrder,
         wol,
         pathing,
         photoDumpApiKey: photoDumpKey,
+        hubApiToken,
       });
+      if (redacted) bundle = redactSettingsBundle(bundle);
       const json = serializeSettingsBundle(bundle);
-      await shareSettingsJsonFile(json);
-      setTransferMessage(`Shared settings file (${summarizeBundle(bundle)}).`);
+      await shareSettingsJsonFile(
+        json,
+        redacted
+          ? "ArrsHubStatus-settings-redacted.json"
+          : "ArrsHubStatus-settings.json",
+      );
+      setTransferMessage(
+        `Shared ${redacted ? "redacted " : ""}settings file (${summarizeBundle(bundle)}).`,
+      );
     } catch (err) {
       setTransferMessage(
         err instanceof Error ? err.message : "Could not export settings.",
@@ -649,6 +699,7 @@ export function App() {
     setModuleOrder(applied.moduleOrder);
     setWol(applied.wol);
     setPathing(applied.pathing);
+    setHubApiToken(applied.hubApiToken);
     void refreshHomeNet(applied.wol, applied.pathing.homeBaseUrl);
     setTransferMessage(`Imported (${summarizeBundle(bundle)}).`);
   };
@@ -698,6 +749,11 @@ export function App() {
     ],
   );
 
+  const resolveUrl = useCallback(
+    (service: ServiceConfig) => withEffectiveUrl(service).url,
+    [withEffectiveUrl],
+  );
+
   /** Keep Photo Dump on the live LAN↔WAN effective URL while the panel is open. */
   useEffect(() => {
     if (screen !== "photo-dump") return;
@@ -718,7 +774,7 @@ export function App() {
     if (!hubWatchdog?.settingsPcs?.length) return;
     setWol((prev) => {
       const next = applyHubPcsToWolTargets(prev, hubWatchdog.settingsPcs);
-      if (JSON.stringify(next) === JSON.stringify(prev)) return prev;
+      if (wolSettingsEqual(next, prev)) return prev;
       void saveWolSettings(next);
       return next;
     });
@@ -974,6 +1030,10 @@ export function App() {
     const onBecameActive = () => {
       if (!sawBackground) return;
       sawBackground = false;
+      const now = Date.now();
+      // CapApp + visibilitychange can both fire — single gate.
+      if (now - resumeGateAt.current < 800) return;
+      resumeGateAt.current = now;
       if (debounceTimer != null) window.clearTimeout(debounceTimer);
       debounceTimer = window.setTimeout(runResumeProbe, 350);
     };
@@ -1052,14 +1112,17 @@ export function App() {
         ? delta
         : PULL_REFRESH_THRESHOLD +
           (delta - PULL_REFRESH_THRESHOLD) * 0.35;
-    setPullPx(Math.min(resisted, PULL_REFRESH_THRESHOLD * 1.55));
+    const nextPx = Math.min(resisted, PULL_REFRESH_THRESHOLD * 1.55);
+    pullPxRef.current = nextPx;
+    setPullPx(nextPx);
   };
 
   const onHomeTouchEnd = () => {
     if (!pullArmed.current) return;
     pullArmed.current = false;
     pullStartY.current = null;
-    const shouldRefresh = pullPx >= PULL_REFRESH_THRESHOLD;
+    const shouldRefresh = pullPxRef.current >= PULL_REFRESH_THRESHOLD;
+    pullPxRef.current = 0;
     setPullPx(0);
     if (shouldRefresh) void runFullReconnect();
   };
@@ -1083,7 +1146,14 @@ export function App() {
   };
 
   const toggleSecret = (key: string) => {
-    setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }));
+    setRevealedSecrets((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (Capacitor.isNativePlatform()) {
+        const anyRevealed = Object.values(next).some(Boolean);
+        void WindowFlags.setSecure({ secure: anyRevealed }).catch(() => {});
+      }
+      return next;
+    });
   };
 
   const openModule = (
@@ -1434,9 +1504,17 @@ export function App() {
               type="button"
               className="btn primary"
               disabled={transferBusy}
-              onClick={() => void runExportConfig()}
+              onClick={() => void runExportConfig(false)}
             >
               {transferBusy ? "Working…" : "Export / share settings"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={transferBusy}
+              onClick={() => void runExportConfig(true)}
+            >
+              Export redacted
             </button>
             <button
               type="button"
@@ -1586,13 +1664,14 @@ export function App() {
                       homeBaseUrl: e.target.value,
                     }))
                   }
-                  onBlur={(e) =>
-                    void persistPathing({
-                      ...pathing,
-                      homeBaseUrl: e.target.value.trim(),
+                  onBlur={(e) => {
+                    const homeBaseUrl = e.target.value.trim();
+                    persistPathingFromBlur((prev) => ({
+                      ...prev,
+                      homeBaseUrl,
                       connectionPreference: "auto",
-                    })
-                  }
+                    }));
+                  }}
                 />
               </label>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
@@ -1612,11 +1691,11 @@ export function App() {
                   }
                   onBlur={(e) => {
                     const { host, port } = splitHubHostAndPort(e.target.value);
-                    void persistWol({
-                      ...wol,
+                    persistWolFromBlur((prev) => ({
+                      ...prev,
                       hubUrl: host,
-                      hubPort: port ?? wol.hubPort,
-                    });
+                      hubPort: port ?? prev.hubPort,
+                    }));
                   }}
                 />
               </label>
@@ -1637,14 +1716,12 @@ export function App() {
                       ),
                     }))
                   }
-                  onBlur={(e) =>
-                    void persistWol({
-                      ...wol,
-                      hubPort: normalizeHubPort(
-                        e.target.value || DEFAULT_HUB_PORT,
-                      ),
-                    })
-                  }
+                  onBlur={(e) => {
+                    const hubPort = normalizeHubPort(
+                      e.target.value || DEFAULT_HUB_PORT,
+                    );
+                    persistWolFromBlur((prev) => ({ ...prev, hubPort }));
+                  }}
                 />
               </label>
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
@@ -1696,8 +1773,35 @@ export function App() {
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
                 Required to browse/upload into the Hub photo-dump root (e.g.
                 N:\PhoneDump). Scan the Hub setup QR after generating a key, or
-                paste the key manually.
+                paste the key manually. Separate from Hub API token below.
               </p>
+              <SecretField
+                label="Hub API token"
+                value={hubApiToken}
+                fieldKey="hub:apiToken"
+                revealed={!!revealedSecrets["hub:apiToken"]}
+                onToggle={toggleSecret}
+                onChange={setHubApiToken}
+                onBlur={(raw) => {
+                  const token = raw.trim();
+                  setHubApiToken(token);
+                  void saveHubApiToken(token);
+                }}
+              />
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                Optional control-plane token (Hub Settings). Sent as{" "}
+                <code>X-Arrs-Hub-Token</code> on status / WOL / Ombi / updates /
+                workouts. Leave blank until Hub enables hub-auth — current Hub
+                still works without it.
+              </p>
+              {isWanHubUrl(wol.hubUrl) && !hubApiToken.trim() ? (
+                <p className="hint wol-warn" style={{ padding: "0.35rem 0 0" }}>
+                  Hub host looks like a public WAN address and no Hub API token
+                  is set. Control APIs (summary, WOL, Ombi approve, updates) are
+                  currently unauthenticated until you paste the Hub token (or
+                  Hub wires auth). Photo Dump still requires its own API key.
+                </p>
+              ) : null}
               {homeNet && pathing.homeBaseUrl.trim() && (
                 <p
                   className={`hint ${homeNet.warnRemote ? "wol-warn" : "wol-ok"}`}
@@ -1796,10 +1900,10 @@ export function App() {
                         }}
                         onBlur={(e) => {
                           const mac = formatMacInput(e.target.value);
-                          void persistWol({
-                            ...wol,
-                            [targetKey]: { ...target, mac },
-                          });
+                          persistWolFromBlur((prev) => ({
+                            ...prev,
+                            [targetKey]: { ...prev[targetKey], mac },
+                          }));
                         }}
                       />
                     </label>
@@ -1823,15 +1927,13 @@ export function App() {
                             },
                           }))
                         }
-                        onBlur={(e) =>
-                          void persistWol({
-                            ...wol,
-                            [targetKey]: {
-                              ...target,
-                              targetHost: e.target.value,
-                            },
-                          })
-                        }
+                        onBlur={(e) => {
+                          const targetHost = e.target.value;
+                          persistWolFromBlur((prev) => ({
+                            ...prev,
+                            [targetKey]: { ...prev[targetKey], targetHost },
+                          }));
+                        }}
                       />
                     </label>
                     {settingsWolAdvanced && (
@@ -1851,15 +1953,13 @@ export function App() {
                               },
                             }))
                           }
-                          onBlur={(e) =>
-                            void persistWol({
-                              ...wol,
-                              [targetKey]: {
-                                ...target,
-                                hubPcId: e.target.value,
-                              },
-                            })
-                          }
+                          onBlur={(e) => {
+                            const hubPcId = e.target.value;
+                            persistWolFromBlur((prev) => ({
+                              ...prev,
+                              [targetKey]: { ...prev[targetKey], hubPcId },
+                            }));
+                          }}
                         />
                       </label>
                     )}
@@ -1895,12 +1995,10 @@ export function App() {
                           broadcastIp: e.target.value,
                         }))
                       }
-                      onBlur={(e) =>
-                        void persistWol({
-                          ...wol,
-                          broadcastIp: e.target.value || "255.255.255.255",
-                        })
-                      }
+                      onBlur={(e) => {
+                        const broadcastIp = e.target.value || "255.255.255.255";
+                        persistWolFromBlur((prev) => ({ ...prev, broadcastIp }));
+                      }}
                     />
                   </label>
                   <label className="field">
@@ -1915,12 +2013,10 @@ export function App() {
                           port: Number(e.target.value) || 9,
                         }))
                       }
-                      onBlur={(e) =>
-                        void persistWol({
-                          ...wol,
-                          port: Number(e.target.value) || 9,
-                        })
-                      }
+                      onBlur={(e) => {
+                        const port = Number(e.target.value) || 9;
+                        persistWolFromBlur((prev) => ({ ...prev, port }));
+                      }}
                     />
                   </label>
                   <label className="field">
@@ -1936,9 +2032,10 @@ export function App() {
                           homeCidr: e.target.value,
                         }))
                       }
-                      onBlur={(e) =>
-                        void persistWol({ ...wol, homeCidr: e.target.value })
-                      }
+                      onBlur={(e) => {
+                        const homeCidr = e.target.value;
+                        persistWolFromBlur((prev) => ({ ...prev, homeCidr }));
+                      }}
                     />
                   </label>
                   <p className="hint" style={{ padding: "0.25rem 0 0" }}>
@@ -1967,11 +2064,11 @@ export function App() {
                         const { host, port } = splitHubHostAndPort(
                           e.target.value,
                         );
-                        void persistWol({
-                          ...wol,
+                        persistWolFromBlur((prev) => ({
+                          ...prev,
                           hubUrl: host,
-                          hubPort: port ?? wol.hubPort,
-                        });
+                          hubPort: port ?? prev.hubPort,
+                        }));
                       }}
                     />
                   </label>
@@ -1992,14 +2089,12 @@ export function App() {
                           ),
                         }))
                       }
-                      onBlur={(e) =>
-                        void persistWol({
-                          ...wol,
-                          hubPort: normalizeHubPort(
-                            e.target.value || DEFAULT_HUB_PORT,
-                          ),
-                        })
-                      }
+                      onBlur={(e) => {
+                        const hubPort = normalizeHubPort(
+                          e.target.value || DEFAULT_HUB_PORT,
+                        );
+                        persistWolFromBlur((prev) => ({ ...prev, hubPort }));
+                      }}
                     />
                   </label>
                   <p className="hint" style={{ padding: "0.25rem 0 0" }}>
@@ -2106,26 +2201,33 @@ export function App() {
                           )
                         }
                         onBlur={(e) => {
+                          const raw = e.target.value;
                           if (
                             service.id === "workouts" ||
                             service.id === "photo-dump"
                           ) {
-                            const { host, port } = splitHubHostAndPort(
-                              e.target.value,
-                            );
-                            const nextServices = services.map((s) =>
-                              s.id === service.id
-                                ? { ...s, url: host || e.target.value.trim() }
-                                : s,
-                            );
-                            setServices(nextServices);
-                            void saveServices(nextServices);
+                            const { host, port } = splitHubHostAndPort(raw);
+                            setServices((prev) => {
+                              const next = prev.map((s) =>
+                                s.id === service.id
+                                  ? { ...s, url: host || raw.trim() }
+                                  : s,
+                              );
+                              void saveServices(next);
+                              return next;
+                            });
                             if (port != null) {
-                              void persistWol({ ...wol, hubPort: port });
+                              persistWolFromBlur((prev) => ({
+                                ...prev,
+                                hubPort: port,
+                              }));
                             }
                             return;
                           }
-                          void saveServices(services);
+                          setServices((prev) => {
+                            void saveServices(prev);
+                            return prev;
+                          });
                         }}
                       />
                     </label>
@@ -2425,7 +2527,7 @@ export function App() {
               hubWatchdog={hubWatchdog}
               onHomeNetwork={homeNet?.onHomeNetwork ?? null}
               services={services}
-              resolveUrl={(s) => withEffectiveUrl(s).url}
+              resolveUrl={resolveUrl}
               modules={modules.map((m) => ({
                 id: m.id,
                 name: m.name,

@@ -1,5 +1,10 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { statusUrlMap } from "./chipVersions";
+import {
+  HubAuthError,
+  isHubAuthFailure,
+  mergeHubAuthHeaders,
+} from "./hubAuth";
 import type { ServiceConfig } from "./services";
 
 export type ArrQueueIssue = {
@@ -65,13 +70,14 @@ async function postJson(
   body: unknown,
   timeoutMs: number,
 ): Promise<{ status: number; data: unknown }> {
+  const headers = mergeHubAuthHeaders({
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  });
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.post({
       url,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       data: body,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
@@ -94,10 +100,7 @@ async function postJson(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -124,11 +127,13 @@ export async function fetchHubStatusSummary(
       { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
     );
+    if (isHubAuthFailure(status)) throw new HubAuthError(status);
     if (status < 200 || status >= 300 || !data || typeof data !== "object") {
       return null;
     }
     return data as HubStatusSummary;
   } catch (err) {
+    if (err instanceof HubAuthError) throw err;
     console.warn(
       "[hubSummary] summary fetch failed:",
       err instanceof Error ? err.message : err,
@@ -158,6 +163,15 @@ export async function fetchOmbiPending(
       { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
     );
+    if (isHubAuthFailure(status)) {
+      return {
+        ok: false,
+        configured: true,
+        items: [],
+        pending: 0,
+        error: new HubAuthError(status).message,
+      };
+    }
     if (status < 200 || status >= 300 || !data || typeof data !== "object") {
       return null;
     }
@@ -175,7 +189,16 @@ export async function fetchOmbiPending(
       pending: typeof json.pending === "number" ? json.pending : 0,
       error: json.error,
     };
-  } catch {
+  } catch (err) {
+    if (err instanceof HubAuthError) {
+      return {
+        ok: false,
+        configured: true,
+        items: [],
+        pending: 0,
+        error: err.message,
+      };
+    }
     return null;
   }
 }
@@ -215,6 +238,7 @@ export async function approveOmbiRequest(
     data && typeof data === "object" && "error" in data
       ? String((data as { error?: unknown }).error || "").trim()
       : "";
+  if (isHubAuthFailure(status)) throw new HubAuthError(status);
   if (status < 200 || status >= 300) {
     throw new Error(error || `Approve failed (HTTP ${status})`);
   }

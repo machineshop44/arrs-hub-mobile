@@ -433,7 +433,7 @@ export function WorkoutsPanel({
         setWarmup(null);
         setClients([]);
         setError(
-          `Arrs Hub unreachable — Workouts talks to hub /api/workouts/* (not Plex). Ensure Arrs Hub is running and bound for LAN (default 0.0.0.0:3000), and that Settings → Network uses host 67.84.101.14 (or LAN 10.0.0.18) with port 3000.\nTried: ${reach.triedUrl || hubUrl}\n${reach.detail}`,
+          `Arrs Hub unreachable — Workouts talks to hub /api/workouts/* (not Plex). Ensure Arrs Hub is running and reachable (default port 3000), and that Settings → Network has the correct Hub host + port.\nTried: ${reach.triedUrl || hubUrl}\n${reach.detail}`,
         );
         return;
       }

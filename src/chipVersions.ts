@@ -1,4 +1,9 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import {
+  HubAuthError,
+  isHubAuthFailure,
+  mergeHubAuthHeaders,
+} from "./hubAuth";
 import type { ServiceConfig } from "./services";
 import { isCompanionOnlyUrl } from "./services";
 
@@ -72,13 +77,14 @@ async function postJson(
   body: unknown,
   timeoutMs: number,
 ): Promise<{ status: number; data: unknown }> {
+  const headers = mergeHubAuthHeaders({
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  });
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.post({
       url,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       data: body,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
@@ -101,10 +107,7 @@ async function postJson(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -119,10 +122,11 @@ async function getJson(
   url: string,
   timeoutMs: number,
 ): Promise<{ status: number; data: unknown }> {
+  const headers = mergeHubAuthHeaders({ Accept: "application/json" });
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.get({
       url,
-      headers: { Accept: "application/json" },
+      headers,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
     });
@@ -144,7 +148,7 @@ async function getJson(
   try {
     const res = await fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
       signal: controller.signal,
       cache: "no-store",
     });
@@ -191,11 +195,13 @@ export async function fetchChipVersions(
       { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
     );
+    if (isHubAuthFailure(status)) throw new HubAuthError(status);
     if (status < 200 || status >= 300 || !data || typeof data !== "object") {
       return null;
     }
     return data as ChipVersionsPayload;
   } catch (err) {
+    if (err instanceof HubAuthError) throw err;
     console.warn(
       "[chipVersions] fetch failed:",
       err instanceof Error ? err.message : err,
@@ -229,6 +235,7 @@ export async function startAppUpdate(
     error?: string;
     job?: unknown;
   };
+  if (isHubAuthFailure(status)) throw new HubAuthError(status);
   if (status < 200 || status >= 300) {
     throw new Error(json.error || `Update failed (HTTP ${status})`);
   }

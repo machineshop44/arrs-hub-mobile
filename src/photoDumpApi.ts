@@ -63,7 +63,6 @@ export type PhotoDumpPublicSettings = {
   enabled: boolean;
   rootPath: string;
   rootPathSet: boolean;
-  apiKey: string;
   apiKeySet: boolean;
   maxFileBytes: number;
 };
@@ -124,7 +123,7 @@ export async function fetchPhotoDumpSettings(
     enabled: settings.enabled !== false,
     rootPath: typeof settings.rootPath === "string" ? settings.rootPath : "",
     rootPathSet: Boolean(settings.rootPathSet),
-    apiKey: typeof settings.apiKey === "string" ? settings.apiKey : "",
+    // Ignore any echoed apiKey from Hub — only trust apiKeySet + local storage.
     apiKeySet: Boolean(settings.apiKeySet),
     maxFileBytes:
       typeof settings.maxFileBytes === "number" && settings.maxFileBytes > 0
@@ -261,7 +260,11 @@ export async function uploadPhotoDumpFile(
   opts: {
     fileName: string;
     relativeFolder: string;
-    bytes: ArrayBuffer;
+    bytes?: ArrayBuffer;
+    /** Prefer when already decoded from MediaStore — avoids ArrayBuffer+base64 double hold. */
+    base64?: string;
+    /** Exact byte length when known (e.g. MediaStore size). */
+    size?: number;
     sha256: string;
   },
 ): Promise<PhotoDumpUploadResult> {
@@ -272,7 +275,15 @@ export async function uploadPhotoDumpFile(
     );
   }
   const url = `${base}/api/photo-dump/upload`;
-  const size = opts.bytes.byteLength;
+  if (!opts.bytes && !opts.base64) {
+    throw new Error("No file bytes available for upload.");
+  }
+  const expectedSize =
+    opts.bytes?.byteLength ??
+    (typeof opts.size === "number" && opts.size > 0 ? opts.size : 0);
+  if (!expectedSize) {
+    throw new Error("Upload size unknown.");
+  }
   const localSha = opts.sha256.toLowerCase();
   const headers: Record<string, string> = {
     ...authHeaders(apiKey),
@@ -282,23 +293,20 @@ export async function uploadPhotoDumpFile(
       opts.relativeFolder.replace(/\\/g, "/"),
     ),
     "X-Content-SHA256": localSha,
-    "X-Expected-Size": String(size),
+    "X-Expected-Size": String(expectedSize),
   };
 
   // Large video uploads can take a while over WAN.
   const timeoutMs = Math.min(
     30 * 60 * 1000,
-    Math.max(120_000, Math.ceil(size / 50_000) * 1000),
+    Math.max(120_000, Math.ceil(expectedSize / 50_000) * 1000),
   );
 
   let status: number;
   let data: unknown;
 
   if (Capacitor.isNativePlatform()) {
-    // Encode once, then drop the ArrayBuffer reference before the HTTP call
-    // so GC can reclaim raw bytes while CapacitorHttp holds base64 only.
-    // Hub may early-exit on duplicate SHA and drain/reject the body — still OK.
-    const base64 = arrayBufferToBase64(opts.bytes);
+    const base64 = opts.base64 ?? arrayBufferToBase64(opts.bytes!);
     const res = await CapacitorHttp.request({
       url,
       method: "POST",
@@ -311,6 +319,9 @@ export async function uploadPhotoDumpFile(
     status = res.status;
     data = res.data;
   } else {
+    if (!opts.bytes) {
+      throw new Error("Browser upload requires ArrayBuffer bytes.");
+    }
     const res = await fetch(url, {
       method: "POST",
       headers,
@@ -346,7 +357,7 @@ export async function uploadPhotoDumpFile(
     duplicate,
     folder: typeof json.folder === "string" ? json.folder : "",
     fileName: typeof json.fileName === "string" ? json.fileName : opts.fileName,
-    size: typeof json.size === "number" ? json.size : size,
+    size: typeof json.size === "number" ? json.size : expectedSize,
     sha256: typeof json.sha256 === "string" ? json.sha256.toLowerCase() : "",
     path: typeof json.path === "string" ? json.path : "",
   };
@@ -354,7 +365,7 @@ export async function uploadPhotoDumpFile(
   const shaOk = result.sha256 === localSha;
   // Duplicate skip: Hub did not receive the body; trust matching SHA (size may
   // already match the indexed file, but do not hard-require equality).
-  const sizeOk = duplicate || result.size === size;
+  const sizeOk = duplicate || result.size === expectedSize;
 
   if (!result.ok || !result.verified || !shaOk || !sizeOk) {
     throw new Error(

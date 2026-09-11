@@ -1,4 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { isHubAuthFailure, mergeHubAuthHeaders } from "./hubAuth";
 import { isCompanionOnlyUrl, type ServiceConfig } from "./services";
 
 export function isLocalServiceUrl(url: string): boolean {
@@ -55,10 +56,11 @@ async function hubGetJson(
     if (Capacitor.isNativePlatform()) {
       const res = await CapacitorHttp.get({
         url: `${base}${path}`,
-        headers: { Accept: "application/json" },
+        headers: mergeHubAuthHeaders({ Accept: "application/json" }),
         connectTimeout: timeoutMs,
         readTimeout: timeoutMs,
       });
+      if (isHubAuthFailure(res.status)) return null;
       if (res.status < 200 || res.status >= 400) return null;
       const data = res.data;
       if (typeof data === "string") {
@@ -73,10 +75,11 @@ async function hubGetJson(
 
     const res = await fetch(`${base}${path}`, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers: mergeHubAuthHeaders({ Accept: "application/json" }),
       signal: AbortSignal.timeout(timeoutMs),
       cache: "no-store",
     });
+    if (isHubAuthFailure(res.status)) return null;
     if (!res.ok) return null;
     return await res.json();
   } catch (err) {

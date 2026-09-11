@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser";
+import { useAndroidBackHandler } from "./androidBack";
 import {
   parsePhotoDumpSetupPayload,
   type PhotoDumpSetupPayload,
@@ -92,6 +93,12 @@ export function PhotoDumpQrScan({ onPayload, className }: PhotoDumpQrScanProps) 
     setBusy(false);
     handledRef.current = false;
   };
+
+  useAndroidBackHandler(() => {
+    if (!open) return false;
+    close();
+    return true;
+  }, open);
 
   const applyRaw = async (raw: string) => {
     if (handledRef.current) return;

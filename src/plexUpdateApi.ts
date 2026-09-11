@@ -1,4 +1,9 @@
 import { httpRequest } from "./arrApi";
+import {
+  HubAuthError,
+  isHubAuthFailure,
+  mergeHubAuthHeaders,
+} from "./hubAuth";
 
 export type PlexUpdateJobPhase =
   | "idle"
@@ -121,6 +126,7 @@ function httpError(
   json: Record<string, unknown>,
   fallback: string,
 ): Error {
+  if (isHubAuthFailure(status)) return new HubAuthError(status);
   // 404 almost always means an older hub without the Plex update routes —
   // prefer the upgrade hint over a generic "not found" body.
   const detail =
@@ -158,12 +164,12 @@ async function plexJson(
   try {
     const res = await httpRequest(url, {
       method: options.method ?? "GET",
-      headers: {
+      headers: mergeHubAuthHeaders({
         Accept: "application/json",
         ...(options.data !== undefined
           ? { "Content-Type": "application/json" }
           : {}),
-      },
+      }),
       ...(options.data !== undefined ? { data: options.data } : {}),
       timeoutMs: options.timeoutMs ?? 20000,
     });

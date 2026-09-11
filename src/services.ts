@@ -1,5 +1,8 @@
-/** Remote WAN base used in Arrs Hub Chrome bookmarks. */
-export const REMOTE_HOST = "http://67.84.101.14";
+/**
+ * Default service catalog. URLs are empty placeholders — configure via Settings
+ * or credentials.local.ts. Never ship a live WAN IP in defaults / APK.
+ */
+export const REMOTE_HOST = "";
 
 export type ProbeKind = "arr" | "http" | "plex";
 export type AuthKind = "apiKey" | "userPass" | "none";
@@ -64,7 +67,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "sonarr",
     name: "Sonarr",
-    defaultUrl: `${REMOTE_HOST}:8989`,
+    defaultUrl: "",
     color: "#3a7abf",
     probe: "arr",
     auth: "apiKey",
@@ -74,7 +77,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "radarr",
     name: "Radarr",
-    defaultUrl: `${REMOTE_HOST}:7878`,
+    defaultUrl: "",
     color: "#f5c518",
     probe: "arr",
     auth: "apiKey",
@@ -84,7 +87,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "lidarr",
     name: "Lidarr",
-    defaultUrl: `${REMOTE_HOST}:8686`,
+    defaultUrl: "",
     color: "#009252",
     probe: "arr",
     auth: "apiKey",
@@ -94,7 +97,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "readarr",
     name: "Readarr",
-    defaultUrl: `${REMOTE_HOST}:8787`,
+    defaultUrl: "",
     color: "#8e3532",
     probe: "arr",
     auth: "apiKey",
@@ -104,7 +107,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "prowlarr",
     name: "Prowlarr",
-    defaultUrl: `${REMOTE_HOST}:9696`,
+    defaultUrl: "",
     color: "#e66000",
     probe: "arr",
     auth: "apiKey",
@@ -114,7 +117,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "flaresolverr",
     name: "FlareSolverr",
-    defaultUrl: `${REMOTE_HOST}:8191`,
+    defaultUrl: "",
     color: "#f97316",
     probe: "http",
     auth: "none",
@@ -124,7 +127,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "bazarr",
     name: "Bazarr",
-    defaultUrl: `${REMOTE_HOST}:6767`,
+    defaultUrl: "",
     color: "#be4b14",
     probe: "http",
     auth: "apiKey",
@@ -134,7 +137,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "qbittorrent",
     name: "qBittorrent",
-    defaultUrl: `${REMOTE_HOST}:8079`,
+    defaultUrl: "",
     color: "#3585d2",
     probe: "http",
     auth: "userPass",
@@ -144,7 +147,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "sabnzbd",
     name: "SABnzbd",
-    defaultUrl: `${REMOTE_HOST}:6789/sabnzbd/`,
+    defaultUrl: "",
     color: "#ffc230",
     probe: "http",
     auth: "apiKey",
@@ -154,7 +157,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "ombi",
     name: "Ombi",
-    defaultUrl: `${REMOTE_HOST}:5000`,
+    defaultUrl: "",
     color: "#df7a00",
     probe: "http",
     auth: "apiKey",
@@ -164,7 +167,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "tautulli",
     name: "Tautulli",
-    defaultUrl: `${REMOTE_HOST}:8181`,
+    defaultUrl: "",
     color: "#cc7b19",
     probe: "http",
     auth: "apiKey",
@@ -174,7 +177,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "fileflows",
     name: "FileFlows",
-    defaultUrl: `${REMOTE_HOST}:19200`,
+    defaultUrl: "",
     color: "#00c2a8",
     probe: "http",
     auth: "none",
@@ -195,17 +198,17 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "plex",
     name: "Plex",
-    defaultUrl: `${REMOTE_HOST}:32400`,
+    defaultUrl: "",
     color: "#e5a00d",
     probe: "plex",
     auth: "apiKey",
-    category: "other",
+    category: "monitoring",
     defaultEnabled: true,
   },
   {
     id: "calibre",
     name: "Calibre",
-    defaultUrl: `${REMOTE_HOST}:8080`,
+    defaultUrl: "",
     color: "#45b29d",
     probe: "http",
     auth: "userPass",
@@ -215,7 +218,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "overseerr",
     name: "Overseerr",
-    defaultUrl: `${REMOTE_HOST}:5055`,
+    defaultUrl: "",
     color: "#6366f1",
     probe: "http",
     auth: "apiKey",
@@ -225,7 +228,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "whisparr",
     name: "Whisparr",
-    defaultUrl: `${REMOTE_HOST}:6969`,
+    defaultUrl: "",
     color: "#b43e8f",
     probe: "arr",
     auth: "apiKey",
@@ -235,7 +238,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
   {
     id: "ytarr",
     name: "Ytarr",
-    defaultUrl: `${REMOTE_HOST}:8199`,
+    defaultUrl: "",
     color: "#3fb950",
     probe: "http",
     auth: "apiKey",
@@ -246,7 +249,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     id: "workouts",
     name: "Workouts",
     /** Arrs Hub host (desktop default port 3000; set via Settings → Arrs Hub port). */
-    defaultUrl: REMOTE_HOST,
+    defaultUrl: "",
     color: "#2dd4bf",
     probe: "http",
     auth: "none",
@@ -257,7 +260,7 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     id: "photo-dump",
     name: "Photo Dump",
     /** Arrs Hub host — uploads go to Hub /api/photo-dump/* (default port 3000). */
-    defaultUrl: REMOTE_HOST,
+    defaultUrl: "",
     color: "#38bdf8",
     probe: "http",
     auth: "apiKey",

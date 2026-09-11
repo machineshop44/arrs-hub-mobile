@@ -1,5 +1,6 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
+import { mergeHubAuthHeaders } from "./hubAuth";
 import {
   arrApiVersion,
   buildDefaultConfigs,
@@ -108,16 +109,21 @@ async function hubGet(
   hubBaseUrl: string,
   path: string,
   timeoutMs = 6000,
+  /** Control routes (watchdog) get Hub API token; health/version stay open. */
+  withHubAuth = false,
 ): Promise<{ status: number; data: unknown; started: number } | null> {
   const base = normalizeBase(hubBaseUrl);
   if (!base) return null;
 
   const started = performance.now();
+  const headers = withHubAuth
+    ? mergeHubAuthHeaders({ Accept: "application/json" })
+    : { Accept: "application/json" };
   try {
     if (Capacitor.isNativePlatform()) {
       const res = await CapacitorHttp.get({
         url: `${base}${path}`,
-        headers: { Accept: "application/json" },
+        headers,
         connectTimeout: timeoutMs,
         readTimeout: timeoutMs,
       });
@@ -136,7 +142,7 @@ async function hubGet(
 
     const res = await fetch(`${base}${path}`, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
       cache: "no-store",
     });
@@ -274,7 +280,7 @@ export async function fetchHubWatchdogStatus(
   hubBaseUrl: string,
   timeoutMs = 6000,
 ): Promise<HubWatchdogStatus | null> {
-  const res = await hubGet(hubBaseUrl, "/api/watchdog/status", timeoutMs);
+  const res = await hubGet(hubBaseUrl, "/api/watchdog/status", timeoutMs, true);
   if (!res || res.status < 200 || res.status >= 400) return null;
   if (!res.data || typeof res.data !== "object") return null;
 
@@ -294,20 +300,22 @@ export async function fetchHubWatchdogStatus(
   };
 }
 
-/**
- * Fetch Arrs Hub watchdog board once. Primary status source when Hub is
- * configured; callers fall back to direct probes for missing/unknown rows.
- */
-export async function fetchHubWatchdogServices(
-  hubBaseUrl: string,
-  timeoutMs = 6000,
-): Promise<HubWatchdogServiceMap | null> {
-  const status = await fetchHubWatchdogStatus(hubBaseUrl, timeoutMs);
-  return status?.services ?? null;
-}
-
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
+}
+
+/** 2xx = up; 401/403 = reachable but needs key (not generic Up for 404). */
+export function probeResultFromHttpStatus(
+  status: number,
+  latencyMs: number,
+): ProbeResult {
+  if (status >= 200 && status < 300) {
+    return { up: true, latencyMs, message: "Online" };
+  }
+  if (status === 401 || status === 403) {
+    return { up: true, latencyMs, message: "Up (needs API key)" };
+  }
+  return { up: false, latencyMs, message: `HTTP ${status}` };
 }
 
 async function loadSeed() {
@@ -389,22 +397,12 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
         ? `${base}/api/${arrApiVersion(service)}/system/status`
         : `${base}/ping`;
       const { status, latencyMs } = await httpGet(path, headers);
-      const up = status >= 200 && status < 400;
-      return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
-      };
+      return probeResultFromHttpStatus(status, latencyMs);
     }
 
     if (service.probe === "plex") {
       const { status, latencyMs } = await httpGet(`${base}/identity`);
-      const up = status >= 200 && status < 500;
-      return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
-      };
+      return probeResultFromHttpStatus(status, latencyMs);
     }
 
     if (service.id === "bazarr" && service.apiKey.trim()) {
@@ -413,23 +411,13 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
         `${base}/api/system/status`,
         headers,
       );
-      const up = status >= 200 && status < 400;
-      return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
-      };
+      return probeResultFromHttpStatus(status, latencyMs);
     }
 
     if (service.id === "flaresolverr") {
       // Official lightweight health endpoint (GET /health on :8191).
       const { status, latencyMs } = await httpGet(`${base}/health`);
-      const up = status >= 200 && status < 400;
-      return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
-      };
+      return probeResultFromHttpStatus(status, latencyMs);
     }
 
     if (service.id === "ytarr") {
@@ -442,35 +430,38 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
         ? `${base}/api/system/status`
         : `${base}/api/health`;
       const { status, latencyMs } = await httpGet(path, headers);
-      const up = status >= 200 && status < 400;
-      return {
-        up,
-        latencyMs,
-        message: up ? "Online" : `HTTP ${status}`,
-      };
+      return probeResultFromHttpStatus(status, latencyMs);
     }
 
     if (service.id === "workouts" || service.id === "photo-dump") {
-      // Hub-hosted modules — prefer module settings so a healthy Hub alone
-      // does not mark Photo Dump / Workouts Up when the feature is off.
+      // Probe the module settings endpoint only — never mark Up from hub /api/health
+      // alone (a healthy Hub does not mean Photo Dump / Workouts is configured).
       const settingsPath =
         service.id === "photo-dump"
           ? `${base}/api/photo-dump/settings`
           : `${base}/api/workouts/settings`;
+      const headers: Record<string, string> = {};
+      // Remote photo-dump settings need the Hub key for full details (Hub 1.3.57+).
+      if (service.id === "photo-dump" && service.apiKey.trim()) {
+        headers["X-Arrs-Hub-Key"] = service.apiKey.trim();
+      }
       try {
-        const { status, latencyMs, data } = await httpGet(settingsPath);
-        if (status >= 200 && status < 500) {
-          if (service.id === "photo-dump" && data && typeof data === "object") {
-            const settings = (data as { settings?: Record<string, unknown> })
-              .settings;
-            if (settings && settings.enabled === false) {
+        const { status, latencyMs, data } = await httpGet(
+          settingsPath,
+          headers,
+        );
+        if (service.id === "photo-dump" && data && typeof data === "object") {
+          const settings = (data as { settings?: Record<string, unknown> })
+            .settings;
+          if (status >= 200 && status < 300 && settings) {
+            if (settings.enabled === false) {
               return {
                 up: false,
                 latencyMs,
                 message: "Photo dump disabled on Hub",
               };
             }
-            if (settings && settings.rootPathSet === false) {
+            if (settings.rootPathSet === false) {
               return {
                 up: false,
                 latencyMs,
@@ -478,41 +469,19 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
               };
             }
           }
-          return {
-            up: true,
-            latencyMs,
-            message: "Online",
-          };
         }
+        return probeResultFromHttpStatus(status, latencyMs);
       } catch {
-        // Fall through to hub health.
+        return {
+          up: false,
+          latencyMs: null,
+          message: "Unreachable",
+        };
       }
-      try {
-        const health = await httpGet(`${base}/api/health`);
-        if (health.status >= 200 && health.status < 500) {
-          return {
-            up: true,
-            latencyMs: health.latencyMs,
-            message: "Hub online (module settings unreachable)",
-          };
-        }
-      } catch {
-        // Unreachable below.
-      }
-      return {
-        up: false,
-        latencyMs: null,
-        message: "Unreachable",
-      };
     }
 
     const { status, latencyMs } = await httpGet(base);
-    const up = status >= 200 && status < 500;
-    return {
-      up,
-      latencyMs,
-      message: up ? "Online" : `HTTP ${status}`,
-    };
+    return probeResultFromHttpStatus(status, latencyMs);
   } catch (err) {
     return {
       up: false,
@@ -536,10 +505,11 @@ export async function loadServices(): Promise<ServiceConfig[]> {
       if (!saved) return def;
       return {
         ...def,
-        url: saved.url || def.url,
-        apiKey: saved.apiKey || def.apiKey,
-        username: saved.username || def.username,
-        password: saved.password || def.password,
+        // Use ?? so an intentionally blank URL is not restored to a default host.
+        url: saved.url ?? def.url,
+        apiKey: saved.apiKey ?? def.apiKey,
+        username: saved.username ?? def.username,
+        password: saved.password ?? def.password,
         enabled: saved.enabled,
         // Always use catalog brand color / probe / auth
         color: def.color,

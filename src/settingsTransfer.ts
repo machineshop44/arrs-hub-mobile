@@ -30,6 +30,11 @@ import {
   PHOTO_DUMP_API_KEY_STORAGE,
   savePhotoDumpApiKey,
 } from "./photoDumpApi";
+import {
+  HUB_API_TOKEN_STORAGE,
+  loadHubApiToken,
+  saveHubApiToken,
+} from "./hubAuth";
 
 const CONFIG_KIND = "arrs-hub-status-settings";
 const CONFIG_VERSION = 1;
@@ -41,6 +46,7 @@ export const PERSISTED_STORAGE_KEYS = {
   wol: WOL_STORAGE_KEY,
   pathing: PATHING_STORAGE_KEY,
   photoDumpApiKey: PHOTO_DUMP_API_KEY_STORAGE,
+  hubApiToken: HUB_API_TOKEN_STORAGE,
 } as const;
 
 export type SettingsBundle = {
@@ -62,6 +68,8 @@ export type SettingsBundle = {
   pathing: PathSettings;
   /** Hub photo-dump API key (also on services[photo-dump].apiKey). */
   photoDumpApiKey?: string;
+  /** Hub control-plane token (X-Arrs-Hub-Token) — separate from photo-dump key. */
+  hubApiToken?: string;
 };
 
 type ConfigSharePlugin = {
@@ -101,9 +109,10 @@ export async function buildSettingsBundle(
     wol: WolSettings;
     pathing: PathSettings;
     photoDumpApiKey: string;
+    hubApiToken: string;
   }>,
 ): Promise<SettingsBundle> {
-  const [services, moduleOrder, wol, pathing, photoDumpApiKey] =
+  const [services, moduleOrder, wol, pathing, photoDumpApiKey, hubApiToken] =
     await Promise.all([
       overrides?.services
         ? Promise.resolve(overrides.services)
@@ -118,6 +127,9 @@ export async function buildSettingsBundle(
       overrides?.photoDumpApiKey !== undefined
         ? Promise.resolve(overrides.photoDumpApiKey)
         : loadPhotoDumpApiKey(),
+      overrides?.hubApiToken !== undefined
+        ? Promise.resolve(overrides.hubApiToken)
+        : loadHubApiToken(),
     ]);
 
   const fromService =
@@ -134,6 +146,22 @@ export async function buildSettingsBundle(
     wol: normalizeWolSettings(wol),
     pathing: normalizePathing(pathing),
     photoDumpApiKey: key,
+    hubApiToken: String(hubApiToken || "").trim(),
+  };
+}
+
+/** Blank API keys / passwords / Hub token for safer sharing. */
+export function redactSettingsBundle(bundle: SettingsBundle): SettingsBundle {
+  return {
+    ...bundle,
+    photoDumpApiKey: "",
+    hubApiToken: "",
+    services: bundle.services.map((s) => ({
+      ...s,
+      apiKey: "",
+      password: "",
+      username: s.username ? "" : "",
+    })),
   };
 }
 
@@ -214,6 +242,7 @@ export function parseSettingsBundle(raw: string): SettingsBundle {
       typeof obj.photoDumpApiKey === "string"
         ? obj.photoDumpApiKey
         : services.find((s) => s.id === "photo-dump")?.apiKey || "",
+    hubApiToken: typeof obj.hubApiToken === "string" ? obj.hubApiToken : "",
   };
 }
 
@@ -225,6 +254,7 @@ export async function applySettingsBundle(
   moduleOrder: string[];
   wol: WolSettings;
   pathing: PathSettings;
+  hubApiToken: string;
 }> {
   const byId = new Map(bundle.services.map((s) => [s.id, s]));
   const merged = currentServices.map((def) => {
@@ -250,6 +280,7 @@ export async function applySettingsBundle(
     ).trim() ||
     merged.find((s) => s.id === "photo-dump")?.apiKey.trim() ||
     "";
+  const hubApiToken = String(bundle.hubApiToken || "").trim();
 
   const withPhotoKey = merged.map((s) =>
     s.id === "photo-dump" && photoDumpKey
@@ -263,6 +294,7 @@ export async function applySettingsBundle(
     saveWolSettings(wol),
     savePathSettings(pathing),
     savePhotoDumpApiKey(photoDumpKey),
+    saveHubApiToken(hubApiToken),
   ]);
 
   return {
@@ -270,6 +302,7 @@ export async function applySettingsBundle(
     moduleOrder: bundle.moduleOrder,
     wol,
     pathing,
+    hubApiToken,
   };
 }
 

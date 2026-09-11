@@ -45,6 +45,11 @@ type FileStatus =
   | "manual-remove"
   | "error";
 
+/** Soft cap to avoid OOM on phone — Hub may allow larger; warn/block in UI. */
+export const PHOTO_DUMP_UI_MAX_FILE_BYTES = 400 * 1024 * 1024;
+/** Warn before enqueueing a whole-month dump larger than this count. */
+export const PHOTO_DUMP_MONTH_WARN_COUNT = 200;
+
 type QueueItem = {
   id: string;
   name: string;
@@ -321,18 +326,37 @@ export function PhotoDumpPanel({
       setMessage(`No media found${label ? ` ${label}` : ""}.`);
       return;
     }
+    const oversize = items.filter(
+      (item) => item.size > PHOTO_DUMP_UI_MAX_FILE_BYTES,
+    );
+    const allowed = items.filter(
+      (item) => item.size <= PHOTO_DUMP_UI_MAX_FILE_BYTES,
+    );
+    if (oversize.length && allowed.length === 0) {
+      setError(
+        `${oversize.length} file${oversize.length === 1 ? "" : "s"} exceed the ${formatBytes(PHOTO_DUMP_UI_MAX_FILE_BYTES)} phone upload cap (OOM guard).`,
+      );
+      return;
+    }
+    if (oversize.length) {
+      setMessage(
+        `Skipped ${oversize.length} file${oversize.length === 1 ? "" : "s"} over ${formatBytes(PHOTO_DUMP_UI_MAX_FILE_BYTES)}.`,
+      );
+    }
     setQueue((prev) => {
       const existingUris = new Set(
         prev.map((q) => q.contentUri).filter((u): u is string => Boolean(u)),
       );
-      const fresh = items.filter(
+      const fresh = allowed.filter(
         (item) => !item.contentUri || !existingUris.has(item.contentUri),
       );
-      const skipped = items.length - fresh.length;
+      const skipped = allowed.length - fresh.length;
       if (fresh.length === 0) {
         queueMicrotask(() =>
           setMessage(
-            `All ${items.length} item${items.length === 1 ? "" : "s"} already in queue.`,
+            oversize.length
+              ? `Nothing added (oversize or already queued).`
+              : `All ${items.length} item${items.length === 1 ? "" : "s"} already in queue.`,
           ),
         );
         return prev;
@@ -385,6 +409,16 @@ export function PhotoDumpPanel({
     try {
       const res = await queryPhotoDumpMediaMonth(parsed.year, parsed.month);
       const label = ` for ${String(parsed.month).padStart(2, "0")}/${parsed.year}`;
+      if (res.items.length >= PHOTO_DUMP_MONTH_WARN_COUNT) {
+        const totalBytes = res.items.reduce((sum, i) => sum + (i.size || 0), 0);
+        const proceed = window.confirm(
+          `This month has ${res.items.length} items (${formatBytes(totalBytes)}). Large dumps can stress phone memory. Continue enqueue?`,
+        );
+        if (!proceed) {
+          setMessage("Month dump cancelled.");
+          return;
+        }
+      }
       enqueueItems(mediaItemsToQueue(res.items), label);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -446,13 +480,22 @@ export function PhotoDumpPanel({
     );
   };
 
-  const loadBytes = async (item: QueueItem): Promise<ArrayBuffer> => {
+  const loadBytes = async (
+    item: QueueItem,
+  ): Promise<{ bytes: ArrayBuffer; base64?: string }> => {
+    if (item.size > PHOTO_DUMP_UI_MAX_FILE_BYTES) {
+      throw new Error(
+        `File exceeds phone upload cap (${formatBytes(PHOTO_DUMP_UI_MAX_FILE_BYTES)}).`,
+      );
+    }
     if (item.contentUri && nativeMedia) {
       const read = await readPhotoDumpMediaBase64(item.contentUri);
-      return base64ToArrayBuffer(read.base64);
+      // Keep base64 for native upload so we don't re-encode ArrayBuffer→base64.
+      const bytes = base64ToArrayBuffer(read.base64);
+      return { bytes, base64: read.base64 };
     }
     if (item.file) {
-      return item.file.arrayBuffer();
+      return { bytes: await item.file.arrayBuffer() };
     }
     throw new Error("No file bytes available for this queue item.");
   };
@@ -490,7 +533,8 @@ export function PhotoDumpPanel({
       if (!mountedRef.current) break;
       try {
         updateItem(item.id, { status: "hashing", message: undefined });
-        const bytes = await loadBytes(item);
+        const loaded = await loadBytes(item);
+        let bytes: ArrayBuffer | undefined = loaded.bytes;
         if (
           hubSettings?.maxFileBytes &&
           bytes.byteLength > hubSettings.maxFileBytes
@@ -505,8 +549,12 @@ export function PhotoDumpPanel({
           fileName: item.name,
           relativeFolder: folderAtStart,
           bytes,
+          base64: loaded.base64,
+          size: item.size || bytes.byteLength,
           sha256: hash,
         });
+        // Drop local bytes ASAP after upload call returns.
+        bytes = undefined;
         const dupNote = result.duplicate ? " (already on Hub)" : "";
         const baseMsg = `${result.fileName} · ${formatBytes(result.size)}${dupNote}`;
 

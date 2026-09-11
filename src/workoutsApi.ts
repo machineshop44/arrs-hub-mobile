@@ -1,4 +1,9 @@
 import { httpRequest } from "./arrApi";
+import {
+  HubAuthError,
+  isHubAuthFailure,
+  mergeHubAuthHeaders,
+} from "./hubAuth";
 
 function normalizeBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
@@ -27,6 +32,7 @@ function formatHubHttpError(
   json: Record<string, unknown>,
   fallback: string,
 ): string {
+  if (isHubAuthFailure(status)) return new HubAuthError(status).message;
   const detail =
     typeof json.error === "string" && json.error.trim()
       ? json.error.trim()
@@ -45,7 +51,7 @@ async function workoutsGet(hubUrl: string, path: string) {
   try {
     const res = await httpRequest(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers: mergeHubAuthHeaders({ Accept: "application/json" }),
       timeoutMs: 15000,
     });
     const json = asObject(res.data);
@@ -62,6 +68,7 @@ async function workoutsGet(hubUrl: string, path: string) {
     return json;
   } catch (err) {
     if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    if (err instanceof Error && err.message.includes("Hub API token")) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`${reason}\nTried: ${url}`);
   }
@@ -78,10 +85,10 @@ async function workoutsPost(hubUrl: string, path: string, body: unknown) {
   try {
     const res = await httpRequest(url, {
       method: "POST",
-      headers: {
+      headers: mergeHubAuthHeaders({
         Accept: "application/json",
         "Content-Type": "application/json",
-      },
+      }),
       data: body,
       timeoutMs: 30000,
     });
@@ -99,6 +106,7 @@ async function workoutsPost(hubUrl: string, path: string, body: unknown) {
     return json;
   } catch (err) {
     if (err instanceof Error && err.message.includes("Tried:")) throw err;
+    if (err instanceof Error && err.message.includes("Hub API token")) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`${reason}\nTried: ${url}`);
   }
@@ -267,10 +275,6 @@ export async function probeHubReachable(
     const reason = err instanceof Error ? err.message : String(err);
     return { ok: false, triedUrl: healthUrl, detail: reason };
   }
-}
-
-export async function checkHubReachable(hubUrl: string): Promise<boolean> {
-  return (await probeHubReachable(hubUrl)).ok;
 }
 
 export async function fetchWorkoutSettings(

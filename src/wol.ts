@@ -3,6 +3,11 @@ import { Network } from "@capacitor/network";
 import { Preferences } from "@capacitor/preferences";
 import { UdpSocket } from "capacitor-udp-socket";
 import {
+  HubAuthError,
+  isHubAuthFailure,
+  mergeHubAuthHeaders,
+} from "./hubAuth";
+import {
   cidrFromHomeBase,
   hostFromUrlOrHost,
   isPrivateIpv4,
@@ -615,6 +620,18 @@ export async function sendDirectWakeOnLan(
   }
 }
 
+/** Match MAC against configured Port Watch PCs (settings.pcs), not live status map. */
+export function matchHubPcIdByMac(
+  pcs: Array<{ id?: string; mac?: string }>,
+  macRaw: string,
+): string | null {
+  const mac = normalizeMac(macRaw);
+  if (!mac) return null;
+  const match = pcs.find((pc) => normalizeMac(pc.mac || "") === mac);
+  const id = String(match?.id || "").trim();
+  return id || null;
+}
+
 async function resolveHubPcId(
   hubBase: string,
   settings: WolWakeSettings,
@@ -625,20 +642,41 @@ async function resolveHubPcId(
   try {
     const res = await CapacitorHttp.get({
       url: `${hubBase}/api/watchdog/status`,
+      headers: mergeHubAuthHeaders({ Accept: "application/json" }),
       connectTimeout: 4000,
       readTimeout: 4000,
     });
+    if (isHubAuthFailure(res.status)) return null;
     if (res.status < 200 || res.status >= 400) return null;
     const data = typeof res.data === "string" ? JSON.parse(res.data) : res.data;
-    const pcs = (data?.pcs || data?.settings?.pcs || []) as Array<{
+    // Prefer configured settings.pcs — live `pcs` is a status map keyed by id.
+    const settingsPcs = (data?.settings?.pcs || []) as Array<{
       id?: string;
       mac?: string;
     }>;
-    const match = pcs.find((pc) => normalizeMac(pc.mac || "") === mac);
-    return match?.id || null;
+    return matchHubPcIdByMac(settingsPcs, mac);
   } catch {
     return null;
   }
+}
+
+/** Field-level equality for WOL settings (avoids JSON.stringify churn). */
+export function wolSettingsEqual(a: WolSettings, b: WolSettings): boolean {
+  const targetEq = (x: WolTarget, y: WolTarget) =>
+    x.enabled === y.enabled &&
+    x.mac === y.mac &&
+    x.targetHost === y.targetHost &&
+    x.hubPcId === y.hubPcId;
+  return (
+    a.enabled === b.enabled &&
+    a.broadcastIp === b.broadcastIp &&
+    a.port === b.port &&
+    a.homeCidr === b.homeCidr &&
+    a.hubUrl === b.hubUrl &&
+    a.hubPort === b.hubPort &&
+    targetEq(a.plex, b.plex) &&
+    targetEq(a.downloader, b.downloader)
+  );
 }
 
 export async function sendHubWakeOnLan(
@@ -667,7 +705,7 @@ export async function sendHubWakeOnLan(
   try {
     const res = await CapacitorHttp.post({
       url: `${hubBase}/api/watchdog/wol`,
-      headers: { "Content-Type": "application/json" },
+      headers: mergeHubAuthHeaders({ "Content-Type": "application/json" }),
       data: pcId
         ? { pcId }
         : { mac, host: settings.targetHost.trim() },
@@ -675,6 +713,13 @@ export async function sendHubWakeOnLan(
       readTimeout: 6000,
     });
     const data = typeof res.data === "string" ? JSON.parse(res.data) : res.data;
+    if (isHubAuthFailure(res.status)) {
+      return {
+        ok: false,
+        method: "hub",
+        message: new HubAuthError(res.status).message,
+      };
+    }
     if (res.status >= 200 && res.status < 300 && data && data.ok !== false) {
       return {
         ok: true,

@@ -160,7 +160,7 @@ function LibrarySeriesCard({
               : ""}
           </span>
           <span>
-            {[item.qualityProfile || "Any", "Any"].filter(Boolean).join(" · ")}
+            {[item.qualityProfile || "Any"].filter(Boolean).join(" · ")}
           </span>
           <span>
             {[item.network, item.status].filter(Boolean).join(" · ")}

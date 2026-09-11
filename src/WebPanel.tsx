@@ -128,7 +128,8 @@ export function WebPanel({ service, onBack }: WebPanelProps) {
         openedRef.current = false;
         void InAppBrowser.close().catch(() => undefined);
       }
-      void InAppBrowser.removeAllListeners().catch(() => undefined);
+      // Prefer removing only our handles (removeListeners from run()); avoid
+      // removeAllListeners which can wipe listeners from other panels.
     };
   }, [native, url, service.name]);
 

@@ -1,3 +1,4 @@
+import { HubAuthError } from "./hubAuth";
 import {
   forwardRef,
   useCallback,
@@ -8,7 +9,6 @@ import {
   useState,
 } from "react";
 import { App as CapApp } from "@capacitor/app";
-import { Browser } from "@capacitor/browser";
 import { Capacitor } from "@capacitor/core";
 import {
   fetchHubStatusSummary,
@@ -49,13 +49,6 @@ import {
 import { createPlexPollController } from "./plexPollGuard";
 import type { HubWatchdogStatus } from "./probe";
 import type { ServiceConfig } from "./services";
-
-/** Match desktop hub: *arr Activity Queue lives at /activity/queue. */
-function activityQueueUrl(baseUrl: string | undefined): string | null {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) return null;
-  return `${trimmed.replace(/\/+$/, "")}/activity/queue`;
-}
 
 export type HomeStatusChipsHandle = {
   /** Re-fetch hub summary + plex (refresh=1 when allowed). */
@@ -142,6 +135,8 @@ type HomeStatusChipsProps = {
   /** Full reconnect (same as pull-to-refresh). */
   onReconnect?: () => void;
   reconnecting?: boolean;
+  /** True when Hub host is public WAN and Hub API token is empty. */
+  hubWanUnauthWarning?: boolean;
 };
 
 export const HomeStatusChips = forwardRef<
@@ -166,6 +161,7 @@ export const HomeStatusChips = forwardRef<
     onOpenService,
     onReconnect,
     reconnecting = false,
+    hubWanUnauthWarning = false,
   },
   ref,
 ) {
@@ -209,19 +205,32 @@ export const HomeStatusChips = forwardRef<
       return;
     }
     const gen = ++summaryGen.current;
-    const [next, versions] = await Promise.all([
-      fetchHubStatusSummary(hubBaseUrl, services, resolveUrl),
-      fetchChipVersions(hubBaseUrl, services, resolveUrl),
-    ]);
-    if (gen !== summaryGen.current) return;
-    if (next) {
-      setSummary(next);
-      setSummaryError(null);
-    } else {
-      // Keep last good summary so chips don't flash to "—" / setup on a blip.
-      setSummaryError((prev) => prev ?? "Could not refresh hub activity summary.");
+    try {
+      const [next, versions] = await Promise.all([
+        fetchHubStatusSummary(hubBaseUrl, services, resolveUrl),
+        fetchChipVersions(hubBaseUrl, services, resolveUrl),
+      ]);
+      if (gen !== summaryGen.current) return;
+      if (next) {
+        setSummary(next);
+        setSummaryError(null);
+      } else {
+        // Keep last good summary so chips don't flash to "—" / setup on a blip.
+        setSummaryError(
+          (prev) => prev ?? "Could not refresh hub activity summary.",
+        );
+      }
+      if (versions) setChipVersions(versions);
+    } catch (err) {
+      if (gen !== summaryGen.current) return;
+      if (err instanceof HubAuthError) {
+        setSummaryError(err.message);
+        return;
+      }
+      setSummaryError(
+        err instanceof Error ? err.message : "Could not refresh hub activity.",
+      );
     }
-    if (versions) setChipVersions(versions);
   }, [hubBaseUrl, hubDown, services, resolveUrl]);
 
   const loadPlex = useCallback(
@@ -497,11 +506,15 @@ export const HomeStatusChips = forwardRef<
     [hubBaseUrl, services, resolveUrl],
   );
 
+  const runningAppUpdateKey = Object.entries(appUpdateJobs)
+    .filter(([, job]) => job.phase === "running")
+    .map(([id]) => id)
+    .sort()
+    .join("|");
+
   useEffect(() => {
-    const runningIds = Object.entries(appUpdateJobs)
-      .filter(([, job]) => job.phase === "running")
-      .map(([id]) => id);
-    if (runningIds.length === 0 || hubDown) return;
+    if (!runningAppUpdateKey || hubDown) return;
+    const runningIds = runningAppUpdateKey.split("|").filter(Boolean);
 
     let cancelled = false;
     const poll = async () => {
@@ -524,7 +537,7 @@ export const HomeStatusChips = forwardRef<
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [appUpdateJobs, hubDown, hubBaseUrl, load]);
+  }, [runningAppUpdateKey, hubDown, hubBaseUrl, load]);
 
   const streams = summary?.streams?.streamCount ?? null;
   const downloads = summary?.downloads?.active ?? null;
@@ -857,25 +870,10 @@ export const HomeStatusChips = forwardRef<
     setSheet((prev) => (prev === id ? null : id));
   };
 
-  const openArrActivity = async (appId: string) => {
-    const service = services.find((s) => s.id === appId && s.enabled);
-    const openUrl = service
-      ? activityQueueUrl(resolveUrl(service))
-      : null;
+  const openArrActivity = (appId: string) => {
     setSheet(null);
-    if (!openUrl) {
-      // No Home URL configured — fall back to in-app Arr Activity tab.
-      onOpenService(appId, { initialTab: "queue" });
-      return;
-    }
-    try {
-      await Browser.open({ url: openUrl });
-    } catch {
-      const opened = window.open(openUrl, "_blank", "noopener,noreferrer");
-      if (!opened) {
-        setAppUpdateNotice(`Could not open ${openUrl}`);
-      }
-    }
+    // Prefer native ArrPanel Activity Queue tab.
+    onOpenService(appId, { initialTab: "queue" });
   };
 
   const reloadOmbiPending = useCallback(async () => {
@@ -1071,6 +1069,15 @@ export const HomeStatusChips = forwardRef<
                     <li>
                       <span>Activity</span>
                       <strong>{summaryError}</strong>
+                    </li>
+                  ) : null}
+                  {hubWanUnauthWarning ? (
+                    <li>
+                      <span>Security</span>
+                      <strong>
+                        WAN Hub — control APIs lack auth until Hub API token is
+                        set in Settings → Network
+                      </strong>
                     </li>
                   ) : null}
                 </ul>

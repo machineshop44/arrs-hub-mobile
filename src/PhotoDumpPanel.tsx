@@ -24,6 +24,8 @@ interface PhotoDumpPanelProps {
   onApiKeyChange?: (apiKey: string) => void;
   /** Apply scanned Hub setup QR (API key + Hub URL). */
   onSetupApplied?: (payload: PhotoDumpSetupPayload) => void | Promise<void>;
+  /** Live LAN vs remote path hint while the panel is open. */
+  pathHint?: "LAN" | "Remote";
 }
 
 type FileStatus =
@@ -89,6 +91,7 @@ export function PhotoDumpPanel({
   onOpenSettings,
   onApiKeyChange,
   onSetupApplied,
+  pathHint,
 }: PhotoDumpPanelProps) {
   const hubUrl = service.url.trim();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -402,6 +405,14 @@ export function PhotoDumpPanel({
                 : "Offline"}
         </span>
       </div>
+      {pathHint && (
+        <p
+          className={`dash-path-hint${pathHint === "LAN" ? " is-lan" : ""}`}
+          style={{ margin: "0.35rem 1rem 0" }}
+        >
+          {pathHint === "LAN" ? "Using LAN …" : "Using remote …"}
+        </p>
+      )}
 
       {error && (
         <div className="err banner">

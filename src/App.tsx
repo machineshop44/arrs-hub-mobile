@@ -46,6 +46,10 @@ import {
   type PathSettings,
 } from "./pathing";
 import {
+  planPhotoDumpSetupApply,
+  preferHubRemoteUrl,
+} from "./photoDumpSetupApply";
+import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
   isCompanionOnlyService,
@@ -528,14 +532,19 @@ export function App() {
     void refreshHomeNet(next, pathing.homeBaseUrl);
   };
 
-  /** Apply Hub photo-dump setup QR: save API key + Hub host/port like Network settings. */
+  /** Apply Hub photo-dump setup QR: save API key; LAN→homeBaseUrl, WAN→canonical Hub. */
   const applyPhotoDumpSetup = useCallback(
     async (payload: PhotoDumpSetupPayload) => {
       const key = payload.key.trim();
       await savePhotoDumpApiKey(key);
 
-      const { host, port } = splitHubHostAndPort(payload.url);
-      const hubHost = (host || payload.url.trim()).trim();
+      const existingPd =
+        services.find((s) => s.id === "photo-dump")?.url.trim() || "";
+      const plan = planPhotoDumpSetupApply({
+        scannedUrl: payload.url,
+        existingWolHubUrl: wol.hubUrl,
+        existingPhotoDumpUrl: existingPd,
+      });
 
       setServices((prev) => {
         const next = prev.map((s) =>
@@ -543,7 +552,9 @@ export function App() {
             ? {
                 ...s,
                 apiKey: key,
-                ...(hubHost ? { url: hubHost } : {}),
+                ...(plan.photoDumpUrl !== undefined
+                  ? { url: plan.photoDumpUrl }
+                  : {}),
               }
             : s,
         );
@@ -552,29 +563,43 @@ export function App() {
       });
 
       setActive((prev) =>
-        prev?.id === "photo-dump"
-          ? {
-              ...prev,
-              apiKey: key,
-              ...(hubHost ? { url: hubHost } : {}),
-            }
-          : prev,
+        prev?.id === "photo-dump" ? { ...prev, apiKey: key } : prev,
       );
 
-      if (hubHost || port != null) {
+      let nextHomeBase = pathing.homeBaseUrl;
+      if (plan.homeBaseUrl !== undefined) {
+        nextHomeBase = plan.homeBaseUrl;
+        const nextPath: PathSettings = {
+          ...pathing,
+          homeBaseUrl: plan.homeBaseUrl,
+        };
+        setPathing(nextPath);
+        void savePathSettings(nextPath);
+      }
+
+      if (
+        plan.wolHubUrl !== undefined ||
+        plan.wolHubPort !== undefined
+      ) {
         setWol((prev) => {
           const next = {
             ...prev,
-            ...(hubHost ? { hubUrl: hubHost } : {}),
-            ...(port != null ? { hubPort: normalizeHubPort(port) } : {}),
+            ...(plan.wolHubUrl !== undefined
+              ? { hubUrl: plan.wolHubUrl }
+              : {}),
+            ...(plan.wolHubPort !== undefined
+              ? { hubPort: plan.wolHubPort }
+              : {}),
           };
           void saveWolSettings(next);
-          void refreshHomeNet(next, pathing.homeBaseUrl);
+          void refreshHomeNet(next, nextHomeBase);
           return next;
         });
+      } else if (plan.homeBaseUrl !== undefined) {
+        void refreshHomeNet(wol, nextHomeBase);
       }
     },
-    [pathing.homeBaseUrl, refreshHomeNet],
+    [pathing, refreshHomeNet, services, wol],
   );
 
   const persistPathing = async (next: PathSettings) => {
@@ -649,9 +674,7 @@ export function App() {
     (service: ServiceConfig): ServiceConfig => {
       let rawUrl = service.url;
       if (service.id === "workouts" || service.id === "photo-dump") {
-        if (!rawUrl.trim() && wol.hubUrl.trim()) {
-          rawUrl = wol.hubUrl.trim();
-        }
+        rawUrl = preferHubRemoteUrl(rawUrl, wol.hubUrl);
         if (rawUrl.trim()) {
           rawUrl = buildHubBaseUrl(rawUrl, wol.hubPort);
         }
@@ -674,6 +697,22 @@ export function App() {
       wol.hubPort,
     ],
   );
+
+  /** Keep Photo Dump on the live LAN↔WAN effective URL while the panel is open. */
+  useEffect(() => {
+    if (screen !== "photo-dump") return;
+    const svc = services.find((s) => s.id === "photo-dump");
+    if (!svc) return;
+    setActive((prev) => {
+      if (!prev || prev.id !== "photo-dump") return prev;
+      const next = withEffectiveUrl({
+        ...svc,
+        apiKey: prev.apiKey || svc.apiKey,
+      });
+      if (next.url === prev.url && next.apiKey === prev.apiKey) return prev;
+      return next;
+    });
+  }, [screen, services, withEffectiveUrl]);
 
   useEffect(() => {
     if (!hubWatchdog?.settingsPcs?.length) return;
@@ -1281,6 +1320,7 @@ export function App() {
     return (
       <PhotoDumpPanel
         service={active}
+        pathHint={pathHintLabel(connectionMode)}
         onBack={() => {
           setActive(null);
           setScreen("modules");

@@ -93,6 +93,11 @@ if ($Build) {
     } else {
         $env:JAVA_HOME
     }
+    # Web UI lives in android assets — sync Vite build before packaging.
+    npm run cap:sync
+    if ($LASTEXITCODE -ne 0) {
+        throw "cap:sync failed"
+    }
     Push-Location (Join-Path $Root "android")
     try {
         & .\gradlew.bat :app:assembleDebug

@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ApkSharePlugin.class);
         registerPlugin(ExternalPlayerPlugin.class);
         registerPlugin(VlcPlayerPlugin.class);
+        registerPlugin(PhotoDumpMediaPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

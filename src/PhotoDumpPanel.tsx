@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAndroidBackHandler } from "./androidBack";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
@@ -13,6 +13,15 @@ import {
   uploadPhotoDumpFile,
   type PhotoDumpPublicSettings,
 } from "./photoDumpApi";
+import {
+  base64ToArrayBuffer,
+  deletePhotoDumpMediaUri,
+  isPhotoDumpMediaNative,
+  pickPhotoDumpMedia,
+  queryPhotoDumpMediaMonth,
+  readPhotoDumpMediaBase64,
+  type PhotoDumpMediaItem,
+} from "./photoDumpMedia";
 import { PhotoDumpQrScan } from "./PhotoDumpQrScan";
 import type { PhotoDumpSetupPayload } from "./photoDumpSetupQr";
 
@@ -32,12 +41,21 @@ type FileStatus =
   | "pending"
   | "hashing"
   | "uploading"
+  | "deleted"
   | "manual-remove"
   | "error";
 
 type QueueItem = {
   id: string;
-  file: File;
+  name: string;
+  size: number;
+  mimeType: string;
+  /** HTML file input fallback (no gallery URI). */
+  file?: File;
+  /** Native MediaStore / document URI for delete-after-verify. */
+  contentUri?: string;
+  /** Included in next Upload & verify when pending/error. */
+  selected: boolean;
   status: FileStatus;
   message?: string;
   remotePath?: string;
@@ -68,6 +86,21 @@ function parentRelative(path: string): string {
   return parts.join("/");
 }
 
+function currentMonthValue(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${d.getFullYear()}-${m}`;
+}
+
+function parseMonthValue(value: string): { year: number; month: number } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  if (!Number.isFinite(year) || month < 1 || month > 12) return null;
+  return { year, month };
+}
+
 function statusLabel(status: FileStatus): string {
   switch (status) {
     case "pending":
@@ -76,6 +109,8 @@ function statusLabel(status: FileStatus): string {
       return "Hashing…";
     case "uploading":
       return "Uploading…";
+    case "deleted":
+      return "Removed from gallery";
     case "manual-remove":
       return "Uploaded & verified — remove from gallery manually";
     case "error":
@@ -83,6 +118,18 @@ function statusLabel(status: FileStatus): string {
     default:
       return status;
   }
+}
+
+function mediaItemsToQueue(items: PhotoDumpMediaItem[]): QueueItem[] {
+  return items.map((item) => ({
+    id: nextQueueId(item.name),
+    name: item.name,
+    size: item.size,
+    mimeType: item.mimeType || "application/octet-stream",
+    contentUri: item.uri,
+    selected: true,
+    status: "pending" as const,
+  }));
 }
 
 export function PhotoDumpPanel({
@@ -97,6 +144,7 @@ export function PhotoDumpPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const refreshGen = useRef(0);
   const mountedRef = useRef(true);
+  const nativeMedia = isPhotoDumpMediaNative();
 
   const [apiKey, setApiKey] = useState(service.apiKey || "");
   const [hubSettings, setHubSettings] = useState<PhotoDumpPublicSettings | null>(
@@ -113,6 +161,8 @@ export function PhotoDumpPanel({
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [showKeyField, setShowKeyField] = useState(false);
+  const [monthValue, setMonthValue] = useState(currentMonthValue);
+  const [monthBusy, setMonthBusy] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -197,13 +247,11 @@ export function PhotoDumpPanel({
       } else if (!stored && service.apiKey.trim()) {
         await savePhotoDumpApiKey(service.apiKey.trim());
       }
-      // Re-fetch folders once the Preferences key is resolved (may be empty at mount).
       await refresh("", next);
     })();
     return () => {
       cancelled = true;
     };
-    // Initial load when hub URL / key identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hubUrl, service.apiKey]);
 
@@ -234,7 +282,6 @@ export function PhotoDumpPanel({
     setApiKey(payload.key.trim());
     setShowKeyField(false);
     setMessage("Setup QR applied — Hub URL and API key saved.");
-    // Parent updates service.url / apiKey; the hubUrl effect reloads folders.
   };
 
   const openFolder = (name: string) => {
@@ -269,15 +316,81 @@ export function PhotoDumpPanel({
     }
   };
 
+  const enqueueItems = (items: QueueItem[], label: string) => {
+    if (!items.length) {
+      setMessage(`No media found${label ? ` ${label}` : ""}.`);
+      return;
+    }
+    setQueue((prev) => {
+      const existingUris = new Set(
+        prev.map((q) => q.contentUri).filter((u): u is string => Boolean(u)),
+      );
+      const fresh = items.filter(
+        (item) => !item.contentUri || !existingUris.has(item.contentUri),
+      );
+      const skipped = items.length - fresh.length;
+      if (fresh.length === 0) {
+        queueMicrotask(() =>
+          setMessage(
+            `All ${items.length} item${items.length === 1 ? "" : "s"} already in queue.`,
+          ),
+        );
+        return prev;
+      }
+      queueMicrotask(() =>
+        setMessage(
+          skipped > 0
+            ? `Added ${fresh.length} (${skipped} already queued)${label}.`
+            : `Added ${fresh.length} file${fresh.length === 1 ? "" : "s"}${label}.`,
+        ),
+      );
+      return [...prev, ...fresh];
+    });
+  };
+
   const onPickFiles = (files: FileList | null) => {
     if (!files?.length) return;
     const next: QueueItem[] = Array.from(files).map((file) => ({
       id: nextQueueId(file.name),
+      name: file.name,
+      size: file.size,
+      mimeType: file.type || "application/octet-stream",
       file,
+      selected: true,
       status: "pending" as const,
     }));
-    setQueue((prev) => [...prev, ...next]);
-    setMessage(`Added ${next.length} file${next.length === 1 ? "" : "s"}.`);
+    enqueueItems(next, "");
+  };
+
+  const onNativePick = async () => {
+    if (uploading) return;
+    setError(null);
+    try {
+      const items = await pickPhotoDumpMedia(true);
+      enqueueItems(mediaItemsToQueue(items), " from gallery");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const onAddWholeMonth = async () => {
+    if (!nativeMedia || monthBusy || uploading) return;
+    const parsed = parseMonthValue(monthValue);
+    if (!parsed) {
+      setError("Pick a valid month (YYYY-MM).");
+      return;
+    }
+    setMonthBusy(true);
+    setError(null);
+    try {
+      const res = await queryPhotoDumpMediaMonth(parsed.year, parsed.month);
+      const label = ` for ${String(parsed.month).padStart(2, "0")}/${parsed.year}`;
+      enqueueItems(mediaItemsToQueue(res.items), label);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMonthBusy(false);
+    }
   };
 
   const updateItem = (id: string, patch: Partial<QueueItem>) => {
@@ -287,13 +400,75 @@ export function PhotoDumpPanel({
     );
   };
 
+  const selectable = useMemo(
+    () => queue.filter((q) => q.status === "pending" || q.status === "error"),
+    [queue],
+  );
+  const selectedUploadable = useMemo(
+    () => selectable.filter((q) => q.selected),
+    [selectable],
+  );
+  const allSelectableSelected =
+    selectable.length > 0 && selectable.every((q) => q.selected);
+
+  const selectAllPending = () => {
+    setQueue((prev) =>
+      prev.map((q) =>
+        q.status === "pending" || q.status === "error"
+          ? { ...q, selected: true }
+          : q,
+      ),
+    );
+    setMessage(
+      selectable.length
+        ? `Selected all ${selectable.length} pending item${selectable.length === 1 ? "" : "s"}.`
+        : "Nothing pending to select.",
+    );
+  };
+
+  const deselectAllPending = () => {
+    setQueue((prev) =>
+      prev.map((q) =>
+        q.status === "pending" || q.status === "error"
+          ? { ...q, selected: false }
+          : q,
+      ),
+    );
+  };
+
+  const toggleSelected = (id: string) => {
+    setQueue((prev) =>
+      prev.map((q) =>
+        q.id === id && (q.status === "pending" || q.status === "error")
+          ? { ...q, selected: !q.selected }
+          : q,
+      ),
+    );
+  };
+
+  const loadBytes = async (item: QueueItem): Promise<ArrayBuffer> => {
+    if (item.contentUri && nativeMedia) {
+      const read = await readPhotoDumpMediaBase64(item.contentUri);
+      return base64ToArrayBuffer(read.base64);
+    }
+    if (item.file) {
+      return item.file.arrayBuffer();
+    }
+    throw new Error("No file bytes available for this queue item.");
+  };
+
   const runUpload = async () => {
     if (uploading) return;
     const pending = queue.filter(
-      (q) => q.status === "pending" || q.status === "error",
+      (q) =>
+        (q.status === "pending" || q.status === "error") && q.selected,
     );
     if (!pending.length) {
-      setMessage("Nothing to upload — pick photos/videos first.");
+      setMessage(
+        selectable.length
+          ? "Nothing selected — tap Select all or check items to upload."
+          : "Nothing to upload — pick photos/videos first.",
+      );
       return;
     }
     if (!apiKey.trim()) {
@@ -309,12 +484,13 @@ export function PhotoDumpPanel({
     const folderAtStart = relativePath;
     let okCount = 0;
     let failCount = 0;
+    let deletedCount = 0;
 
     for (const item of pending) {
       if (!mountedRef.current) break;
       try {
         updateItem(item.id, { status: "hashing", message: undefined });
-        const bytes = await item.file.arrayBuffer();
+        const bytes = await loadBytes(item);
         if (
           hubSettings?.maxFileBytes &&
           bytes.byteLength > hubSettings.maxFileBytes
@@ -326,16 +502,39 @@ export function PhotoDumpPanel({
         const hash = await sha256Hex(bytes);
         updateItem(item.id, { status: "uploading" });
         const result = await uploadPhotoDumpFile(hubUrl, apiKey, {
-          fileName: item.file.name,
+          fileName: item.name,
           relativeFolder: folderAtStart,
           bytes,
           sha256: hash,
         });
-        updateItem(item.id, {
-          status: "manual-remove",
-          remotePath: result.path,
-          message: `${result.fileName} · ${formatBytes(result.size)}. WebView cannot delete gallery originals — remove from Photos manually.`,
-        });
+        const dupNote = result.duplicate ? " (already on Hub)" : "";
+        const baseMsg = `${result.fileName} · ${formatBytes(result.size)}${dupNote}`;
+
+        if (item.contentUri && nativeMedia) {
+          const del = await deletePhotoDumpMediaUri(item.contentUri);
+          if (del.deleted) {
+            deletedCount += 1;
+            updateItem(item.id, {
+              status: "deleted",
+              remotePath: result.path,
+              message: `${baseMsg}. Removed from gallery.`,
+            });
+          } else {
+            updateItem(item.id, {
+              status: "manual-remove",
+              remotePath: result.path,
+              message: `${baseMsg}. Could not delete gallery original${
+                del.message ? `: ${del.message}` : ""
+              }. Remove from Photos manually.`,
+            });
+          }
+        } else {
+          updateItem(item.id, {
+            status: "manual-remove",
+            remotePath: result.path,
+            message: `${baseMsg}. No gallery URI — remove from Photos manually.`,
+          });
+        }
         okCount += 1;
       } catch (err) {
         failCount += 1;
@@ -348,16 +547,31 @@ export function PhotoDumpPanel({
 
     if (mountedRef.current) {
       setUploading(false);
-      setMessage(
-        failCount === 0
-          ? `Uploaded & verified ${okCount} file${okCount === 1 ? "" : "s"}.`
-          : `Done: ${okCount} verified, ${failCount} failed (phone copies kept on errors).`,
-      );
+      const parts: string[] = [];
+      if (failCount === 0) {
+        parts.push(
+          `Uploaded & verified ${okCount} file${okCount === 1 ? "" : "s"}`,
+        );
+      } else {
+        parts.push(
+          `Done: ${okCount} verified, ${failCount} failed (phone copies kept on errors)`,
+        );
+      }
+      if (deletedCount > 0) {
+        parts.push(
+          `${deletedCount} removed from gallery`,
+        );
+      }
+      setMessage(parts.join(". ") + ".");
     }
   };
 
   const clearFinished = () => {
-    setQueue((prev) => prev.filter((q) => q.status !== "manual-remove"));
+    setQueue((prev) =>
+      prev.filter(
+        (q) => q.status !== "manual-remove" && q.status !== "deleted",
+      ),
+    );
   };
 
   const breadcrumb = relativePath
@@ -574,28 +788,39 @@ export function PhotoDumpPanel({
                 e.target.value = "";
               }}
             />
+            {nativeMedia ? (
+              <button
+                type="button"
+                className="btn"
+                disabled={navLocked}
+                onClick={() => void onNativePick()}
+              >
+                Choose from gallery
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn"
               disabled={navLocked}
               onClick={() => fileInputRef.current?.click()}
             >
-              Pick photos / videos
+              {nativeMedia ? "Pick files (fallback)" : "Pick photos / videos"}
             </button>
             <button
               type="button"
               className="btn primary"
-              disabled={
-                uploading ||
-                !queue.some(
-                  (q) => q.status === "pending" || q.status === "error",
-                )
-              }
+              disabled={uploading || selectedUploadable.length === 0}
               onClick={() => void runUpload()}
             >
-              {uploading ? "Uploading…" : "Upload & verify"}
+              {uploading
+                ? "Uploading…"
+                : selectedUploadable.length
+                  ? `Upload & verify (${selectedUploadable.length})`
+                  : "Upload & verify"}
             </button>
-            {queue.some((q) => q.status === "manual-remove") && (
+            {queue.some(
+              (q) => q.status === "manual-remove" || q.status === "deleted",
+            ) && (
               <button
                 type="button"
                 className="btn chip"
@@ -607,31 +832,115 @@ export function PhotoDumpPanel({
             )}
           </div>
 
+          {nativeMedia && (
+            <div
+              className="photo-dump-create"
+              style={{ marginTop: "0.5rem", alignItems: "flex-end" }}
+            >
+              <label className="field" style={{ flex: 1, margin: 0 }}>
+                <span>Add whole month…</span>
+                <input
+                  type="month"
+                  value={monthValue}
+                  disabled={navLocked || monthBusy}
+                  onChange={(e) => setMonthValue(e.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn"
+                disabled={navLocked || monthBusy || !monthValue}
+                onClick={() => void onAddWholeMonth()}
+              >
+                {monthBusy ? "Scanning…" : "Add month"}
+              </button>
+            </div>
+          )}
+
+          {selectable.length > 0 && (
+            <div className="photo-dump-toolbar" style={{ marginTop: "0.35rem" }}>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={navLocked || allSelectableSelected}
+                onClick={selectAllPending}
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={navLocked || selectedUploadable.length === 0}
+                onClick={deselectAllPending}
+              >
+                Deselect all
+              </button>
+              <span className="hint" style={{ padding: 0 }}>
+                {selectedUploadable.length}/{selectable.length} selected
+              </span>
+            </div>
+          )}
+
           <p className="hint" style={{ paddingTop: 0 }}>
-            Files upload to the Hub folder above. Phone copies stay until you
-            remove them from the gallery (WebView cannot delete MediaStore
-            originals). Hub must return <code>verified: true</code> with matching
-            size and SHA-256.
+            {nativeMedia
+              ? "After Hub verifies (or reports a duplicate SHA), gallery originals are deleted via MediaStore when a content URI is available. Scoped storage may block some deletes — those stay as manual remove."
+              : "Files upload to the Hub folder above. Phone copies stay until you remove them from the gallery (web has no MediaStore delete)."}{" "}
+            Hub must return <code>verified: true</code> with matching SHA-256.
           </p>
 
           {queue.length > 0 && (
             <ul className="photo-dump-queue">
-              {queue.map((item) => (
-                <li
-                  key={item.id}
-                  className={`photo-dump-queue-item status-${item.status}`}
-                >
-                  <div className="photo-dump-queue-main">
-                    <strong>{item.file.name}</strong>
-                    <span className="hint" style={{ padding: 0 }}>
-                      {formatBytes(item.file.size)} · {statusLabel(item.status)}
-                    </span>
-                  </div>
-                  {item.message && (
-                    <p className="photo-dump-queue-msg">{item.message}</p>
-                  )}
-                </li>
-              ))}
+              {queue.map((item) => {
+                const canSelect =
+                  item.status === "pending" || item.status === "error";
+                return (
+                  <li
+                    key={item.id}
+                    className={`photo-dump-queue-item status-${item.status}`}
+                  >
+                    <div className="photo-dump-queue-main">
+                      {canSelect ? (
+                        <label
+                          style={{
+                            display: "flex",
+                            gap: "0.5rem",
+                            alignItems: "flex-start",
+                            margin: 0,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={item.selected}
+                            disabled={navLocked}
+                            onChange={() => toggleSelected(item.id)}
+                            aria-label={`Select ${item.name}`}
+                          />
+                          <span>
+                            <strong>{item.name}</strong>
+                            <span
+                              className="hint"
+                              style={{ padding: 0, display: "block" }}
+                            >
+                              {formatBytes(item.size)} ·{" "}
+                              {statusLabel(item.status)}
+                            </span>
+                          </span>
+                        </label>
+                      ) : (
+                        <>
+                          <strong>{item.name}</strong>
+                          <span className="hint" style={{ padding: 0 }}>
+                            {formatBytes(item.size)} · {statusLabel(item.status)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    {item.message && (
+                      <p className="photo-dump-queue-msg">{item.message}</p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

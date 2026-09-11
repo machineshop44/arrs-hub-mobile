@@ -78,6 +78,8 @@ export type PhotoDumpFolderList = {
 export type PhotoDumpUploadResult = {
   ok: boolean;
   verified: boolean;
+  /** Hub skipped body because X-Content-SHA256 already indexed. */
+  duplicate?: boolean;
   folder: string;
   fileName: string;
   size: number;
@@ -249,7 +251,8 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 /**
- * Upload raw octets to Hub. Only returns after Hub verifies size + hash.
+ * Upload raw octets to Hub. Only returns after Hub verifies size + hash
+ * (or reports duplicate skip for an already-indexed SHA).
  * On mismatch Hub rejects and does not keep the file — caller must keep phone copy.
  */
 export async function uploadPhotoDumpFile(
@@ -270,6 +273,7 @@ export async function uploadPhotoDumpFile(
   }
   const url = `${base}/api/photo-dump/upload`;
   const size = opts.bytes.byteLength;
+  const localSha = opts.sha256.toLowerCase();
   const headers: Record<string, string> = {
     ...authHeaders(apiKey),
     "Content-Type": "application/octet-stream",
@@ -277,7 +281,7 @@ export async function uploadPhotoDumpFile(
     "X-Relative-Folder": encodeURIComponent(
       opts.relativeFolder.replace(/\\/g, "/"),
     ),
-    "X-Content-SHA256": opts.sha256.toLowerCase(),
+    "X-Content-SHA256": localSha,
     "X-Expected-Size": String(size),
   };
 
@@ -293,6 +297,7 @@ export async function uploadPhotoDumpFile(
   if (Capacitor.isNativePlatform()) {
     // Encode once, then drop the ArrayBuffer reference before the HTTP call
     // so GC can reclaim raw bytes while CapacitorHttp holds base64 only.
+    // Hub may early-exit on duplicate SHA and drain/reject the body — still OK.
     const base64 = arrayBufferToBase64(opts.bytes);
     const res = await CapacitorHttp.request({
       url,
@@ -334,9 +339,11 @@ export async function uploadPhotoDumpFile(
     );
   }
 
+  const duplicate = json.duplicate === true;
   const result: PhotoDumpUploadResult = {
     ok: json.ok === true,
     verified: json.verified === true,
+    duplicate,
     folder: typeof json.folder === "string" ? json.folder : "",
     fileName: typeof json.fileName === "string" ? json.fileName : opts.fileName,
     size: typeof json.size === "number" ? json.size : size,
@@ -344,14 +351,16 @@ export async function uploadPhotoDumpFile(
     path: typeof json.path === "string" ? json.path : "",
   };
 
-  if (
-    !result.ok ||
-    !result.verified ||
-    result.size !== size ||
-    result.sha256 !== opts.sha256.toLowerCase()
-  ) {
+  const shaOk = result.sha256 === localSha;
+  // Duplicate skip: Hub did not receive the body; trust matching SHA (size may
+  // already match the indexed file, but do not hard-require equality).
+  const sizeOk = duplicate || result.size === size;
+
+  if (!result.ok || !result.verified || !shaOk || !sizeOk) {
     throw new Error(
-      "Hub did not verify upload (size/hash mismatch). Phone copy kept.",
+      duplicate
+        ? "Hub duplicate response failed verification (hash mismatch). Phone copy kept."
+        : "Hub did not verify upload (size/hash mismatch). Phone copy kept.",
     );
   }
 

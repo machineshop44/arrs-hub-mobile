@@ -587,7 +587,7 @@ public class PhotoDumpMediaPlugin extends Plugin {
                 if (DocumentsContract.deleteDocument(resolver, uri)) {
                     return true;
                 }
-            } catch (SecurityException | Exception err) {
+            } catch (Exception err) {
                 Log.w(TAG, "DocumentsContract delete failed for " + uri, err);
             }
         }

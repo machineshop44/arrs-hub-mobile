@@ -16,6 +16,7 @@ export type PhotoDumpMediaReadResult = {
 
 export type PhotoDumpMediaDeleteResult = {
   deleted: boolean;
+  deletedCount?: number;
   message?: string;
 };
 
@@ -36,6 +37,7 @@ type PhotoDumpMediaPlugin = {
   }): Promise<PhotoDumpMediaMonthResult>;
   readUriBase64(options: { uri: string }): Promise<PhotoDumpMediaReadResult>;
   deleteUri(options: { uri: string }): Promise<PhotoDumpMediaDeleteResult>;
+  deleteUris(options: { uris: string[] }): Promise<PhotoDumpMediaDeleteResult>;
 };
 
 const PhotoDumpMedia = registerPlugin<PhotoDumpMediaPlugin>("PhotoDumpMedia");
@@ -83,6 +85,31 @@ export async function deletePhotoDumpMediaUri(
     };
   }
   return PhotoDumpMedia.deleteUri({ uri });
+}
+
+/** Prefer this after a multi-file dump — one system confirmation on Android 11+. */
+export async function deletePhotoDumpMediaUris(
+  uris: string[],
+): Promise<PhotoDumpMediaDeleteResult> {
+  const list = uris.map((u) => String(u || "").trim()).filter(Boolean);
+  if (list.length === 0) {
+    return { deleted: true, deletedCount: 0, message: "Nothing to delete" };
+  }
+  if (!isPhotoDumpMediaNative()) {
+    return {
+      deleted: false,
+      deletedCount: 0,
+      message: "Native gallery delete is only available on Android.",
+    };
+  }
+  if (list.length === 1) {
+    const one = await PhotoDumpMedia.deleteUri({ uri: list[0] });
+    return {
+      ...one,
+      deletedCount: one.deleted ? 1 : (one.deletedCount ?? 0),
+    };
+  }
+  return PhotoDumpMedia.deleteUris({ uris: list });
 }
 
 /** Decode plugin base64 into an ArrayBuffer for hashing/upload. */

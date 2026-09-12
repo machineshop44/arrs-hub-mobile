@@ -16,6 +16,7 @@ import {
 import {
   base64ToArrayBuffer,
   deletePhotoDumpMediaUri,
+  deletePhotoDumpMediaUris,
   isPhotoDumpMediaNative,
   pickPhotoDumpMedia,
   queryPhotoDumpMediaMonth,
@@ -41,6 +42,7 @@ type FileStatus =
   | "pending"
   | "hashing"
   | "uploading"
+  | "done"
   | "deleted"
   | "manual-remove"
   | "error";
@@ -114,6 +116,8 @@ function statusLabel(status: FileStatus): string {
       return "Hashing…";
     case "uploading":
       return "Uploading…";
+    case "done":
+      return "Verified — removing from gallery…";
     case "deleted":
       return "Removed from gallery";
     case "manual-remove":
@@ -531,7 +535,8 @@ export function PhotoDumpPanel({
     const folderAtStart = relativePath;
     let okCount = 0;
     let failCount = 0;
-    let deletedCount = 0;
+    const verifiedForDelete: { id: string; contentUri: string; baseMsg: string }[] =
+      [];
 
     for (const item of pending) {
       if (!mountedRef.current) break;
@@ -557,29 +562,21 @@ export function PhotoDumpPanel({
           size: item.size || bytes.byteLength,
           sha256: hash,
         });
-        // Drop local bytes ASAP after upload call returns.
         bytes = undefined;
         const dupNote = result.duplicate ? " (already on Hub)" : "";
         const baseMsg = `${result.fileName} · ${formatBytes(result.size)}${dupNote}`;
 
         if (item.contentUri && nativeMedia) {
-          const del = await deletePhotoDumpMediaUri(item.contentUri);
-          if (del.deleted) {
-            deletedCount += 1;
-            updateItem(item.id, {
-              status: "deleted",
-              remotePath: result.path,
-              message: `${baseMsg}. Removed from gallery.`,
-            });
-          } else {
-            updateItem(item.id, {
-              status: "manual-remove",
-              remotePath: result.path,
-              message: `${baseMsg}. Could not delete gallery original${
-                del.message ? `: ${del.message}` : ""
-              }. Remove from Photos manually.`,
-            });
-          }
+          verifiedForDelete.push({
+            id: item.id,
+            contentUri: item.contentUri,
+            baseMsg,
+          });
+          updateItem(item.id, {
+            status: "done",
+            remotePath: result.path,
+            message: `${baseMsg}. Removing from gallery…`,
+          });
         } else {
           updateItem(item.id, {
             status: "manual-remove",
@@ -597,6 +594,43 @@ export function PhotoDumpPanel({
       }
     }
 
+    let deletedCount = 0;
+    if (verifiedForDelete.length > 0 && nativeMedia && mountedRef.current) {
+      const del = await deletePhotoDumpMediaUris(
+        verifiedForDelete.map((v) => v.contentUri),
+      );
+      if (del.deleted) {
+        deletedCount = del.deletedCount ?? verifiedForDelete.length;
+        for (const item of verifiedForDelete) {
+          updateItem(item.id, {
+            status: "deleted",
+            message: `${item.baseMsg}. Removed from gallery.`,
+          });
+        }
+      } else {
+        // Fall back to per-file attempts (some may still succeed).
+        for (const item of verifiedForDelete) {
+          const one = await deletePhotoDumpMediaUri(item.contentUri);
+          if (one.deleted) {
+            deletedCount += 1;
+            updateItem(item.id, {
+              status: "deleted",
+              message: `${item.baseMsg}. Removed from gallery.`,
+            });
+          } else {
+            updateItem(item.id, {
+              status: "manual-remove",
+              message: `${item.baseMsg}. Could not delete gallery original${
+                one.message || del.message
+                  ? `: ${one.message || del.message}`
+                  : ""
+              }. Remove from Photos manually.`,
+            });
+          }
+        }
+      }
+    }
+
     if (mountedRef.current) {
       setUploading(false);
       const parts: string[] = [];
@@ -610,8 +644,10 @@ export function PhotoDumpPanel({
         );
       }
       if (deletedCount > 0) {
+        parts.push(`${deletedCount} removed from gallery`);
+      } else if (verifiedForDelete.length > 0) {
         parts.push(
-          `${deletedCount} removed from gallery`,
+          "gallery delete needs Android confirmation — tap Allow if prompted, or remove leftovers manually",
         );
       }
       setMessage(parts.join(". ") + ".");
@@ -935,7 +971,7 @@ export function PhotoDumpPanel({
 
           <p className="hint" style={{ paddingTop: 0 }}>
             {nativeMedia
-              ? "After Hub verifies (or reports a duplicate SHA), gallery originals are deleted via MediaStore when a content URI is available. Scoped storage may block some deletes — those stay as manual remove."
+              ? "After Hub verifies, Android asks once to remove gallery originals (Allow). Use Choose from gallery or Add whole month — the HTML file picker cannot delete Photos."
               : "Files upload to the Hub folder above. Phone copies stay until you remove them from the gallery (web has no MediaStore delete)."}{" "}
             Hub must return <code>verified: true</code> with matching SHA-256.
           </p>

@@ -2,6 +2,7 @@ package com.arrshub.status;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Intent;
@@ -15,6 +16,9 @@ import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.util.Log;
 import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -27,8 +31,10 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
@@ -52,6 +58,41 @@ import java.util.TimeZone;
 public class PhotoDumpMediaPlugin extends Plugin {
     private static final String TAG = "PhotoDumpMedia";
 
+    private ActivityResultLauncher<IntentSenderRequest> deleteSenderLauncher;
+    private String pendingDeleteCallId;
+    private int pendingDeleteCount;
+
+    @Override
+    public void load() {
+        deleteSenderLauncher =
+                getActivity()
+                        .getActivityResultRegistry()
+                        .register(
+                                "PhotoDumpMedia-delete-" + System.identityHashCode(this),
+                                new ActivityResultContracts.StartIntentSenderForResult(),
+                                result -> {
+                                    PluginCall call =
+                                            getBridge().getSavedCall(pendingDeleteCallId);
+                                    int count = pendingDeleteCount;
+                                    pendingDeleteCallId = null;
+                                    pendingDeleteCount = 0;
+                                    if (call == null) {
+                                        return;
+                                    }
+                                    getBridge().releaseCall(call);
+                                    JSObject out = new JSObject();
+                                    boolean ok = result.getResultCode() == Activity.RESULT_OK;
+                                    out.put("deleted", ok);
+                                    out.put("deletedCount", ok ? count : 0);
+                                    out.put(
+                                            "message",
+                                            ok
+                                                    ? "Deleted"
+                                                    : "Delete cancelled or not permitted by system");
+                                    call.resolve(out);
+                                });
+    }
+
     @PluginMethod
     public void pickMedia(PluginCall call) {
         boolean multiple = Boolean.TRUE.equals(call.getBoolean("multiple", true));
@@ -60,7 +101,9 @@ public class PhotoDumpMediaPlugin extends Plugin {
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/*", "video/*"});
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+        // Write grant is required so we can delete after Hub verifies the upload.
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(call, intent, "pickMediaResult");
     }
@@ -316,19 +359,24 @@ public class PhotoDumpMediaPlugin extends Plugin {
 
     private void takePersistableRead(ContentResolver resolver, Uri uri, int resultFlags) {
         try {
-            final int takeFlags =
+            int takeFlags =
                     resultFlags
                             & (Intent.FLAG_GRANT_READ_URI_PERMISSION
                                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            if ((takeFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
-                resolver.takePersistableUriPermission(
-                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } else {
-                resolver.takePersistableUriPermission(
-                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (takeFlags == 0) {
+                takeFlags =
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
             }
+            resolver.takePersistableUriPermission(uri, takeFlags);
         } catch (SecurityException | IllegalArgumentException err) {
-            Log.w(TAG, "Persistable URI permission not available for " + uri, err);
+            // Fall back to read-only persist when write is not offered by the provider.
+            try {
+                resolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException | IllegalArgumentException err2) {
+                Log.w(TAG, "Persistable URI permission not available for " + uri, err2);
+            }
         }
     }
 
@@ -436,60 +484,119 @@ public class PhotoDumpMediaPlugin extends Plugin {
             call.reject("Missing uri");
             return;
         }
-        Uri uri = Uri.parse(uriStr.trim());
-        ContentResolver resolver = getContext().getContentResolver();
-        JSObject out = new JSObject();
+        List<Uri> uris = new ArrayList<>();
+        uris.add(Uri.parse(uriStr.trim()));
+        deleteUrisInternal(call, uris);
+    }
 
+    /** Batch delete (one system confirmation on Android 11+ MediaStore). */
+    @PluginMethod
+    public void deleteUris(PluginCall call) {
+        JSArray raw = call.getArray("uris");
+        if (raw == null || raw.length() == 0) {
+            call.reject("Missing uris");
+            return;
+        }
+        List<Uri> uris = new ArrayList<>();
         try {
-            boolean deleted = false;
-            String message = null;
-
-            if (DocumentsContract.isDocumentUri(getContext(), uri)) {
-                try {
-                    deleted = DocumentsContract.deleteDocument(resolver, uri);
-                } catch (SecurityException err) {
-                    message = "DocumentsContract delete denied: " + err.getMessage();
-                    Log.w(TAG, message, err);
+            for (int i = 0; i < raw.length(); i++) {
+                String s = raw.getString(i);
+                if (s != null && !s.trim().isEmpty()) {
+                    uris.add(Uri.parse(s.trim()));
                 }
             }
-
-            if (!deleted) {
-                try {
-                    int rows = resolver.delete(uri, null, null);
-                    deleted = rows > 0;
-                    if (!deleted && message == null) {
-                        message = "ContentResolver.delete returned 0 rows";
-                    }
-                } catch (SecurityException err) {
-                    message =
-                            message != null
-                                    ? message
-                                    : ("ContentResolver delete denied: " + err.getMessage());
-                    Log.w(TAG, message, err);
-                }
-            }
-
-            if (!deleted
-                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                    && isMediaStoreUri(uri)) {
-                message =
-                        message != null
-                                ? message
-                                : "MediaStore delete not permitted for this URI — remove from gallery manually";
-            }
-
-            out.put("deleted", deleted);
-            if (!deleted && message != null) {
-                out.put("message", message);
-            } else if (deleted) {
-                out.put("message", "Deleted");
-            }
-            call.resolve(out);
         } catch (Exception err) {
-            Log.e(TAG, "deleteUri failed", err);
-            out.put("deleted", false);
-            out.put("message", err.getMessage() != null ? err.getMessage() : "Delete failed");
+            call.reject("Invalid uris: " + err.getMessage(), err);
+            return;
+        }
+        if (uris.isEmpty()) {
+            call.reject("Missing uris");
+            return;
+        }
+        deleteUrisInternal(call, uris);
+    }
+
+    private void deleteUrisInternal(PluginCall call, List<Uri> uris) {
+        ContentResolver resolver = getContext().getContentResolver();
+        List<Uri> remaining = new ArrayList<>();
+        int deletedCount = 0;
+        String lastMessage = null;
+
+        for (Uri uri : uris) {
+            boolean deleted = tryDirectDelete(resolver, uri);
+            if (deleted) {
+                deletedCount += 1;
+            } else {
+                remaining.add(uri);
+            }
+        }
+
+        if (remaining.isEmpty()) {
+            JSObject out = new JSObject();
+            out.put("deleted", true);
+            out.put("deletedCount", deletedCount);
+            out.put("message", "Deleted");
             call.resolve(out);
+            return;
+        }
+
+        // Android 11+: MediaStore items we don't "own" need a user-confirmed delete request.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && deleteSenderLauncher != null) {
+            List<Uri> mediaUris = new ArrayList<>();
+            for (Uri uri : remaining) {
+                if (isMediaStoreUri(uri) || DocumentsContract.isDocumentUri(getContext(), uri)) {
+                    mediaUris.add(uri);
+                }
+            }
+            if (!mediaUris.isEmpty()) {
+                try {
+                    PendingIntent pi = MediaStore.createDeleteRequest(resolver, mediaUris);
+                    pendingDeleteCallId = call.getCallbackId();
+                    pendingDeleteCount = deletedCount + mediaUris.size();
+                    getBridge().saveCall(call);
+                    IntentSenderRequest request =
+                            new IntentSenderRequest.Builder(pi.getIntentSender()).build();
+                    deleteSenderLauncher.launch(request);
+                    return;
+                } catch (Exception err) {
+                    lastMessage = "createDeleteRequest failed: " + err.getMessage();
+                    Log.w(TAG, lastMessage, err);
+                }
+            }
+        }
+
+        JSObject out = new JSObject();
+        boolean all = remaining.isEmpty();
+        out.put("deleted", all);
+        out.put("deletedCount", deletedCount);
+        out.put(
+                "message",
+                all
+                        ? "Deleted"
+                        : (lastMessage != null
+                                ? lastMessage
+                                : ("Could not delete "
+                                        + remaining.size()
+                                        + " item(s) — remove from gallery manually")));
+        call.resolve(out);
+    }
+
+    private boolean tryDirectDelete(ContentResolver resolver, Uri uri) {
+        if (DocumentsContract.isDocumentUri(getContext(), uri)) {
+            try {
+                if (DocumentsContract.deleteDocument(resolver, uri)) {
+                    return true;
+                }
+            } catch (SecurityException err) {
+                Log.w(TAG, "DocumentsContract delete denied for " + uri, err);
+            }
+        }
+        try {
+            int rows = resolver.delete(uri, null, null);
+            return rows > 0;
+        } catch (SecurityException err) {
+            Log.w(TAG, "ContentResolver delete denied for " + uri, err);
+            return false;
         }
     }
 

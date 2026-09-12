@@ -260,7 +260,8 @@ export function PhotoDumpQrScan({ onPayload, className }: PhotoDumpQrScanProps) 
               </button>
             </div>
             <p className="hint" style={{ padding: "0 0 0.5rem" }}>
-              Point at the QR from Hub Settings → Photo dump, or choose a
+              Point at the QR from Hub Settings → Photo dump (sets photo key and
+              Hub API token when present), or choose a
               screenshot.
             </p>
             <video

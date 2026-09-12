@@ -286,7 +286,11 @@ export function PhotoDumpPanel({
     }
     setApiKey(payload.key.trim());
     setShowKeyField(false);
-    setMessage("Setup QR applied — Hub URL and API key saved.");
+    setMessage(
+      payload.token?.trim()
+        ? "Setup QR applied — Hub URL, photo dump key, and Hub API token saved."
+        : "Setup QR applied — Hub URL and photo dump API key saved.",
+    );
   };
 
   const openFolder = (name: string) => {

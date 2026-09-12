@@ -1,8 +1,10 @@
 /**
  * Arrs Hub photo-dump setup QR payload encode/decode (Market Advisor companion style).
  *
- * URI: arrs-hub-photo-dump://v1?url=<hubBaseUrl>&key=<apiKey>
- * JSON: {"v":1,"url":"...","key":"..."}
+ * URI: arrs-hub-photo-dump://v1?url=<hubBaseUrl>&key=<apiKey>&token=<hubApiToken>
+ * JSON: {"v":1,"url":"...","key":"...","token":"..."}
+ *
+ * `token` (Hub API / X-Arrs-Hub-Token) is optional for back-compat with older Hub QRs.
  */
 
 export const PHOTO_DUMP_SETUP_SCHEME = "arrs-hub-photo-dump";
@@ -11,6 +13,8 @@ export const PHOTO_DUMP_SETUP_VERSION = 1;
 export type PhotoDumpSetupPayload = {
   url: string;
   key: string;
+  /** Hub control-plane token (X-Arrs-Hub-Token). Omitted on older QRs. */
+  token?: string;
 };
 
 function requireNonEmpty(value: string, label: string): string {
@@ -19,6 +23,12 @@ function requireNonEmpty(value: string, label: string): string {
     throw new Error(`missing ${label}`);
   }
   return trimmed;
+}
+
+function optionalTrimmed(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const trimmed = String(value).trim();
+  return trimmed || undefined;
 }
 
 function parseVersionToken(token: string): number {
@@ -50,9 +60,11 @@ function parseJsonPayload(text: string): PhotoDumpSetupPayload {
   if (ver !== PHOTO_DUMP_SETUP_VERSION) {
     throw new Error(`unsupported payload version: ${ver}`);
   }
+  const token = optionalTrimmed(obj.token);
   return {
     url: requireNonEmpty(String(obj.url ?? ""), "url"),
     key: requireNonEmpty(String(obj.key ?? ""), "key"),
+    ...(token ? { token } : {}),
   };
 }
 
@@ -79,7 +91,8 @@ function parseUriPayload(text: string): PhotoDumpSetupPayload {
   }
   const url = requireNonEmpty(parsed.searchParams.get("url") || "", "url");
   const key = requireNonEmpty(parsed.searchParams.get("key") || "", "key");
-  return { url, key };
+  const token = optionalTrimmed(parsed.searchParams.get("token"));
+  return { url, key, ...(token ? { token } : {}) };
 }
 
 /**
@@ -104,15 +117,18 @@ export function encodePhotoDumpSetupPayload(
 ): string {
   const url = requireNonEmpty(payload.url, "url");
   const key = requireNonEmpty(payload.key, "key");
+  const token = optionalTrimmed(payload.token);
   if (opts?.asJson) {
     return JSON.stringify({
       v: PHOTO_DUMP_SETUP_VERSION,
       url,
       key,
+      ...(token ? { token } : {}),
     });
   }
   const qs = new URLSearchParams();
   qs.set("url", url);
   qs.set("key", key);
+  if (token) qs.set("token", token);
   return `${PHOTO_DUMP_SETUP_SCHEME}://v${PHOTO_DUMP_SETUP_VERSION}?${qs.toString()}`;
 }

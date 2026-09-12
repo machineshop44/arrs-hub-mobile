@@ -570,11 +570,17 @@ export function App() {
     });
   };
 
-  /** Apply Hub photo-dump setup QR: save API key; LAN→homeBaseUrl, WAN→canonical Hub. */
+  /** Apply Hub setup QR: photo-dump key (+ optional Hub API token); LAN→homeBaseUrl, WAN→canonical Hub. */
   const applyPhotoDumpSetup = useCallback(
     async (payload: PhotoDumpSetupPayload) => {
       const key = payload.key.trim();
       await savePhotoDumpApiKey(key);
+
+      const hubToken = payload.token?.trim() || "";
+      if (hubToken) {
+        setHubApiToken(hubToken);
+        await saveHubApiToken(hubToken);
+      }
 
       const existingPd =
         services.find((s) => s.id === "photo-dump")?.url.trim() || "";
@@ -1772,8 +1778,8 @@ export function App() {
               <PhotoDumpQrScan onPayload={applyPhotoDumpSetup} />
               <p className="hint" style={{ padding: "0.35rem 0 0" }}>
                 Required to browse/upload into the Hub photo-dump root (e.g.
-                N:\PhoneDump). Scan the Hub setup QR after generating a key, or
-                paste the key manually. Separate from Hub API token below.
+                N:\PhoneDump). Scan the Hub setup QR after generating a key — newer
+                Hub QRs also fill Hub API token below — or paste keys manually.
               </p>
               <SecretField
                 label="Hub API token"
@@ -2337,8 +2343,9 @@ export function App() {
                       <>
                         <PhotoDumpQrScan onPayload={applyPhotoDumpSetup} />
                         <p className="hint" style={{ padding: "0.25rem 0 0" }}>
-                          Scan the Hub setup QR or paste the key from Hub
-                          Settings → Photo dump. Same field as Network → Photo
+                          Scan the Hub setup QR (photo dump key + Hub API token
+                          when Hub embeds both) or paste from Hub Settings → Photo
+                          dump. Same field as Network → Photo
                           dump API key.
                         </p>
                       </>

@@ -587,8 +587,8 @@ public class PhotoDumpMediaPlugin extends Plugin {
                 if (DocumentsContract.deleteDocument(resolver, uri)) {
                     return true;
                 }
-            } catch (SecurityException err) {
-                Log.w(TAG, "DocumentsContract delete denied for " + uri, err);
+            } catch (SecurityException | Exception err) {
+                Log.w(TAG, "DocumentsContract delete failed for " + uri, err);
             }
         }
         try {
@@ -596,6 +596,9 @@ public class PhotoDumpMediaPlugin extends Plugin {
             return rows > 0;
         } catch (SecurityException err) {
             Log.w(TAG, "ContentResolver delete denied for " + uri, err);
+            return false;
+        } catch (Exception err) {
+            Log.w(TAG, "ContentResolver delete failed for " + uri, err);
             return false;
         }
     }

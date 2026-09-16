@@ -61,6 +61,8 @@ public class PhotoDumpMediaPlugin extends Plugin {
     private ActivityResultLauncher<IntentSenderRequest> deleteSenderLauncher;
     private String pendingDeleteCallId;
     private int pendingDeleteCount;
+    private JSArray pendingSharedItems = new JSArray();
+    private String lastShareFingerprint = "";
 
     @Override
     public void load() {
@@ -91,6 +93,113 @@ public class PhotoDumpMediaPlugin extends Plugin {
                                                     : "Delete cancelled or not permitted by system");
                                     call.resolve(out);
                                 });
+        Activity activity = getActivity();
+        if (activity != null) {
+            ingestShareIntent(activity.getIntent());
+        }
+    }
+
+    /**
+     * Called from {@link MainActivity} for cold start and {@code onNewIntent} shares
+     * (Google Photos / Gallery → Share → Arrs Hub Photo Dump).
+     */
+    public void ingestShareIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action)
+                && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            return;
+        }
+
+        ContentResolver resolver = getContext().getContentResolver();
+        List<Uri> uris = new ArrayList<>();
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Uri> list = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (list != null) {
+                for (Uri uri : list) {
+                    if (uri != null) uris.add(uri);
+                }
+            }
+        } else {
+            Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (uri != null) uris.add(uri);
+            // Some senders only put the URI in data.
+            if (uris.isEmpty() && intent.getData() != null) {
+                uris.add(intent.getData());
+            }
+        }
+        if (uris.isEmpty()) return;
+
+        StringBuilder fp = new StringBuilder(action == null ? "" : action);
+        for (Uri uri : uris) {
+            fp.append('|').append(uri);
+        }
+        String fingerprint = fp.toString();
+        if (fingerprint.equals(lastShareFingerprint) && pendingSharedItems.length() > 0) {
+            return;
+        }
+        lastShareFingerprint = fingerprint;
+
+        JSArray fresh = new JSArray();
+        int flags = intent.getFlags();
+        for (Uri uri : uris) {
+            if (uri == null) continue;
+            String type = resolver.getType(uri);
+            if (type == null) type = intent.getType();
+            if (type != null
+                    && !(type.startsWith("image/") || type.startsWith("video/"))) {
+                // Allow unknown types through — describeUri still works for many providers.
+                if (!type.equals("*/*") && !type.startsWith("application/octet-stream")) {
+                    Log.i(TAG, "Skipping shared non-media type " + type + " for " + uri);
+                    continue;
+                }
+            }
+            takeShareUriPermission(resolver, uri, flags);
+            JSObject item = describeUri(resolver, uri);
+            if (item != null) {
+                fresh.put(item);
+                pendingSharedItems.put(item);
+            }
+        }
+        if (fresh.length() == 0) return;
+
+        JSObject event = new JSObject();
+        event.put("items", fresh);
+        event.put("count", fresh.length());
+        notifyListeners("shareReceived", event);
+        Log.i(TAG, "Ingested " + fresh.length() + " shared media item(s)");
+    }
+
+    private void takeShareUriPermission(ContentResolver resolver, Uri uri, int intentFlags) {
+        int takeFlags =
+                intentFlags
+                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        if (takeFlags == 0) {
+            takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        }
+        // Persist only when the sender offered it (rare for Photos share).
+        if ((intentFlags & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0) {
+            try {
+                resolver.takePersistableUriPermission(uri, takeFlags);
+                return;
+            } catch (SecurityException | IllegalArgumentException err) {
+                Log.w(TAG, "Persistable share URI grant failed for " + uri, err);
+            }
+        }
+        // Temporary grant from the share Intent is enough while this process holds the URI.
+    }
+
+    /** Return and clear media received via Android Share sheet. */
+    @PluginMethod
+    public void consumeSharedMedia(PluginCall call) {
+        JSArray outItems = pendingSharedItems;
+        pendingSharedItems = new JSArray();
+        lastShareFingerprint = "";
+        JSObject out = new JSObject();
+        out.put("items", outItems);
+        out.put("count", outItems.length());
+        call.resolve(out);
     }
 
     @PluginMethod

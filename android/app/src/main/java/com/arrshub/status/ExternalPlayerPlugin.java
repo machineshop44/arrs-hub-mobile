@@ -11,6 +11,8 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.util.Locale;
+import java.util.Set;
 import org.json.JSONObject;
 
 /**
@@ -60,6 +62,32 @@ public class ExternalPlayerPlugin extends Plugin {
         getContext().startActivity(intent);
     }
 
+    private static String redactStreamUrlForLog(String url) {
+        if (url == null || url.isEmpty()) return "";
+        try {
+            Uri uri = Uri.parse(url);
+            Uri.Builder builder = uri.buildUpon().clearQuery();
+            Set<String> names = uri.getQueryParameterNames();
+            for (String name : names) {
+                if (name == null) continue;
+                String lower = name.toLowerCase(Locale.US);
+                if (lower.equals("hubtoken")
+                        || lower.equals("token")
+                        || lower.equals("x-arrs-hub-token")
+                        || lower.contains("apikey")
+                        || lower.contains("api_key")) {
+                    builder.appendQueryParameter(name, "***");
+                } else {
+                    String value = uri.getQueryParameter(name);
+                    if (value != null) builder.appendQueryParameter(name, value);
+                }
+            }
+            return builder.build().toString();
+        } catch (Throwable ignored) {
+            return "(url)";
+        }
+    }
+
     @PluginMethod
     public void openInVlc(PluginCall call) {
         String url = requireUrl(call);
@@ -74,7 +102,7 @@ public class ExternalPlayerPlugin extends Plugin {
 
         try {
             launchVlcView(Uri.parse(url), "video/*", false);
-            Log.i(TAG, "Opened in VLC: " + url);
+            Log.i(TAG, "Opened in VLC: " + redactStreamUrlForLog(url));
 
             JSObject result = new JSObject();
             result.put("opened", true);
@@ -170,7 +198,7 @@ public class ExternalPlayerPlugin extends Plugin {
             Intent chooser = Intent.createChooser(view, "Open video with");
             chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             getContext().startActivity(chooser);
-            Log.i(TAG, "Opened externally: " + url);
+            Log.i(TAG, "Opened externally: " + redactStreamUrlForLog(url));
 
             JSObject result = new JSObject();
             result.put("opened", true);

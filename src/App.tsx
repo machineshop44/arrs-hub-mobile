@@ -13,7 +13,6 @@ import { ArrPanel } from "./ArrPanel";
 import {
   IconEye,
   IconEyeOff,
-  IconPower,
   IconSettings,
   ServiceIcon,
 } from "./icons";
@@ -73,6 +72,11 @@ import {
   loadPhotoDumpApiKey,
   savePhotoDumpApiKey,
 } from "./photoDumpApi";
+import {
+  addSharedPhotoDumpListener,
+  consumeSharedPhotoDumpMedia,
+  type PhotoDumpMediaItem,
+} from "./photoDumpMedia";
 import {
   loadHubApiToken,
   saveHubApiToken,
@@ -303,6 +307,9 @@ export function App() {
     {},
   );
   const [hubApiToken, setHubApiToken] = useState("");
+  const [sharedPhotoDumpItems, setSharedPhotoDumpItems] = useState<
+    PhotoDumpMediaItem[]
+  >([]);
   const [wol, setWol] = useState<WolSettings>(DEFAULT_WOL);
   const [pathing, setPathing] = useState<PathSettings>(DEFAULT_PATHING);
   const [homeNet, setHomeNet] = useState<HomeNetworkStatus | null>(null);
@@ -755,6 +762,40 @@ export function App() {
     ],
   );
 
+  const servicesRef = useRef(services);
+  const withEffectiveUrlRef = useRef(withEffectiveUrl);
+  servicesRef.current = services;
+  withEffectiveUrlRef.current = withEffectiveUrl;
+
+  /** Photos / Gallery → Share → "Photo Dump" opens this panel with those items queued. */
+  useEffect(() => {
+    if (!ready || !Capacitor.isNativePlatform()) return;
+    let cancelled = false;
+    let handle: { remove: () => Promise<void> } | null = null;
+
+    const openShared = (items: PhotoDumpMediaItem[]) => {
+      if (cancelled || !items.length) return;
+      setSharedPhotoDumpItems(items);
+      const svc = servicesRef.current.find((s) => s.id === "photo-dump");
+      if (!svc) return;
+      setDrawer(false);
+      setArrInitialTab(undefined);
+      setActive(withEffectiveUrlRef.current(svc));
+      setScreen("photo-dump");
+    };
+
+    void (async () => {
+      const pending = await consumeSharedPhotoDumpMedia();
+      openShared(pending);
+      handle = await addSharedPhotoDumpListener(openShared);
+    })();
+
+    return () => {
+      cancelled = true;
+      void handle?.remove();
+    };
+  }, [ready]);
+
   const resolveUrl = useCallback(
     (service: ServiceConfig) => withEffectiveUrl(service).url,
     [withEffectiveUrl],
@@ -817,13 +858,15 @@ export function App() {
   };
 
   const wakeReadyForTarget = useCallback(
-    (targetKey: WolTargetKey) =>
-      wol.enabled &&
-      wol[targetKey].enabled &&
-      targetWakeReady(wol[targetKey]) &&
-      (homeNet === null ||
-        homeNet.onHomeNetwork !== false ||
-        wol.hubUrl.trim()),
+    (targetKey: WolTargetKey): boolean =>
+      Boolean(
+        wol.enabled &&
+          wol[targetKey].enabled &&
+          targetWakeReady(wol[targetKey]) &&
+          (homeNet === null ||
+            homeNet.onHomeNetwork !== false ||
+            wol.hubUrl.trim()),
+      ),
     [wol, homeNet],
   );
 
@@ -1416,6 +1459,8 @@ export function App() {
           void savePhotoDumpApiKey(apiKey);
         }}
         onSetupApplied={applyPhotoDumpSetup}
+        sharedItems={sharedPhotoDumpItems}
+        onSharedItemsConsumed={() => setSharedPhotoDumpItems([])}
       />
     );
   }
@@ -2524,67 +2569,39 @@ export function App() {
 
       {(healthSettled || showWakeControl) && (
         <div className="home-status">
-          {healthSettled && (
-            <HomeStatusChips
-              ref={chipsRef}
-              hubBaseUrl={hubBaseForChips}
-              hubReachable={hubReachable}
-              hubLastError={hubLastError}
-              hubVersion={hubVersion}
-              hubWatchdog={hubWatchdog}
-              onHomeNetwork={homeNet?.onHomeNetwork ?? null}
-              services={services}
-              resolveUrl={resolveUrl}
-              modules={modules.map((m) => ({
-                id: m.id,
-                name: m.name,
-                up: health[m.id]?.up ?? null,
-              }))}
-              upCount={onlineCount}
-              downCount={offlineCount}
-              scanning={healthScanning && !showBlockingConnect}
-              pathHint={pathHintLabel(connectionMode)}
-              onOpenStreams={() => openServiceById("tautulli")}
-              onOpenService={openServiceById}
-              onReconnect={() => void runFullReconnect()}
-              reconnecting={reconnecting || pullRefreshing}
-            />
-          )}
-          {showWakeControl && (
-            <div className="wol-bar home-wol">
-              <div className="wol-btn-row">
-                {wakeReadyForTarget("plex") && (
-                  <button
-                    type="button"
-                    className="btn primary wol-btn"
-                    disabled={wakeBusyTarget !== null}
-                    onClick={() => void onWakeTarget("plex")}
-                  >
-                    <IconPower size={18} color="currentColor" />
-                    {wakeBusyTarget === "plex" ? "Sending…" : "Turn on Plex PC"}
-                  </button>
-                )}
-                {wakeReadyForTarget("downloader") && (
-                  <button
-                    type="button"
-                    className="btn primary wol-btn"
-                    disabled={wakeBusyTarget !== null}
-                    onClick={() => void onWakeTarget("downloader")}
-                  >
-                    <IconPower size={18} color="currentColor" />
-                    {wakeBusyTarget === "downloader"
-                      ? "Sending…"
-                      : "Turn on Downloader PC"}
-                  </button>
-                )}
-              </div>
-              <small className={homeNet?.warnRemote ? "wol-warn" : "wol-ok"}>
-                {wakeMessage ||
-                  homeNet?.message ||
-                  "UDP magic packet on home LAN / VPN · hub relay when away"}
-              </small>
-            </div>
-          )}
+          <HomeStatusChips
+            ref={chipsRef}
+            hubBaseUrl={hubBaseForChips}
+            hubReachable={hubReachable}
+            hubLastError={hubLastError}
+            hubVersion={hubVersion}
+            hubWatchdog={hubWatchdog}
+            onHomeNetwork={homeNet?.onHomeNetwork ?? null}
+            services={services}
+            resolveUrl={resolveUrl}
+            modules={modules.map((m) => ({
+              id: m.id,
+              name: m.name,
+              up: health[m.id]?.up ?? null,
+            }))}
+            upCount={onlineCount}
+            downCount={offlineCount}
+            scanning={healthScanning && !showBlockingConnect}
+            pathHint={pathHintLabel(connectionMode)}
+            onOpenStreams={() => openServiceById("tautulli")}
+            onOpenService={openServiceById}
+            onReconnect={() => void runFullReconnect()}
+            reconnecting={reconnecting || pullRefreshing}
+            wolTargets={{
+              plex: wakeReadyForTarget("plex"),
+              downloader: wakeReadyForTarget("downloader"),
+            }}
+            wakeBusyTarget={wakeBusyTarget}
+            wakeMessage={wakeMessage}
+            wolStatusHint={homeNet?.message ?? null}
+            wolWarnRemote={Boolean(homeNet?.warnRemote)}
+            onWakeTarget={(target) => void onWakeTarget(target)}
+          />
         </div>
       )}
 

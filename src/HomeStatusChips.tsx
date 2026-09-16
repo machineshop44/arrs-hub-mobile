@@ -10,6 +10,7 @@ import {
 } from "react";
 import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
+import { IconPower } from "./icons";
 import {
   fetchHubStatusSummary,
   fetchOmbiPending,
@@ -66,6 +67,7 @@ type SheetId =
   | "downloads"
   | "ombi"
   | "plex"
+  | "wol"
   | null;
 
 const SHEET_CHIPS = [
@@ -77,6 +79,7 @@ const SHEET_CHIPS = [
   "downloads",
   "ombi",
   "plex",
+  "wol",
 ] as const satisfies readonly Exclude<SheetId, null>[];
 
 const CANNOT_INSTALL_HINT =
@@ -137,6 +140,16 @@ type HomeStatusChipsProps = {
   reconnecting?: boolean;
   /** True when Hub host is public WAN and Hub API token is empty. */
   hubWanUnauthWarning?: boolean;
+  /** Wake-on-LAN targets ready to show under the WOL PCs chip. */
+  wolTargets?: {
+    plex: boolean;
+    downloader: boolean;
+  };
+  wakeBusyTarget?: "plex" | "downloader" | null;
+  wakeMessage?: string | null;
+  wolStatusHint?: string | null;
+  wolWarnRemote?: boolean;
+  onWakeTarget?: (target: "plex" | "downloader") => void;
 };
 
 export const HomeStatusChips = forwardRef<
@@ -162,6 +175,12 @@ export const HomeStatusChips = forwardRef<
     onReconnect,
     reconnecting = false,
     hubWanUnauthWarning = false,
+    wolTargets = { plex: false, downloader: false },
+    wakeBusyTarget = null,
+    wakeMessage = null,
+    wolStatusHint = null,
+    wolWarnRemote = false,
+    onWakeTarget,
   },
   ref,
 ) {
@@ -846,6 +865,19 @@ export const HomeStatusChips = forwardRef<
       tone: plexChipTone,
       title: "Plex Media Server update",
     },
+    ...((wolTargets.plex || wolTargets.downloader)
+      ? [
+          {
+            id: "wol",
+            label: "WOL PCs",
+            value: String(
+              Number(wolTargets.plex) + Number(wolTargets.downloader),
+            ),
+            tone: (wolWarnRemote ? "warn" : "accent") as ChipTone,
+            title: "Wake-on-LAN — turn on Plex / Downloader PCs",
+          },
+        ]
+      : []),
   ];
 
   const arrApps: {
@@ -951,7 +983,9 @@ export const HomeStatusChips = forwardRef<
                   ? "Ombi pending"
                   : sheet === "plex"
                     ? "Plex Media Server"
-                    : "";
+                    : sheet === "wol"
+                      ? "WOL PCs"
+                      : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -1778,6 +1812,56 @@ export const HomeStatusChips = forwardRef<
                   </>
                 )}
               </>
+            )}
+
+            {sheet === "wol" && (
+              <div className="dash-wol-sheet">
+                <p className="dash-chip-popover-hint">
+                  Send a Wake-on-LAN packet to a configured PC. Direct magic
+                  packets need home LAN / VPN; otherwise Hub can relay when
+                  reachable.
+                </p>
+                <div className="wol-btn-row" style={{ marginTop: "0.65rem" }}>
+                  {wolTargets.plex ? (
+                    <button
+                      type="button"
+                      className="btn primary wol-btn"
+                      disabled={wakeBusyTarget !== null || !onWakeTarget}
+                      onClick={() => onWakeTarget?.("plex")}
+                    >
+                      <IconPower size={18} color="currentColor" />
+                      {wakeBusyTarget === "plex"
+                        ? "Sending…"
+                        : "Turn on Plex PC"}
+                    </button>
+                  ) : null}
+                  {wolTargets.downloader ? (
+                    <button
+                      type="button"
+                      className="btn primary wol-btn"
+                      disabled={wakeBusyTarget !== null || !onWakeTarget}
+                      onClick={() => onWakeTarget?.("downloader")}
+                    >
+                      <IconPower size={18} color="currentColor" />
+                      {wakeBusyTarget === "downloader"
+                        ? "Sending…"
+                        : "Turn on Downloader PC"}
+                    </button>
+                  ) : null}
+                </div>
+                <p
+                  className={
+                    wolWarnRemote
+                      ? "dash-chip-popover-hint dash-chip-popover-hint-warn"
+                      : "dash-chip-popover-hint"
+                  }
+                  style={{ marginTop: "0.75rem" }}
+                >
+                  {wakeMessage ||
+                    wolStatusHint ||
+                    "UDP on home LAN / VPN · hub relay when away"}
+                </p>
+              </div>
             )}
           </div>
         </div>

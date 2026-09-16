@@ -1,4 +1,4 @@
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 export type PhotoDumpMediaItem = {
   uri: string;
@@ -38,12 +38,63 @@ type PhotoDumpMediaPlugin = {
   readUriBase64(options: { uri: string }): Promise<PhotoDumpMediaReadResult>;
   deleteUri(options: { uri: string }): Promise<PhotoDumpMediaDeleteResult>;
   deleteUris(options: { uris: string[] }): Promise<PhotoDumpMediaDeleteResult>;
+  consumeSharedMedia(): Promise<{ items: PhotoDumpMediaItem[]; count: number }>;
+  addListener(
+    eventName: "shareReceived",
+    listenerFunc: (event: {
+      items: PhotoDumpMediaItem[];
+      count: number;
+    }) => void,
+  ): Promise<PluginListenerHandle>;
 };
 
 const PhotoDumpMedia = registerPlugin<PhotoDumpMediaPlugin>("PhotoDumpMedia");
 
 export function isPhotoDumpMediaNative(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+}
+
+function normalizeSharedItems(raw: unknown): PhotoDumpMediaItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const o = row as Record<string, unknown>;
+      const uri = String(o.uri || "").trim();
+      if (!uri) return null;
+      return {
+        uri,
+        name: String(o.name || "media").trim() || "media",
+        mimeType: String(o.mimeType || "application/octet-stream"),
+        size: typeof o.size === "number" && Number.isFinite(o.size) ? o.size : 0,
+      };
+    })
+    .filter((item): item is PhotoDumpMediaItem => item != null);
+}
+
+/** Drain Android Share-sheet media (Photos / Gallery → Share → Photo Dump). */
+export async function consumeSharedPhotoDumpMedia(): Promise<PhotoDumpMediaItem[]> {
+  if (!isPhotoDumpMediaNative()) return [];
+  try {
+    const res = await PhotoDumpMedia.consumeSharedMedia();
+    return normalizeSharedItems(res.items);
+  } catch (err) {
+    console.warn(
+      "[photoDump] consumeSharedMedia failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+/** Listen for shares while the app is already open (singleTask onNewIntent). */
+export async function addSharedPhotoDumpListener(
+  listener: (items: PhotoDumpMediaItem[]) => void,
+): Promise<PluginListenerHandle | null> {
+  if (!isPhotoDumpMediaNative()) return null;
+  return PhotoDumpMedia.addListener("shareReceived", (event) => {
+    listener(normalizeSharedItems(event?.items));
+  });
 }
 
 export async function pickPhotoDumpMedia(

@@ -152,9 +152,15 @@ public class VlcPlayerActivity extends AppCompatActivity {
 
         try {
             mediaPlayer.stop();
-            Media media = new Media(libVLC, Uri.parse(urls.get(index)));
+            String streamUrl = urls.get(index);
+            Media media = new Media(libVLC, Uri.parse(streamUrl));
             media.setHWDecoderEnabled(true, false);
             media.addOption(":network-caching=2000");
+            // Remote Hub requires X-Arrs-Hub-Token; libVLC can send it as an HTTP header.
+            String hubToken = hubTokenFromUrl(streamUrl);
+            if (hubToken != null && !hubToken.isEmpty()) {
+                media.addOption(":http-header=X-Arrs-Hub-Token: " + hubToken);
+            }
             mediaPlayer.setMedia(media);
             media.release();
             mediaPlayer.play();
@@ -163,6 +169,21 @@ public class VlcPlayerActivity extends AppCompatActivity {
             Log.e(TAG, "play failed", err);
             showError("Could not play: " + err.getMessage());
         }
+    }
+
+    /** Pull hubToken query (added by Mobile for remote Hub auth). */
+    private static String hubTokenFromUrl(String url) {
+        if (url == null || url.isEmpty()) return null;
+        try {
+            Uri uri = Uri.parse(url);
+            String token = uri.getQueryParameter("hubToken");
+            if (token != null && !token.trim().isEmpty()) return token.trim();
+            token = uri.getQueryParameter("token");
+            if (token != null && !token.trim().isEmpty()) return token.trim();
+        } catch (Throwable ignored) {
+            // ignore
+        }
+        return null;
     }
 
     private void onVlcEvent(MediaPlayer.Event event) {

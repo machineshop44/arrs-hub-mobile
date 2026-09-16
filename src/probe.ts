@@ -440,7 +440,8 @@ export async function probeService(service: ServiceConfig): Promise<ProbeResult>
         service.id === "photo-dump"
           ? `${base}/api/photo-dump/settings`
           : `${base}/api/workouts/settings`;
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> =
+        service.id === "workouts" ? mergeHubAuthHeaders() : {};
       // Remote photo-dump settings need the Hub key for full details (Hub 1.3.57+).
       if (service.id === "photo-dump" && service.apiKey.trim()) {
         headers["X-Arrs-Hub-Key"] = service.apiKey.trim();

@@ -520,15 +520,24 @@ export function WorkoutsPanel({
           const vlcItems = playlistForVlc(result.playlist);
           const probe = await probeWorkoutMediaStream(vlcItems[0].url);
           if (!probe.ok) {
+            const authHint =
+              probe.code === "HUB_AUTH" ||
+              probe.status === 401 ||
+              probe.status === 403
+                ? "\nSet Hub API token in Settings → Network (same token as Hub Settings), then retry. After updating Hub, streams also carry hubToken for VLC."
+                : "";
             throw new Error(
-              `Workout stream not playable in VLC.\n${probe.detail}\nTried: ${probe.url}${
+              `Workout stream not playable in VLC.\n${probe.detail}${authHint}\nTried: ${probe.url}${
                 probe.status ? ` (HTTP ${probe.status})` : ""
               }`,
             );
           }
 
-          const preferEmbeddedQueue = vlcItems.length > 1;
+          const preferEmbeddedQueue =
+            vlcItems.length > 1 || Boolean(probe.url.includes("hubToken="));
 
+          // Prefer in-app libVLC when a Hub token is needed — it can send
+          // X-Arrs-Hub-Token; the external VLC app cannot (until Hub accepts hubToken query).
           if (preferEmbeddedQueue) {
             try {
               const embedOk = await isEmbeddedVlcAvailable();

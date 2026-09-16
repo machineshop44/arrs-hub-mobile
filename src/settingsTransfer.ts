@@ -257,30 +257,37 @@ export async function applySettingsBundle(
   hubApiToken: string;
 }> {
   const byId = new Map(bundle.services.map((s) => [s.id, s]));
+  const [existingPhotoKey, existingHubToken] = await Promise.all([
+    loadPhotoDumpApiKey(),
+    loadHubApiToken(),
+  ]);
   const merged = currentServices.map((def) => {
     const saved = byId.get(def.id);
     if (!saved) return def;
-    // Restore exported snapshot fields exactly (including empty strings).
+    // Empty secrets in an import (e.g. redacted export) keep current values.
     return {
       ...def,
       url: saved.url,
-      apiKey: saved.apiKey,
-      username: saved.username,
-      password: saved.password,
+      apiKey: saved.apiKey.trim() ? saved.apiKey : def.apiKey,
+      username: saved.username.trim() ? saved.username : def.username,
+      password: saved.password.trim() ? saved.password : def.password,
       enabled: saved.enabled,
     };
   });
 
   const wol = normalizeWolSettings(bundle.wol);
   const pathing = normalizePathing(bundle.pathing);
+  const fromBundlePhoto =
+    typeof bundle.photoDumpApiKey === "string"
+      ? bundle.photoDumpApiKey.trim()
+      : "";
   const photoDumpKey =
-    (typeof bundle.photoDumpApiKey === "string"
-      ? bundle.photoDumpApiKey
-      : ""
-    ).trim() ||
+    fromBundlePhoto ||
     merged.find((s) => s.id === "photo-dump")?.apiKey.trim() ||
+    existingPhotoKey.trim() ||
     "";
-  const hubApiToken = String(bundle.hubApiToken || "").trim();
+  const fromBundleHub = String(bundle.hubApiToken || "").trim();
+  const hubApiToken = fromBundleHub || existingHubToken.trim();
 
   const withPhotoKey = merged.map((s) =>
     s.id === "photo-dump" && photoDumpKey

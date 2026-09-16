@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { useAndroidBackHandler } from "./androidBack";
 import { ServiceIcon } from "./icons";
 import type { ServiceConfig } from "./services";
@@ -18,13 +19,16 @@ import {
   deletePhotoDumpMediaUri,
   deletePhotoDumpMediaUris,
   isPhotoDumpMediaNative,
-  pickPhotoDumpMedia,
   queryPhotoDumpMediaMonth,
   readPhotoDumpMediaBase64,
   type PhotoDumpMediaItem,
 } from "./photoDumpMedia";
 import { PhotoDumpQrScan } from "./PhotoDumpQrScan";
 import type { PhotoDumpSetupPayload } from "./photoDumpSetupQr";
+import {
+  acquireScreenWakeLock,
+  releaseScreenWakeLock,
+} from "./screenWakeLock";
 
 interface PhotoDumpPanelProps {
   service: ServiceConfig;
@@ -36,6 +40,10 @@ interface PhotoDumpPanelProps {
   onSetupApplied?: (payload: PhotoDumpSetupPayload) => void | Promise<void>;
   /** Live LAN vs remote path hint while the panel is open. */
   pathHint?: "LAN" | "Remote";
+  /** Media shared in from Photos/Gallery (Android Share sheet). */
+  sharedItems?: PhotoDumpMediaItem[];
+  /** Clear parent pending-share state after enqueue. */
+  onSharedItemsConsumed?: () => void;
 }
 
 type FileStatus =
@@ -108,6 +116,29 @@ function parseMonthValue(value: string): { year: number; month: number } | null 
   return { year, month };
 }
 
+function formatMonthLabel(year: number, month: number): string {
+  return `${String(month).padStart(2, "0")}/${year}`;
+}
+
+function shiftMonth(
+  year: number,
+  month: number,
+  delta: number,
+): { year: number; month: number } {
+  const t = year * 12 + (month - 1) + delta;
+  return { year: Math.floor(t / 12), month: (t % 12) + 1 };
+}
+
+type GalleryBrowseItem = {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  year: number;
+  month: number;
+  selected: boolean;
+};
+
 function statusLabel(status: FileStatus): string {
   switch (status) {
     case "pending":
@@ -141,6 +172,25 @@ function mediaItemsToQueue(items: PhotoDumpMediaItem[]): QueueItem[] {
   }));
 }
 
+/** WebView-safe preview URL for MediaStore / document URIs. */
+function galleryThumbSrc(contentUri?: string, file?: File): string | null {
+  if (contentUri?.trim()) {
+    try {
+      return Capacitor.convertFileSrc(contentUri.trim());
+    } catch {
+      return null;
+    }
+  }
+  if (file) {
+    try {
+      return URL.createObjectURL(file);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function PhotoDumpPanel({
   service,
   onBack,
@@ -148,12 +198,15 @@ export function PhotoDumpPanel({
   onApiKeyChange,
   onSetupApplied,
   pathHint,
+  sharedItems,
+  onSharedItemsConsumed,
 }: PhotoDumpPanelProps) {
   const hubUrl = service.url.trim();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const refreshGen = useRef(0);
   const mountedRef = useRef(true);
   const nativeMedia = isPhotoDumpMediaNative();
+  const sharedIngestKey = useRef("");
 
   const [apiKey, setApiKey] = useState(service.apiKey || "");
   const [hubSettings, setHubSettings] = useState<PhotoDumpPublicSettings | null>(
@@ -169,14 +222,28 @@ export function PhotoDumpPanel({
   const [newFolderName, setNewFolderName] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    current: number;
+    total: number;
+    label: string;
+  } | null>(null);
   const [showKeyField, setShowKeyField] = useState(false);
   const [monthValue, setMonthValue] = useState(currentMonthValue);
   const [monthBusy, setMonthBusy] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryItems, setGalleryItems] = useState<GalleryBrowseItem[]>([]);
+  const [galleryBusy, setGalleryBusy] = useState(false);
+  const [galleryCursor, setGalleryCursor] = useState<{
+    year: number;
+    month: number;
+  } | null>(null);
+  const [galleryHint, setGalleryHint] = useState<string | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      void releaseScreenWakeLock();
     };
   }, []);
 
@@ -266,6 +333,10 @@ export function PhotoDumpPanel({
 
   useAndroidBackHandler(() => {
     if (uploading) return true;
+    if (galleryOpen) {
+      setGalleryOpen(false);
+      return true;
+    }
     if (relativePath) {
       const parent = parentRelative(relativePath);
       setRelativePath(parent);
@@ -394,16 +465,17 @@ export function PhotoDumpPanel({
     enqueueItems(next, "");
   };
 
-  const onNativePick = async () => {
-    if (uploading) return;
-    setError(null);
-    try {
-      const items = await pickPhotoDumpMedia(true);
-      enqueueItems(mediaItemsToQueue(items), " from gallery");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
+  // Android Share sheet (Photos / Gallery → Share → Photo Dump).
+  useEffect(() => {
+    if (!sharedItems?.length) return;
+    const key = sharedItems.map((item) => item.uri).join("|");
+    if (!key || key === sharedIngestKey.current) return;
+    sharedIngestKey.current = key;
+    enqueueItems(mediaItemsToQueue(sharedItems), " from Share");
+    onSharedItemsConsumed?.();
+    // enqueueItems is stable enough for this one-shot ingest
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedItems]);
 
   const onAddWholeMonth = async () => {
     if (!nativeMedia || monthBusy || uploading) return;
@@ -416,7 +488,7 @@ export function PhotoDumpPanel({
     setError(null);
     try {
       const res = await queryPhotoDumpMediaMonth(parsed.year, parsed.month);
-      const label = ` for ${String(parsed.month).padStart(2, "0")}/${parsed.year}`;
+      const label = ` for ${formatMonthLabel(parsed.year, parsed.month)}`;
       if (res.items.length >= PHOTO_DUMP_MONTH_WARN_COUNT) {
         const totalBytes = res.items.reduce((sum, i) => sum + (i.size || 0), 0);
         const proceed = window.confirm(
@@ -433,6 +505,146 @@ export function PhotoDumpPanel({
     } finally {
       setMonthBusy(false);
     }
+  };
+
+  const mergeGalleryMonth = async (year: number, month: number) => {
+    const res = await queryPhotoDumpMediaMonth(year, month);
+    setGalleryItems((prev) => {
+      const seen = new Set(prev.map((item) => item.uri));
+      const next = [...prev];
+      for (const item of res.items) {
+        const uri = String(item.uri || "").trim();
+        if (!uri || seen.has(uri)) continue;
+        seen.add(uri);
+        next.push({
+          uri,
+          name: item.name || uri,
+          mimeType: item.mimeType || "application/octet-stream",
+          size: item.size || 0,
+          year,
+          month,
+          selected: false,
+        });
+      }
+      next.sort((a, b) => {
+        const am = a.year * 12 + a.month;
+        const bm = b.year * 12 + b.month;
+        if (am !== bm) return bm - am;
+        return a.name.localeCompare(b.name);
+      });
+      return next;
+    });
+    return res.items.length;
+  };
+
+  const openGalleryBrowser = async () => {
+    if (!nativeMedia || uploading || galleryBusy) return;
+    setGalleryOpen(true);
+    setGalleryHint(null);
+    setGalleryBusy(true);
+    setError(null);
+    try {
+      const now = new Date();
+      let cursor = { year: now.getFullYear(), month: now.getMonth() + 1 };
+      setGalleryItems([]);
+      let loaded = 0;
+      // Start with recent months so you can circle-select across them.
+      for (let i = 0; i < 3; i++) {
+        loaded += await mergeGalleryMonth(cursor.year, cursor.month);
+        cursor = shiftMonth(cursor.year, cursor.month, -1);
+      }
+      setGalleryCursor(cursor);
+      setGalleryHint(
+        loaded
+          ? "Tap circles to select across months, then Upload selected."
+          : "No recent media — try Load older months.",
+      );
+    } catch (err) {
+      setGalleryHint(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGalleryBusy(false);
+    }
+  };
+
+  const loadOlderGalleryMonth = async () => {
+    if (!galleryCursor || galleryBusy) return;
+    setGalleryBusy(true);
+    setGalleryHint(null);
+    try {
+      const count = await mergeGalleryMonth(
+        galleryCursor.year,
+        galleryCursor.month,
+      );
+      setGalleryHint(
+        count
+          ? `Loaded ${formatMonthLabel(galleryCursor.year, galleryCursor.month)} (${count}).`
+          : `${formatMonthLabel(galleryCursor.year, galleryCursor.month)} was empty.`,
+      );
+      setGalleryCursor(
+        shiftMonth(galleryCursor.year, galleryCursor.month, -1),
+      );
+    } catch (err) {
+      setGalleryHint(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGalleryBusy(false);
+    }
+  };
+
+  const toggleGallerySelected = (uri: string) => {
+    setGalleryItems((prev) =>
+      prev.map((item) =>
+        item.uri === uri ? { ...item, selected: !item.selected } : item,
+      ),
+    );
+  };
+
+  const selectAllGalleryVisible = () => {
+    setGalleryItems((prev) => prev.map((item) => ({ ...item, selected: true })));
+  };
+
+  const deselectAllGallery = () => {
+    setGalleryItems((prev) =>
+      prev.map((item) => ({ ...item, selected: false })),
+    );
+  };
+
+  const gallerySelected = useMemo(
+    () => galleryItems.filter((item) => item.selected),
+    [galleryItems],
+  );
+
+  const gallerySections = useMemo(() => {
+    const map = new Map<string, GalleryBrowseItem[]>();
+    for (const item of galleryItems) {
+      const key = `${item.year}-${String(item.month).padStart(2, "0")}`;
+      const list = map.get(key);
+      if (list) list.push(item);
+      else map.set(key, [item]);
+    }
+    return Array.from(map.entries()).map(([key, items]) => ({
+      key,
+      label: formatMonthLabel(items[0].year, items[0].month),
+      items,
+    }));
+  }, [galleryItems]);
+
+  const addGallerySelectionToQueue = () => {
+    if (!gallerySelected.length) {
+      setGalleryHint("Select at least one photo or video.");
+      return 0;
+    }
+    enqueueItems(
+      mediaItemsToQueue(
+        gallerySelected.map((item) => ({
+          uri: item.uri,
+          name: item.name,
+          mimeType: item.mimeType,
+          size: item.size,
+        })),
+      ),
+      " from gallery browser",
+    );
+    return gallerySelected.length;
   };
 
   const updateItem = (id: string, patch: Partial<QueueItem>) => {
@@ -460,11 +672,6 @@ export function PhotoDumpPanel({
           ? { ...q, selected: true }
           : q,
       ),
-    );
-    setMessage(
-      selectable.length
-        ? `Selected all ${selectable.length} pending item${selectable.length === 1 ? "" : "s"}.`
-        : "Nothing pending to select.",
     );
   };
 
@@ -508,11 +715,12 @@ export function PhotoDumpPanel({
     throw new Error("No file bytes available for this queue item.");
   };
 
-  const runUpload = async () => {
+  const runUpload = async (opts?: { forceAllPending?: boolean }) => {
     if (uploading) return;
     const pending = queue.filter(
       (q) =>
-        (q.status === "pending" || q.status === "error") && q.selected,
+        (q.status === "pending" || q.status === "error") &&
+        (opts?.forceAllPending || q.selected),
     );
     if (!pending.length) {
       setMessage(
@@ -529,12 +737,15 @@ export function PhotoDumpPanel({
     }
 
     setUploading(true);
+    setUploadProgress({ current: 0, total: pending.length, label: "Starting…" });
     setError(null);
     setMessage(null);
+    await acquireScreenWakeLock();
 
     const folderAtStart = relativePath;
     let okCount = 0;
     let failCount = 0;
+    let processed = 0;
     const verifiedForDelete: { id: string; contentUri: string; baseMsg: string }[] =
       [];
 
@@ -542,8 +753,18 @@ export function PhotoDumpPanel({
       if (!mountedRef.current) break;
       try {
         updateItem(item.id, { status: "hashing", message: undefined });
+        setUploadProgress({
+          current: processed,
+          total: pending.length,
+          label: `Hashing ${item.name}`,
+        });
         const loaded = await loadBytes(item);
         let bytes: ArrayBuffer | undefined = loaded.bytes;
+        if (bytes.byteLength > PHOTO_DUMP_UI_MAX_FILE_BYTES) {
+          throw new Error(
+            `File exceeds phone upload cap (${formatBytes(PHOTO_DUMP_UI_MAX_FILE_BYTES)}; MediaStore size was ${formatBytes(item.size)}).`,
+          );
+        }
         if (
           hubSettings?.maxFileBytes &&
           bytes.byteLength > hubSettings.maxFileBytes
@@ -554,6 +775,11 @@ export function PhotoDumpPanel({
         }
         const hash = await sha256Hex(bytes);
         updateItem(item.id, { status: "uploading" });
+        setUploadProgress({
+          current: processed,
+          total: pending.length,
+          label: `Uploading ${item.name}`,
+        });
         const result = await uploadPhotoDumpFile(hubUrl, apiKey, {
           fileName: item.name,
           relativeFolder: folderAtStart,
@@ -591,11 +817,26 @@ export function PhotoDumpPanel({
           status: "error",
           message: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        processed += 1;
+        setUploadProgress({
+          current: processed,
+          total: pending.length,
+          label:
+            processed >= pending.length
+              ? "Finishing…"
+              : `Done ${processed}/${pending.length}`,
+        });
       }
     }
 
     let deletedCount = 0;
     if (verifiedForDelete.length > 0 && nativeMedia && mountedRef.current) {
+      setUploadProgress({
+        current: pending.length,
+        total: pending.length,
+        label: "Removing verified originals from gallery…",
+      });
       const del = await deletePhotoDumpMediaUris(
         verifiedForDelete.map((v) => v.contentUri),
       );
@@ -631,8 +872,10 @@ export function PhotoDumpPanel({
       }
     }
 
+    await releaseScreenWakeLock();
     if (mountedRef.current) {
       setUploading(false);
+      setUploadProgress(null);
       const parts: string[] = [];
       if (failCount === 0) {
         parts.push(
@@ -662,11 +905,32 @@ export function PhotoDumpPanel({
     );
   };
 
+  const runUploadAll = () => {
+    if (uploading || selectable.length === 0) return;
+    selectAllPending();
+    voidMicrotaskUploadAll();
+  };
+
+  const voidMicrotaskUploadAll = () => {
+    queueMicrotask(() => {
+      void runUpload({ forceAllPending: true });
+    });
+  };
+
+  const uploadGallerySelection = () => {
+    const n = addGallerySelectionToQueue();
+    if (!n) return;
+    setGalleryOpen(false);
+    queueMicrotask(() => {
+      void runUpload({ forceAllPending: true });
+    });
+  };
+
   const breadcrumb = relativePath
     ? relativePath.split("/").filter(Boolean)
     : [];
 
-  const navLocked = uploading;
+  const navLocked = uploading || galleryOpen;
 
   return (
     <div className="page luna-page">
@@ -726,9 +990,49 @@ export function PhotoDumpPanel({
       )}
       {message && !error && <div className="ok banner">{message}</div>}
       {uploading && (
-        <p className="hint">
-          Upload in progress — folder navigation locked until finished.
-        </p>
+        <div className="ok banner" style={{ margin: "0.5rem 1rem 0" }}>
+          Upload in progress — folder navigation locked. Screen stays on while
+          syncing.
+          {uploadProgress ? (
+            <div className="photo-dump-progress" aria-live="polite">
+              <div className="photo-dump-progress-meta">
+                <strong>
+                  {uploadProgress.current}/{uploadProgress.total}
+                </strong>
+                <span>
+                  {uploadProgress.total
+                    ? Math.min(
+                        100,
+                        Math.round(
+                          (uploadProgress.current / uploadProgress.total) * 100,
+                        ),
+                      )
+                    : 0}
+                  %
+                </span>
+              </div>
+              <div className="photo-dump-progress-track" aria-hidden>
+                <div
+                  className="photo-dump-progress-fill"
+                  style={{
+                    width: `${
+                      uploadProgress.total
+                        ? Math.min(
+                            100,
+                            (uploadProgress.current / uploadProgress.total) *
+                              100,
+                          )
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+              <p className="hint" style={{ padding: "0.35rem 0 0", margin: 0 }}>
+                {uploadProgress.label}
+              </p>
+            </div>
+          ) : null}
+        </div>
       )}
       {loading && <p className="hint">Loading folders from Arrs Hub…</p>}
 
@@ -879,21 +1183,22 @@ export function PhotoDumpPanel({
             {nativeMedia ? (
               <button
                 type="button"
+                className="btn primary"
+                disabled={navLocked || galleryBusy}
+                onClick={() => void openGalleryBrowser()}
+              >
+                Browse gallery
+              </button>
+            ) : (
+              <button
+                type="button"
                 className="btn"
                 disabled={navLocked}
-                onClick={() => void onNativePick()}
+                onClick={() => fileInputRef.current?.click()}
               >
-                Choose from gallery
+                Pick photos / videos
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn"
-              disabled={navLocked}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {nativeMedia ? "Pick files (fallback)" : "Pick photos / videos"}
-            </button>
+            )}
             <button
               type="button"
               className="btn primary"
@@ -903,9 +1208,19 @@ export function PhotoDumpPanel({
               {uploading
                 ? "Uploading…"
                 : selectedUploadable.length
-                  ? `Upload & verify (${selectedUploadable.length})`
-                  : "Upload & verify"}
+                  ? `Upload selected (${selectedUploadable.length})`
+                  : "Upload selected"}
             </button>
+            {selectable.length > 0 && (
+              <button
+                type="button"
+                className="btn"
+                disabled={uploading}
+                onClick={runUploadAll}
+              >
+                Upload all ({selectable.length})
+              </button>
+            )}
             {queue.some(
               (q) => q.status === "manual-remove" || q.status === "deleted",
             ) && (
@@ -921,28 +1236,35 @@ export function PhotoDumpPanel({
           </div>
 
           {nativeMedia && (
-            <div
-              className="photo-dump-create"
-              style={{ marginTop: "0.5rem", alignItems: "flex-end" }}
-            >
-              <label className="field" style={{ flex: 1, margin: 0 }}>
-                <span>Add whole month…</span>
-                <input
-                  type="month"
-                  value={monthValue}
-                  disabled={navLocked || monthBusy}
-                  onChange={(e) => setMonthValue(e.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn"
-                disabled={navLocked || monthBusy || !monthValue}
-                onClick={() => void onAddWholeMonth()}
+            <details className="photo-dump-month-details">
+              <summary>Add entire month (bulk)</summary>
+              <div
+                className="photo-dump-create"
+                style={{ marginTop: "0.5rem", alignItems: "flex-end" }}
               >
-                {monthBusy ? "Scanning…" : "Add month"}
-              </button>
-            </div>
+                <label className="field" style={{ flex: 1, margin: 0 }}>
+                  <span>Month</span>
+                  <input
+                    type="month"
+                    value={monthValue}
+                    disabled={navLocked || monthBusy}
+                    onChange={(e) => setMonthValue(e.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={navLocked || monthBusy || !monthValue}
+                  onClick={() => void onAddWholeMonth()}
+                >
+                  {monthBusy ? "Scanning…" : "Add month"}
+                </button>
+              </div>
+              <p className="hint" style={{ padding: "0.35rem 0 0" }}>
+                Prefer Browse gallery to circle-select across months. Whole-month
+                dump is for dumping everything from one month at once.
+              </p>
+            </details>
           )}
 
           {selectable.length > 0 && (
@@ -971,57 +1293,74 @@ export function PhotoDumpPanel({
 
           <p className="hint" style={{ paddingTop: 0 }}>
             {nativeMedia
-              ? "After Hub verifies, Android asks once to remove gallery originals (Allow). Use Choose from gallery or Add whole month — the HTML file picker cannot delete Photos."
+              ? "Browse gallery for Photos-style circle selection, or Share from Google Photos / Gallery (Share → Photo Dump). After Hub verifies, Android asks once to remove originals (Allow)."
               : "Files upload to the Hub folder above. Phone copies stay until you remove them from the gallery (web has no MediaStore delete)."}{" "}
             Hub must return <code>verified: true</code> with matching SHA-256.
           </p>
+
+          {selectable.length > 0 && (
+            <div
+              className="photo-dump-gallery"
+              role="group"
+              aria-label="Gallery selection"
+            >
+              {selectable.map((item) => {
+                const thumb = galleryThumbSrc(item.contentUri, item.file);
+                const isVideo = (item.mimeType || "").startsWith("video/");
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`photo-dump-gallery-cell${
+                      item.selected ? " selected" : ""
+                    }`}
+                    disabled={navLocked}
+                    onClick={() => toggleSelected(item.id)}
+                    aria-pressed={item.selected}
+                    aria-label={`${item.selected ? "Deselect" : "Select"} ${item.name}`}
+                  >
+                    {thumb ? (
+                      <img src={thumb} alt="" loading="lazy" />
+                    ) : (
+                      <span className="photo-dump-gallery-fallback" aria-hidden>
+                        {isVideo ? "▶" : "🖼"}
+                      </span>
+                    )}
+                    {isVideo ? (
+                      <span className="photo-dump-gallery-video" aria-hidden>
+                        ▶
+                      </span>
+                    ) : null}
+                    <span
+                      className={`photo-dump-gallery-check${
+                        item.selected ? " on" : ""
+                      }`}
+                      aria-hidden
+                    >
+                      {item.selected ? "✓" : ""}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {queue.length > 0 && (
             <ul className="photo-dump-queue">
               {queue.map((item) => {
                 const canSelect =
                   item.status === "pending" || item.status === "error";
+                if (canSelect) return null;
                 return (
                   <li
                     key={item.id}
                     className={`photo-dump-queue-item status-${item.status}`}
                   >
                     <div className="photo-dump-queue-main">
-                      {canSelect ? (
-                        <label
-                          style={{
-                            display: "flex",
-                            gap: "0.5rem",
-                            alignItems: "flex-start",
-                            margin: 0,
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={item.selected}
-                            disabled={navLocked}
-                            onChange={() => toggleSelected(item.id)}
-                            aria-label={`Select ${item.name}`}
-                          />
-                          <span>
-                            <strong>{item.name}</strong>
-                            <span
-                              className="hint"
-                              style={{ padding: 0, display: "block" }}
-                            >
-                              {formatBytes(item.size)} ·{" "}
-                              {statusLabel(item.status)}
-                            </span>
-                          </span>
-                        </label>
-                      ) : (
-                        <>
-                          <strong>{item.name}</strong>
-                          <span className="hint" style={{ padding: 0 }}>
-                            {formatBytes(item.size)} · {statusLabel(item.status)}
-                          </span>
-                        </>
-                      )}
+                      <strong>{item.name}</strong>
+                      <span className="hint" style={{ padding: 0 }}>
+                        {formatBytes(item.size)} · {statusLabel(item.status)}
+                      </span>
                     </div>
                     {item.message && (
                       <p className="photo-dump-queue-msg">{item.message}</p>
@@ -1031,6 +1370,149 @@ export function PhotoDumpPanel({
               })}
             </ul>
           )}
+        </div>
+      )}
+
+      {galleryOpen && (
+        <div className="photo-dump-gallery-overlay" role="dialog" aria-modal="true">
+          <div className="photo-dump-gallery-sheet">
+            <div className="photo-dump-gallery-head">
+              <strong>Gallery</strong>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setGalleryOpen(false)}
+                aria-label="Close gallery"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="hint" style={{ padding: "0 0 0.5rem" }}>
+              Circle-select across months like Photos. Load older months as
+              needed, then upload.
+            </p>
+            <div className="photo-dump-toolbar" style={{ marginBottom: "0.5rem" }}>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={galleryBusy || galleryItems.length === 0}
+                onClick={selectAllGalleryVisible}
+              >
+                Select all shown
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={galleryBusy || gallerySelected.length === 0}
+                onClick={deselectAllGallery}
+              >
+                Deselect
+              </button>
+              <button
+                type="button"
+                className="btn chip"
+                disabled={galleryBusy || !galleryCursor}
+                onClick={() => void loadOlderGalleryMonth()}
+              >
+                {galleryBusy ? "Loading…" : "Load older month"}
+              </button>
+              <span className="hint" style={{ padding: 0 }}>
+                {gallerySelected.length}/{galleryItems.length} selected
+              </span>
+            </div>
+            {galleryHint && (
+              <p className="hint" style={{ padding: "0 0 0.5rem" }}>
+                {galleryHint}
+              </p>
+            )}
+            <div className="photo-dump-gallery-scroll">
+              {gallerySections.length === 0 && !galleryBusy ? (
+                <p className="hint">No media loaded yet.</p>
+              ) : null}
+              {gallerySections.map((section) => (
+                <section key={section.key} className="photo-dump-gallery-section">
+                  <h3 className="photo-dump-gallery-section-title">
+                    {section.label}
+                    <span className="hint" style={{ padding: 0 }}>
+                      {" "}
+                      · {section.items.length}
+                    </span>
+                  </h3>
+                  <div
+                    className="photo-dump-gallery"
+                    role="group"
+                    aria-label={`Media for ${section.label}`}
+                  >
+                    {section.items.map((item) => {
+                      const thumb = galleryThumbSrc(item.uri);
+                      const isVideo = (item.mimeType || "").startsWith("video/");
+                      return (
+                        <button
+                          key={item.uri}
+                          type="button"
+                          className={`photo-dump-gallery-cell${
+                            item.selected ? " selected" : ""
+                          }`}
+                          disabled={galleryBusy}
+                          onClick={() => toggleGallerySelected(item.uri)}
+                          aria-pressed={item.selected}
+                          aria-label={`${item.selected ? "Deselect" : "Select"} ${item.name}`}
+                        >
+                          {thumb ? (
+                            <img src={thumb} alt="" loading="lazy" />
+                          ) : (
+                            <span
+                              className="photo-dump-gallery-fallback"
+                              aria-hidden
+                            >
+                              {isVideo ? "▶" : "🖼"}
+                            </span>
+                          )}
+                          {isVideo ? (
+                            <span
+                              className="photo-dump-gallery-video"
+                              aria-hidden
+                            >
+                              ▶
+                            </span>
+                          ) : null}
+                          <span
+                            className={`photo-dump-gallery-check${
+                              item.selected ? " on" : ""
+                            }`}
+                            aria-hidden
+                          >
+                            {item.selected ? "✓" : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+            <div className="photo-dump-gallery-footer">
+              <button
+                type="button"
+                className="btn"
+                disabled={galleryBusy || gallerySelected.length === 0}
+                onClick={() => {
+                  addGallerySelectionToQueue();
+                  setGalleryOpen(false);
+                }}
+              >
+                Add to queue ({gallerySelected.length})
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={galleryBusy || gallerySelected.length === 0 || uploading}
+                onClick={uploadGallerySelection}
+              >
+                Upload selected ({gallerySelected.length})
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

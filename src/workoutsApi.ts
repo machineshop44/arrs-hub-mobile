@@ -1,6 +1,7 @@
 import { httpRequest } from "./arrApi";
 import {
   HubAuthError,
+  getHubApiTokenCache,
   isHubAuthFailure,
   mergeHubAuthHeaders,
 } from "./hubAuth";
@@ -227,10 +228,17 @@ export async function probeHubReachable(
       const settingsUrl = `${base}/api/workouts/settings`;
       const res = await httpRequest(settingsUrl, {
         method: "GET",
-        headers: { Accept: "application/json" },
+        headers: mergeHubAuthHeaders({ Accept: "application/json" }),
         timeoutMs: 8000,
       });
-      if (res.status >= 200 && res.status < 500) {
+      if (isHubAuthFailure(res.status)) {
+        return {
+          ok: false,
+          triedUrl: settingsUrl,
+          detail: new HubAuthError(res.status).message,
+        };
+      }
+      if (res.status >= 200 && res.status < 400) {
         return {
           ok: true,
           triedUrl: settingsUrl,
@@ -256,10 +264,17 @@ export async function probeHubReachable(
     const settingsUrl = `${base}/api/workouts/settings`;
     const res = await httpRequest(settingsUrl, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers: mergeHubAuthHeaders({ Accept: "application/json" }),
       timeoutMs: 8000,
     });
-    if (res.status >= 200 && res.status < 500) {
+    if (isHubAuthFailure(res.status)) {
+      return {
+        ok: false,
+        triedUrl: settingsUrl,
+        detail: new HubAuthError(res.status).message,
+      };
+    }
+    if (res.status >= 200 && res.status < 400) {
       return {
         ok: true,
         triedUrl: settingsUrl,
@@ -392,7 +407,7 @@ export async function playWorkoutDay(
       return {
         title: String(item.title || ""),
         ratingKey: String(item.ratingKey || ""),
-        url: resolvePlaylistUrl(hubUrl, item),
+        url: withHubAuthQuery(resolvePlaylistUrl(hubUrl, item)),
         seekable: item.seekable !== false,
         durationMs:
           typeof item.durationMs === "number" ? item.durationMs : null,
@@ -452,6 +467,32 @@ function resolvePlaylistUrl(
 }
 
 /**
+ * Append Hub API token as `hubToken` query so VLC / libVLC can auth without
+ * custom headers (Hub accepts hubToken/token query via readHubApiToken).
+ */
+export function withHubAuthQuery(url: string): string {
+  const trimmed = url.trim();
+  const token = getHubApiTokenCache().trim();
+  if (!trimmed || !token) return trimmed;
+  try {
+    const next = new URL(trimmed, "http://local.invalid");
+    if (!next.pathname.includes("/api/")) return trimmed;
+    if (!next.searchParams.get("hubToken")) {
+      next.searchParams.set("hubToken", token);
+    }
+    if (trimmed.startsWith("/")) {
+      return `${next.pathname}${next.search}`;
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return next.toString();
+    }
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
  * Mark hub media URLs for VLC direct play (less / no browser-oriented transcode).
  *
  * Hub agent note — honor on `GET /api/workouts/media/:ratingKey`:
@@ -459,6 +500,7 @@ function resolvePlaylistUrl(
  * - Default (no flag) stays browser-safe (may transcode to H.264+AAC MP4).
  * Observed without hub support: HTTP 502 `PLEX_EMPTY` / chrome-mp4-only when
  * source audio is AC3 — VLC opens a black screen because the body is JSON.
+ * Remote also needs hubToken query or X-Arrs-Hub-Token (players use query).
  */
 export function withVlcDirectStreamUrl(url: string): string {
   const trimmed = url.trim();
@@ -470,6 +512,10 @@ export function withVlcDirectStreamUrl(url: string): string {
     }
     next.searchParams.set("mode", "direct");
     next.searchParams.set("player", "vlc");
+    const token = getHubApiTokenCache().trim();
+    if (token && !next.searchParams.get("hubToken")) {
+      next.searchParams.set("hubToken", token);
+    }
     if (trimmed.startsWith("/")) {
       return `${next.pathname}${next.search}`;
     }
@@ -536,7 +582,8 @@ function mediaErrorDetail(data: unknown, status: number): {
 
 /**
  * Pre-flight the hub media URL before handing it to VLC.
- * Avoids "Opened in VLC" + black screen when the hub returns JSON 502.
+ * Prefer HEAD so we never buffer a full video into memory (OOM guard).
+ * Fall back to a tiny ranged GET only when HEAD is rejected.
  */
 export async function probeWorkoutMediaStream(
   url: string,
@@ -550,21 +597,28 @@ export async function probeWorkoutMediaStream(
       detail: "No stream URL to probe.",
     };
   }
-  try {
-    const res = await httpRequest(trimmed, {
-      method: "GET",
-      headers: {
-        Accept: "*/*",
-        Range: "bytes=0-1023",
-      },
-      timeoutMs: 20000,
-    });
-    const status = res.status;
+
+  const authHeaders = mergeHubAuthHeaders({
+    Accept: "*/*",
+  });
+
+  const interpret = (
+    status: number,
+    data: unknown,
+  ): MediaStreamProbe | null => {
+    if (isHubAuthFailure(status)) {
+      return {
+        ok: false,
+        url: trimmed,
+        status,
+        detail: new HubAuthError(status).message,
+        code: "HUB_AUTH",
+      };
+    }
     if (status >= 200 && status < 400) {
-      const json = asObject(res.data);
-      // Hub sometimes returns 200 with an error object (unlikely) — treat as fail.
+      const json = asObject(data);
       if (typeof json.error === "string" && json.error.trim()) {
-        const parsed = mediaErrorDetail(res.data, status);
+        const parsed = mediaErrorDetail(data, status);
         return {
           ok: false,
           url: trimmed,
@@ -573,12 +627,11 @@ export async function probeWorkoutMediaStream(
           code: parsed.code,
         };
       }
-      // JSON body with code PLEX_EMPTY etc.
       if (
         typeof json.code === "string" &&
         /PLEX_|EMPTY|ERROR/i.test(json.code)
       ) {
-        const parsed = mediaErrorDetail(res.data, status);
+        const parsed = mediaErrorDetail(data, status);
         return {
           ok: false,
           url: trimmed,
@@ -594,13 +647,49 @@ export async function probeWorkoutMediaStream(
         detail: `HTTP ${status}`,
       };
     }
-    const parsed = mediaErrorDetail(res.data, status);
+    if (status === 405 || status === 501) return null;
+    const parsed = mediaErrorDetail(data, status);
     return {
       ok: false,
       url: trimmed,
       status,
       detail: parsed.detail,
       code: parsed.code,
+    };
+  };
+
+  try {
+    const head = await httpRequest(trimmed, {
+      method: "HEAD",
+      headers: authHeaders,
+      timeoutMs: 12000,
+    });
+    const fromHead = interpret(head.status, head.data);
+    if (fromHead) return fromHead;
+  } catch {
+    // HEAD unsupported / network — try tiny ranged GET next
+  }
+
+  try {
+    const res = await httpRequest(trimmed, {
+      method: "GET",
+      headers: {
+        ...authHeaders,
+        Range: "bytes=0-1023",
+      },
+      timeoutMs: 12000,
+    });
+    // Drop large accidental bodies so we don't keep them around.
+    if (typeof res.data === "string" && res.data.length > 8192) {
+      res.data = null;
+    }
+    const fromGet = interpret(res.status, res.data);
+    if (fromGet) return fromGet;
+    return {
+      ok: false,
+      url: trimmed,
+      status: res.status,
+      detail: `Hub media returned HTTP ${res.status || "error"} (not a playable stream).`,
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

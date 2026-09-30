@@ -12,7 +12,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ExternalPlayerPlugin.class);
         registerPlugin(VlcPlayerPlugin.class);
         registerPlugin(PhotoDumpMediaPlugin.class);
+        registerPlugin(PhotoDumpSyncPlugin.class);
         registerPlugin(WindowFlagsPlugin.class);
+        registerPlugin(HubWidgetPlugin.class);
         super.onCreate(savedInstanceState);
         deliverShareIntent(getIntent());
     }

@@ -1,3 +1,4 @@
+import { normalizeBase } from "./http";
 import { httpRequest } from "./arrApi";
 import {
   HubAuthError,
@@ -5,10 +6,6 @@ import {
   isHubAuthFailure,
   mergeHubAuthHeaders,
 } from "./hubAuth";
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
 
 function asObject(data: unknown): Record<string, unknown> {
   if (data && typeof data === "object" && !Array.isArray(data)) {
@@ -27,6 +24,33 @@ function asObject(data: unknown): Record<string, unknown> {
   return {};
 }
 
+/** Strip hubToken / token / api keys from URLs shown in UI or logs. */
+export function redactHubAuthUrl(url: string): string {
+  const raw = String(url || "");
+  if (!raw) return raw;
+  try {
+    const u = new URL(raw);
+    for (const key of [...u.searchParams.keys()]) {
+      const lower = key.toLowerCase();
+      if (
+        lower === "hubtoken" ||
+        lower === "token" ||
+        lower.includes("apikey") ||
+        lower.includes("api_key") ||
+        lower === "x-arrs-hub-token"
+      ) {
+        u.searchParams.set(key, "***");
+      }
+    }
+    return u.toString();
+  } catch {
+    return raw.replace(
+      /([?&](?:hubToken|token|apiKey|api_key|X-Arrs-Hub-Token)=)[^&]*/gi,
+      "$1***",
+    );
+  }
+}
+
 function formatHubHttpError(
   url: string,
   status: number,
@@ -38,7 +62,8 @@ function formatHubHttpError(
     typeof json.error === "string" && json.error.trim()
       ? json.error.trim()
       : fallback;
-  return `${detail}\nTried: ${url}${status ? ` (HTTP ${status})` : ""}`;
+  const safe = redactHubAuthUrl(url);
+  return `${detail}\nTried: ${safe}${status ? ` (HTTP ${status})` : ""}`;
 }
 
 async function workoutsGet(hubUrl: string, path: string) {
@@ -71,7 +96,7 @@ async function workoutsGet(hubUrl: string, path: string) {
     if (err instanceof Error && err.message.includes("Tried:")) throw err;
     if (err instanceof Error && err.message.includes("Hub API token")) throw err;
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`${reason}\nTried: ${url}`);
+    throw new Error(`${reason}\nTried: ${redactHubAuthUrl(url)}`);
   }
 }
 
@@ -109,7 +134,7 @@ async function workoutsPost(hubUrl: string, path: string, body: unknown) {
     if (err instanceof Error && err.message.includes("Tried:")) throw err;
     if (err instanceof Error && err.message.includes("Hub API token")) throw err;
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`${reason}\nTried: ${url}`);
+    throw new Error(`${reason}\nTried: ${redactHubAuthUrl(url)}`);
   }
 }
 

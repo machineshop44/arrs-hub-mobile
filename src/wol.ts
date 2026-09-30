@@ -2,6 +2,7 @@ import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Network } from "@capacitor/network";
 import { Preferences } from "@capacitor/preferences";
 import { UdpSocket } from "capacitor-udp-socket";
+import { loadDevSeed } from "./devSeed";
 import {
   HubAuthError,
   isHubAuthFailure,
@@ -409,12 +410,7 @@ function buildMagicPacketBase64(mac: string): string {
 }
 
 async function loadWolSeed(): Promise<Partial<WolSettings>> {
-  const modules = import.meta.glob<{
-    wolDefaults?: Partial<WolSettings>;
-    default?: unknown;
-  }>("./credentials.local.ts", { eager: true });
-  const mod = modules["./credentials.local.ts"];
-  return mod?.wolDefaults ?? {};
+  return (await loadDevSeed()).wolDefaults ?? {};
 }
 
 export async function loadWolSettings(): Promise<WolSettings> {

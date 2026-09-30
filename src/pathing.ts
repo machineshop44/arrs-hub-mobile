@@ -1,4 +1,5 @@
 import { Preferences } from "@capacitor/preferences";
+import { loadDevSeed } from "./devSeed";
 
 /** Capacitor Preferences key for home/LAN pathing. */
 export const PATHING_STORAGE_KEY = "arrs-mobile-pathing-v1";
@@ -119,10 +120,7 @@ export function resolveServiceUrl(
 }
 
 export async function loadPathSettings(): Promise<PathSettings> {
-  const modules = import.meta.glob<{
-    pathingDefaults?: Partial<PathSettings>;
-  }>("./credentials.local.ts", { eager: true });
-  const seed = modules["./credentials.local.ts"]?.pathingDefaults ?? {};
+  const seed = (await loadDevSeed()).pathingDefaults ?? {};
   const base: PathSettings = {
     ...DEFAULT_PATHING,
     ...seed,

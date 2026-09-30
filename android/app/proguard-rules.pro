@@ -1,21 +1,43 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Release is minified (debug is not). Capacitor discovers plugins and @PluginMethod
+# handlers by reflection, and the WebView bridge calls into them by name, so keep
+# every plugin package whole.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Capacitor core + plugins
+-keep class com.getcapacitor.** { *; }
+-keep class com.capacitorjs.** { *; }
+-keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
+-keepclassmembers class * {
+    @com.getcapacitor.PluginMethod public *;
+    @com.getcapacitor.annotation.PermissionCallback *;
+    @com.getcapacitor.annotation.ActivityCallback *;
+}
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# App (plugins, workers, widget provider)
+-keep class com.arrshub.status.** { *; }
+
+# libVLC (JNI looks up Java classes/fields by name)
+-keep class org.videolan.** { *; }
+-dontwarn org.videolan.**
+
+# @capgo/inappbrowser
+-keep class ee.forgr.** { *; }
+-dontwarn ee.forgr.**
+
+# capacitor-udp-socket
+-keep class com.svend.plugins.udp.socket.** { *; }
+
+# Cordova plugin bridge (capacitor-cordova-android-plugins)
+-keep class org.apache.cordova.** { *; }
+-dontwarn org.apache.cordova.**
+
+# WorkManager instantiates workers reflectively
+-keep class androidx.work.** { *; }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-dontwarn androidx.work.**

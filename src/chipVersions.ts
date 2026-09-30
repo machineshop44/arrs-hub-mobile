@@ -1,8 +1,7 @@
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { hubGetJson, hubPostJson, normalizeBase } from "./http";
 import {
   HubAuthError,
   isHubAuthFailure,
-  mergeHubAuthHeaders,
 } from "./hubAuth";
 import type { ServiceConfig } from "./services";
 import { isCompanionOnlyUrl } from "./services";
@@ -38,10 +37,6 @@ export type AppUpdateJobState = {
   error?: string | null;
 };
 
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
-
 /** URLs the hub chip-versions / summary APIs accept. Skip companion-only. */
 export function statusUrlMap(
   services: ServiceConfig[],
@@ -70,93 +65,6 @@ export function statusUrlMap(
     out[id] = url;
   }
   return out;
-}
-
-async function postJson(
-  url: string,
-  body: unknown,
-  timeoutMs: number,
-): Promise<{ status: number; data: unknown }> {
-  const headers = mergeHubAuthHeaders({
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  });
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.post({
-      url,
-      headers,
-      data: body,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    const data =
-      typeof res.data === "string"
-        ? (() => {
-            try {
-              return JSON.parse(res.data);
-            } catch {
-              return null;
-            }
-          })()
-        : res.data;
-    return { status: res.status, data };
-  }
-
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => null);
-    return { status: res.status, data };
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-async function getJson(
-  url: string,
-  timeoutMs: number,
-): Promise<{ status: number; data: unknown }> {
-  const headers = mergeHubAuthHeaders({ Accept: "application/json" });
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({
-      url,
-      headers,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    const data =
-      typeof res.data === "string"
-        ? (() => {
-            try {
-              return JSON.parse(res.data);
-            } catch {
-              return null;
-            }
-          })()
-        : res.data;
-    return { status: res.status, data };
-  }
-
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    const data = await res.json().catch(() => null);
-    return { status: res.status, data };
-  } finally {
-    window.clearTimeout(timer);
-  }
 }
 
 function parseJob(raw: unknown): AppUpdateJobState | null {
@@ -190,7 +98,7 @@ export async function fetchChipVersions(
   const base = normalizeBase(hubBaseUrl);
   if (!base) return null;
   try {
-    const { status, data } = await postJson(
+    const { status, data } = await hubPostJson(
       `${base}/api/status/chip-versions`,
       { urls: statusUrlMap(services, resolveUrl) },
       timeoutMs,
@@ -221,7 +129,7 @@ export async function startAppUpdate(
   const base = normalizeBase(hubBaseUrl);
   if (!base) throw new Error("Hub URL is not set");
   const urls = statusUrlMap(services, resolveUrl);
-  const { status, data } = await postJson(
+  const { status, data } = await hubPostJson(
     `${base}/api/status/app-update`,
     {
       id: appId,
@@ -260,7 +168,7 @@ export async function fetchAppUpdateJob(
   const base = normalizeBase(hubBaseUrl);
   if (!base) return null;
   try {
-    const { status, data } = await getJson(
+    const { status, data } = await hubGetJson(
       `${base}/api/status/app-update?id=${encodeURIComponent(appId)}`,
       timeoutMs,
     );

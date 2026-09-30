@@ -7,4 +7,10 @@
     <string name="custom_url_scheme">com.arrshub.status</string>
     <string name="vlc_close">Close player</string>
     <string name="vlc_play_pause">Play or pause</string>
+    <string name="widget_description">Streams, downloads, Ombi requests and Wake PC</string>
+    <string name="widget_streams">Streams</string>
+    <string name="widget_downloads">Downloads</string>
+    <string name="widget_ombi">Ombi</string>
+    <string name="widget_wake_pc">Wake PC</string>
+    <string name="widget_open_to_refresh">Open app to refresh</string>
 </resources>

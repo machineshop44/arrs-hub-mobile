@@ -11,16 +11,32 @@ import {
 import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import { IconPower } from "./icons";
+import { useActiveInterval, useAppActive } from "./appActive";
+import { formatBytes, formatScheduleWhen } from "./arrApi";
+import {
+  fetchArrHealthSummary,
+  fetchUpcoming,
+  isLowDisk,
+  type ArrHealthSummary,
+  type UpcomingItem,
+} from "./homeExtras";
+import { fetchTautulliActivity, type TautulliSession } from "./tautulliApi";
+import { updateHubWidget } from "./hubWidget";
+
+/** App versions change rarely; the summary still polls every 20 s. */
+const CHIP_VERSIONS_INTERVAL_MS = 5 * 60_000;
 import {
   fetchHubStatusSummary,
   fetchOmbiPending,
   approveOmbiRequest,
+  denyOmbiRequestViaHub,
   issueBadge,
   ombiTypeLabel,
   type ArrQueueApp,
   type HubStatusSummary,
   type OmbiPendingItem,
 } from "./hubSummary";
+import { denyOmbiRequestDirect } from "./ombiApi";
 import {
   fetchChipVersions,
   fetchAppUpdateJob,
@@ -68,6 +84,7 @@ type SheetId =
   | "ombi"
   | "plex"
   | "wol"
+  | "health"
   | null;
 
 const SHEET_CHIPS = [
@@ -80,7 +97,12 @@ const SHEET_CHIPS = [
   "ombi",
   "plex",
   "wol",
+  "health",
 ] as const satisfies readonly Exclude<SheetId, null>[];
+
+const NOW_PLAYING_INTERVAL_MS = 20_000;
+const HEALTH_INTERVAL_MS = 5 * 60_000;
+const UPCOMING_INTERVAL_MS = 15 * 60_000;
 
 const CANNOT_INSTALL_HINT =
   "Plex reports canInstall=false (manual/NAS installs cannot be applied from the hub).";
@@ -210,24 +232,88 @@ export const HomeStatusChips = forwardRef<
   const plexPoll = useRef(createPlexPollController());
   const summaryGen = useRef(0);
   const plexJobPollInFlight = useRef(false);
+  const versionsFetchedAt = useRef(0);
+  const appActive = useAppActive();
+  const [nowPlaying, setNowPlaying] = useState<TautulliSession[] | null>(null);
+  const [arrHealth, setArrHealth] = useState<ArrHealthSummary | null>(null);
+  const [upcoming, setUpcoming] = useState<UpcomingItem[] | null>(null);
+
+  const tautulliService = useMemo(() => {
+    const s = services.find((x) => x.id === "tautulli" && x.enabled && x.apiKey.trim());
+    return s ? { ...s, url: resolveUrl(s) } : null;
+  }, [services, resolveUrl]);
+
+  const loadNowPlaying = useCallback(async () => {
+    if (!tautulliService) {
+      setNowPlaying(null);
+      return;
+    }
+    const res = await fetchTautulliActivity(tautulliService).catch(() => null);
+    if (res?.ok) setNowPlaying(res.sessions);
+  }, [tautulliService]);
+
+  const loadArrHealth = useCallback(async () => {
+    setArrHealth(await fetchArrHealthSummary(services, resolveUrl).catch(() => null));
+  }, [services, resolveUrl]);
+
+  const loadUpcoming = useCallback(async () => {
+    setUpcoming(await fetchUpcoming(services, resolveUrl, 7).catch(() => null));
+  }, [services, resolveUrl]);
+
+  useActiveInterval(() => void loadNowPlaying(), NOW_PLAYING_INTERVAL_MS, { runOnResume: true });
+  useActiveInterval(() => void loadArrHealth(), HEALTH_INTERVAL_MS, { runOnResume: false });
+  useActiveInterval(() => void loadUpcoming(), UPCOMING_INTERVAL_MS, { runOnResume: false });
+
+  useEffect(() => {
+    void loadNowPlaying();
+  }, [loadNowPlaying]);
+  useEffect(() => {
+    void loadArrHealth();
+  }, [loadArrHealth]);
+  useEffect(() => {
+    void loadUpcoming();
+  }, [loadUpcoming]);
 
   const hubDown = hubReachable === false || !hubBaseUrl.trim();
+
+  useEffect(() => {
+    if (hubDown) {
+      void updateHubWidget({ streams: null, downloads: null, ombiPending: null });
+      return;
+    }
+    if (!summary) return;
+    void updateHubWidget({
+      streams: summary.streams?.configured ? summary.streams.streamCount : null,
+      downloads: summary.downloads ? summary.downloads.active : null,
+      ombiPending: summary.ombi?.configured ? summary.ombi.pending : null,
+    });
+  }, [summary, hubDown]);
   /** Same gate as chip probes: hub up; skip expensive refresh off home LAN. */
   const allowPlexRefresh = !hubDown && onHomeNetwork !== false;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts: { forceVersions?: boolean } = {}) => {
     if (hubDown) {
       setSummary(null);
       setSummaryError(null);
       setChipVersions(null);
       setPlexStatus(null);
+      versionsFetchedAt.current = 0;
       return;
     }
     const gen = ++summaryGen.current;
+    const wantVersions =
+      opts.forceVersions ||
+      Date.now() - versionsFetchedAt.current > CHIP_VERSIONS_INTERVAL_MS;
+    if (wantVersions) versionsFetchedAt.current = Date.now();
     try {
       const [next, versions] = await Promise.all([
         fetchHubStatusSummary(hubBaseUrl, services, resolveUrl),
-        fetchChipVersions(hubBaseUrl, services, resolveUrl),
+        wantVersions
+          ? fetchChipVersions(hubBaseUrl, services, resolveUrl).catch(() => {
+              versionsFetchedAt.current = 0;
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
       if (gen !== summaryGen.current) return;
       if (next) {
@@ -314,7 +400,7 @@ export const HomeStatusChips = forwardRef<
       refreshAll: async (opts = {}) => {
         const plexRefresh = opts.plexRefresh !== false && allowPlexRefresh;
         await Promise.all([
-          load(),
+          load({ forceVersions: true }),
           loadPlex(plexRefresh, { announce: false }),
         ]);
       },
@@ -328,6 +414,7 @@ export const HomeStatusChips = forwardRef<
   // Cached badge polls (no refresh=1). Skip initial plex fetch when a
   // startup refresh=1 will cover the first paint — avoids duplicate calls.
   useEffect(() => {
+    if (!appActive) return;
     void load();
     if (!allowPlexRefresh) void loadPlex(false);
     if (hubDown) return;
@@ -336,7 +423,7 @@ export const HomeStatusChips = forwardRef<
       void loadPlex(false);
     }, 20000);
     return () => window.clearInterval(timer);
-  }, [load, loadPlex, hubDown, allowPlexRefresh]);
+  }, [load, loadPlex, hubDown, allowPlexRefresh, appActive]);
 
   // One real check at home mount (refresh=1) when hub reachable (+ prefer LAN).
   // Reset when allowPlexRefresh recovers so reconnect gets a fresh check.
@@ -558,7 +645,8 @@ export const HomeStatusChips = forwardRef<
     };
   }, [runningAppUpdateKey, hubDown, hubBaseUrl, load]);
 
-  const streams = summary?.streams?.streamCount ?? null;
+  const streams = summary?.streams?.streamCount ?? nowPlaying?.length ?? null;
+  const transcodingCount = (nowPlaying ?? []).filter((s) => s.isTranscoding).length;
   const downloads = summary?.downloads?.active ?? null;
   const ombiPending = summary?.ombi?.pending ?? null;
   const queueTotal = summary?.arr?.queueTotal ?? null;
@@ -807,11 +895,16 @@ export const HomeStatusChips = forwardRef<
             : "setup",
       tone:
         streams && streams > 0
-          ? "accent"
+          ? transcodingCount > 0
+            ? "warn"
+            : "accent"
           : summary?.streams?.configured
             ? "muted"
             : "warn",
-      title: "Open Streams (Tautulli)",
+      title:
+        transcodingCount > 0
+          ? `Open Streams (Tautulli) — ${transcodingCount} transcoding`
+          : "Open Streams (Tautulli)",
     },
     {
       id: "downloads",
@@ -834,12 +927,34 @@ export const HomeStatusChips = forwardRef<
         ? "—"
         : pendingSummary || queueTotal == null
           ? pendingGlyph
-          : summary?.arr?.sonarr?.ok || summary?.arr?.radarr?.ok
+          : summary?.arr?.sonarr?.ok ||
+              summary?.arr?.radarr?.ok ||
+              summary?.arr?.lidarr?.ok ||
+              summary?.arr?.readarr?.ok ||
+              summary?.arr?.whisparr?.ok
             ? String(queueTotal)
             : "setup",
       tone: queueTotal && queueTotal > 0 ? "warn" : "muted",
       title: "*arr queue — open Activity Queue",
     },
+    ...(arrHealth && arrHealth.checked > 0
+      ? [
+          {
+            id: "health",
+            label: "Health",
+            value:
+              arrHealth.issues.length + arrHealth.lowDisk.length > 0
+                ? String(arrHealth.issues.length + arrHealth.lowDisk.length)
+                : "OK",
+            tone: (arrHealth.issues.some((i) => i.type === "error")
+              ? "bad"
+              : arrHealth.issues.length || arrHealth.lowDisk.length
+                ? "warn"
+                : "good") as ChipTone,
+            title: "*arr health checks + free disk space",
+          },
+        ]
+      : []),
     {
       id: "ombi",
       label: "Ombi pending",
@@ -964,6 +1079,49 @@ export const HomeStatusChips = forwardRef<
     }
   };
 
+  const denyOmbi = async (item: OmbiPendingItem) => {
+    const ombiService = services.find((s) => s.id === "ombi");
+    const key = `${item.type}-${item.id}`;
+    setOmbiApprovingId(key);
+    setOmbiError(null);
+    try {
+      const viaHub = hubBaseUrl.trim()
+        ? await denyOmbiRequestViaHub(hubBaseUrl, item, services, resolveUrl)
+        : false;
+      if (!viaHub) {
+        if (!ombiService?.url.trim() || !ombiService.apiKey.trim()) {
+          throw new Error(
+            "This Hub can’t deny yet — update Hub, or add Ombi URL + API key in Settings.",
+          );
+        }
+        await denyOmbiRequestDirect(
+          { ...ombiService, url: resolveUrl(ombiService) },
+          { type: item.type, id: item.id },
+        );
+      }
+      setOmbiItems((prev) =>
+        prev.filter((row) => !(row.type === item.type && row.id === item.id)),
+      );
+      setSummary((prev) =>
+        prev?.ombi
+          ? {
+              ...prev,
+              ombi: {
+                ...prev.ombi,
+                pending: Math.max(0, (prev.ombi.pending ?? 1) - 1),
+              },
+            }
+          : prev,
+      );
+      await Promise.all([reloadOmbiPending(), load()]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOmbiError(msg);
+    } finally {
+      setOmbiApprovingId(null);
+    }
+  };
+
   const sheetTitle =
     sheet === "hub"
       ? "Arrs Hub"
@@ -985,7 +1143,9 @@ export const HomeStatusChips = forwardRef<
                     ? "Plex Media Server"
                     : sheet === "wol"
                       ? "WOL PCs"
-                      : "";
+                      : sheet === "health"
+                        ? "*arr health"
+                        : "";
 
   const onChipClick = (chipId: string) => {
     if (chipId === "streams") {
@@ -1044,6 +1204,66 @@ export const HomeStatusChips = forwardRef<
         </p>
       )}
 
+      {nowPlaying && nowPlaying.length > 0 && (
+        <div className="home-now-playing" aria-label="Now playing">
+          {nowPlaying.map((s) => (
+            <button
+              key={s.sessionKey}
+              type="button"
+              className={`home-np-card${s.isTranscoding ? " is-transcoding" : ""}`}
+              onClick={onOpenStreams}
+              title={s.fullTitle}
+            >
+              {s.posterUrl ? (
+                <img className="home-np-poster" src={s.posterUrl} alt="" loading="lazy" />
+              ) : (
+                <span className="home-np-poster placeholder" aria-hidden>
+                  ▶
+                </span>
+              )}
+              <span className="home-np-body">
+                <strong>{s.displayTitle || s.title}</strong>
+                <small>
+                  {s.user}
+                  {s.isTranscoding ? " · transcoding" : ""}
+                </small>
+                <span className="home-np-progress">
+                  <span style={{ width: `${Math.min(100, s.progressPercent)}%` }} />
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {upcoming && upcoming.length > 0 && (
+        <div className="home-upcoming" aria-label="Upcoming this week">
+          <p className="dash-chip-popover-title">Upcoming · next 7 days</p>
+          <ul>
+            {upcoming.slice(0, 6).map((item) => (
+              <li key={`${item.appId}-${item.id}`}>
+                <button
+                  type="button"
+                  onClick={() => onOpenService(item.appId, { initialTab: "calendar" })}
+                >
+                  <span className="home-upcoming-when">
+                    {formatScheduleWhen(item.airDateUtc, item.releaseDate)}
+                  </span>
+                  <span className="home-upcoming-title">
+                    {item.title}
+                    {item.subtitle ? <small> · {item.subtitle}</small> : null}
+                  </span>
+                  <span className="home-upcoming-app">{item.appName}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {upcoming.length > 6 && (
+            <p className="dash-status-hint">+{upcoming.length - 6} more in each app’s Calendar tab</p>
+          )}
+        </div>
+      )}
+
       {sheet && (
         <div className="dash-sheet-scrim" role="presentation">
           <div
@@ -1064,6 +1284,60 @@ export const HomeStatusChips = forwardRef<
               </button>
             </div>
 
+            {sheet === "health" && arrHealth && (
+              <>
+                {arrHealth.issues.length === 0 ? (
+                  <p className="dash-chip-popover-empty">No health warnings.</p>
+                ) : (
+                  <ul className="dash-queue-issues">
+                    {arrHealth.issues.map((issue, i) => (
+                      <li key={`${issue.appId}-${i}`}>
+                        <div className="dash-queue-issue-main">
+                          <span className="dash-queue-issue-badge">
+                            {issue.appName} · {issue.type === "error" ? "Error" : "Warning"}
+                          </span>
+                          <span className="dash-queue-issue-title">{issue.message}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="dash-queue-issue-link"
+                          onClick={() => {
+                            setSheet(null);
+                            onOpenService(issue.appId);
+                          }}
+                        >
+                          Open
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {arrHealth.disks.length > 0 && (
+                  <>
+                    <p className="dash-chip-popover-title">Free space</p>
+                    <ul className="dash-queue-breakdown">
+                      {arrHealth.disks.map((d) => {
+                        const pct = Math.round((d.freeSpace / d.totalSpace) * 100);
+                        return (
+                          <li key={d.path} className={isLowDisk(d) ? "is-low-disk" : undefined}>
+                            <span title={d.appNames.join(", ")}>{d.label || d.path}</span>
+                            <strong>
+                              {formatBytes(d.freeSpace)} · {pct}%
+                            </strong>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </>
+                )}
+                {arrHealth.failed.length > 0 && (
+                  <p className="dash-chip-popover-hint">
+                    Couldn’t reach: {arrHealth.failed.join(", ")}
+                  </p>
+                )}
+              </>
+            )}
+
             {sheet === "hub" && (
               <>
                 <ul className="dash-queue-breakdown dash-plex-versions">
@@ -1071,7 +1345,9 @@ export const HomeStatusChips = forwardRef<
                     <span>Status</span>
                     <strong>
                       {hubReachable === true
-                        ? "Up"
+                        ? hubLastError
+                          ? "Up (auth)"
+                          : "Up"
                         : hubReachable === false
                           ? "Down"
                           : "Unknown"}
@@ -1510,9 +1786,9 @@ export const HomeStatusChips = forwardRef<
                   </ul>
                 )}
                 <p className="dash-chip-popover-hint">
-                  Tap Sonarr / Radarr / Lidarr (or Open Activity) to open that
-                  app&apos;s Activity Queue in the browser. Matching still
-                  happens there.
+                  Tap an app (or Open Activity) for its in-app queue: retry
+                  import, remove, blocklist &amp; search again. Manual matching
+                  still needs the web UI.
                 </p>
               </>
             )}
@@ -1599,7 +1875,17 @@ export const HomeStatusChips = forwardRef<
                               }
                               onClick={() => void approveOmbi(item)}
                             >
-                              {approving ? "Approving…" : "Approve"}
+                              {approving ? "…" : "Approve"}
+                            </button>
+                            <button
+                              type="button"
+                              className="dash-ombi-deny"
+                              disabled={
+                                approving || ombiApprovingId != null || hubDown
+                              }
+                              onClick={() => void denyOmbi(item)}
+                            >
+                              Deny
                             </button>
                           </div>
                         </li>
@@ -1609,11 +1895,11 @@ export const HomeStatusChips = forwardRef<
                 )}
                 {ombiError ? (
                   <p className="dash-chip-popover-error" role="alert">
-                    Approve error: {ombiError}
+                    Ombi error: {ombiError}
                   </p>
                 ) : null}
                 <p className="dash-chip-popover-hint">
-                  Fallback:{" "}
+                  Search &amp; request:{" "}
                   <button
                     type="button"
                     className="dash-queue-issue-link"

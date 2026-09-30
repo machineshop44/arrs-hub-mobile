@@ -48,7 +48,9 @@ async function decodeImageFile(file: File): Promise<string> {
 }
 
 interface PhotoDumpQrScanProps {
-  onPayload: (payload: PhotoDumpSetupPayload) => void | Promise<void>;
+  onPayload: (
+    payload: PhotoDumpSetupPayload,
+  ) => boolean | void | Promise<boolean | void>;
   className?: string;
 }
 
@@ -107,7 +109,13 @@ export function PhotoDumpQrScan({ onPayload, className }: PhotoDumpQrScanProps) 
     setBusy(true);
     setError(null);
     try {
-      await onPayload(payload);
+      const applied = await onPayload(payload);
+      if (applied === false) {
+        handledRef.current = false;
+        setBusy(false);
+        setError("Cancelled — nothing changed.");
+        return;
+      }
       close();
     } catch (err) {
       handledRef.current = false;

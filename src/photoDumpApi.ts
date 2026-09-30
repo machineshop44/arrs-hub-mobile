@@ -1,6 +1,8 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 import { httpRequest } from "./arrApi";
+import { mergeHubAuthHeaders } from "./hubAuth";
+import { uploadPhotoDumpMediaUri } from "./photoDumpMedia";
 
 /** Capacitor Preferences key for Hub photo-dump API key (also mirrored on service.apiKey). */
 export const PHOTO_DUMP_API_KEY_STORAGE = "arrs-mobile-photo-dump-key-v1";
@@ -253,6 +255,9 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
  * Upload raw octets to Hub. Only returns after Hub verifies size + hash
  * (or reports duplicate skip for an already-indexed SHA).
  * On mismatch Hub rejects and does not keep the file — caller must keep phone copy.
+ *
+ * Prefer {@link uploadPhotoDumpFromUri} on Android — streams from MediaStore
+ * without loading the whole file into the WebView (avoids OOM on big dumps).
  */
 export async function uploadPhotoDumpFile(
   hubUrl: string,
@@ -338,14 +343,115 @@ export async function uploadPhotoDumpFile(
     }
   }
 
+  return parsePhotoDumpUploadResult({
+    url,
+    status,
+    data,
+    localSha,
+    expectedSize,
+    fileName: opts.fileName,
+  });
+}
+
+/**
+ * Android-only: hash + stream a content:// URI to Hub without base64 in JS.
+ */
+export async function uploadPhotoDumpFromUri(
+  hubUrl: string,
+  apiKey: string,
+  opts: {
+    uri: string;
+    fileName: string;
+    relativeFolder: string;
+    size: number;
+    sha256: string;
+  },
+): Promise<PhotoDumpUploadResult> {
+  const base = normalizeBase(hubUrl);
+  if (!base) {
+    throw new Error(
+      "Arrs Hub URL is not set. Open Settings → Network and set Arrs Hub host + port.",
+    );
+  }
+  const url = `${base}/api/photo-dump/upload`;
+  const expectedSize = opts.size;
+  if (!expectedSize || expectedSize <= 0) {
+    throw new Error("Upload size unknown.");
+  }
+  const localSha = opts.sha256.toLowerCase();
+  const headers: Record<string, string> = {
+    ...authHeaders(apiKey),
+    "Content-Type": "application/octet-stream",
+    "X-File-Name": encodeURIComponent(opts.fileName),
+    "X-Relative-Folder": encodeURIComponent(
+      opts.relativeFolder.replace(/\\/g, "/"),
+    ),
+    "X-Content-SHA256": localSha,
+    "X-Expected-Size": String(expectedSize),
+  };
+  const timeoutMs = Math.min(
+    30 * 60 * 1000,
+    Math.max(120_000, Math.ceil(expectedSize / 50_000) * 1000),
+  );
+  const res = await uploadPhotoDumpMediaUri({
+    uri: opts.uri,
+    url,
+    headers,
+    timeoutMs,
+    expectedSize,
+  });
+  return parsePhotoDumpUploadResult({
+    url,
+    status: res.status,
+    data: res.data,
+    localSha,
+    expectedSize,
+    fileName: opts.fileName,
+  });
+}
+
+/**
+ * Endpoint + base headers for the native background uploader. Per-file headers
+ * (X-File-Name, X-Relative-Folder, X-Content-SHA256, X-Expected-Size) are added
+ * natively after hashing; the worker applies the same verification as
+ * {@link parsePhotoDumpUploadResult}.
+ */
+export function buildPhotoDumpUploadConfig(
+  hubUrl: string,
+  apiKey: string,
+): { url: string; headers: Record<string, string> } {
+  const base = normalizeBase(hubUrl);
+  if (!base) {
+    throw new Error(
+      "Arrs Hub URL is not set. Open Settings → Network and set Arrs Hub host + port.",
+    );
+  }
+  return {
+    url: `${base}/api/photo-dump/upload`,
+    headers: mergeHubAuthHeaders(authHeaders(apiKey)),
+  };
+}
+
+function parsePhotoDumpUploadResult(opts: {
+  url: string;
+  status: number;
+  data: unknown;
+  localSha: string;
+  expectedSize: number;
+  fileName: string;
+}): PhotoDumpUploadResult {
+  const { url, status, data, localSha, expectedSize, fileName } = opts;
   const json = asObject(data);
   if (status < 200 || status >= 300) {
+    const emptyConn = !status || status === 0;
     throw new Error(
       formatHubHttpError(
         url,
         status,
         json,
-        `Upload failed (HTTP ${status}). Phone copy kept.`,
+        emptyConn
+          ? "Hub closed the connection with no reply (often already-on-Hub duplicate). Phone copy kept — check Hub folder or retry after Hub update."
+          : `Upload failed (HTTP ${status}). Phone copy kept.`,
       ),
     );
   }
@@ -356,7 +462,7 @@ export async function uploadPhotoDumpFile(
     verified: json.verified === true,
     duplicate,
     folder: typeof json.folder === "string" ? json.folder : "",
-    fileName: typeof json.fileName === "string" ? json.fileName : opts.fileName,
+    fileName: typeof json.fileName === "string" ? json.fileName : fileName,
     size: typeof json.size === "number" ? json.size : expectedSize,
     sha256: typeof json.sha256 === "string" ? json.sha256.toLowerCase() : "",
     path: typeof json.path === "string" ? json.path : "",

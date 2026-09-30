@@ -8,6 +8,7 @@ import {
   fetchAlbumReleases,
   fetchAlbumTracks,
   fetchArrOverview,
+  fetchArrQueue,
   fetchArtistAlbums,
   fetchAuthorBooks,
   fetchBookReleases,
@@ -15,13 +16,22 @@ import {
   fetchReleasesForLookup,
   fetchSeriesEpisodes,
   formatBytes,
+  formatScheduleWhen,
   grabRelease,
   lookupMedia,
+  MIN_AVAILABILITY_OPTIONS,
+  queueNeedsAttention,
+  removeQueueItem,
+  retryQueueImport,
   searchAlbum,
   searchBook,
+  searchCommandFor,
   searchEpisode,
   searchExisting,
+  searchMediaRef,
   seasonsFromLookup,
+  SONARR_MONITOR_OPTIONS,
+  type ArrAddOptions,
   type ArrAddProfile,
   type ArrAlbumItem,
   type ArrBookItem,
@@ -35,8 +45,22 @@ import {
   type ArrWantedItem,
 } from "./arrApi";
 import type { ServiceConfig } from "./services";
+import { useActiveInterval } from "./appActive";
 import { ServiceIcon } from "./icons";
 import { MediaImg, useMediaBackground } from "./mediaUrl";
+
+function addOptionsKey(service: ServiceConfig): string {
+  return `arrs-add-options-${service.id}`;
+}
+
+function loadAddOptions(service: ServiceConfig): ArrAddOptions {
+  try {
+    const raw = localStorage.getItem(addOptionsKey(service));
+    return raw ? (JSON.parse(raw) as ArrAddOptions) : {};
+  } catch {
+    return {};
+  }
+}
 
 type Tab = "library" | "search" | "calendar" | "missing" | "queue";
 type DetailTab = "overview" | "episodes" | "albums" | "tracks" | "books";
@@ -211,6 +235,61 @@ export function ArrPanel({
   const [lookupPreview, setLookupPreview] = useState<ArrLookupItem | null>(
     null,
   );
+  const [busyRow, setBusyRow] = useState<string | null>(null);
+  const [addOptions, setAddOptions] = useState<ArrAddOptions>(() =>
+    loadAddOptions(service),
+  );
+
+  const updateAddOptions = (patch: Partial<ArrAddOptions>) => {
+    setAddOptions((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        localStorage.setItem(addOptionsKey(service), JSON.stringify(next));
+      } catch {
+        /* storage full / disabled */
+      }
+      return next;
+    });
+  };
+
+  /** Saved choices can go stale if a profile / folder was deleted in the arr. */
+  const effectiveAddOptions = useMemo((): ArrAddOptions => {
+    if (!profiles) return addOptions;
+    const qp = profiles.qualityProfiles.some((p) => p.id === addOptions.qualityProfileId)
+      ? addOptions.qualityProfileId
+      : undefined;
+    const root = profiles.rootFolders.some((r) => r.path === addOptions.rootFolderPath)
+      ? addOptions.rootFolderPath
+      : undefined;
+    const meta = profiles.metadataProfiles?.some((p) => p.id === addOptions.metadataProfileId)
+      ? addOptions.metadataProfileId
+      : undefined;
+    return { ...addOptions, qualityProfileId: qp, rootFolderPath: root, metadataProfileId: meta };
+  }, [addOptions, profiles]);
+
+  const refreshQueue = useCallback(async () => {
+    if (!service.apiKey.trim()) return;
+    try {
+      setQueue(await fetchArrQueue(service));
+    } catch {
+      /* keep last queue; full reload surfaces errors */
+    }
+  }, [service]);
+
+  useActiveInterval(() => void refreshQueue(), tab === "queue" ? 10000 : null);
+
+  const runRowAction = async (key: string, action: () => Promise<string>) => {
+    setBusyRow(key);
+    setError(null);
+    try {
+      setMessage(await action());
+      await refreshQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyRow(null);
+    }
+  };
 
   const load = useCallback(async (): Promise<ArrLibraryItem[]> => {
     if (!service.apiKey.trim()) {
@@ -496,7 +575,7 @@ export function ArrPanel({
     setBusy(true);
     setError(null);
     try {
-      setMessage(await addAndSearch(service, item, profiles));
+      setMessage(await addAndSearch(service, item, profiles, effectiveAddOptions));
       const lib = await load();
       if (kind === "series") {
         const added = findAddedLibraryItem(lib, item);
@@ -1316,6 +1395,113 @@ export function ArrPanel({
               Go
             </button>
           </form>
+          {profiles && (
+            <details className="arr-add-options">
+              <summary>Add options</summary>
+              <label>
+                Quality profile
+                <select
+                  value={effectiveAddOptions.qualityProfileId ?? ""}
+                  onChange={(e) =>
+                    updateAddOptions({
+                      qualityProfileId: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                >
+                  <option value="">Default ({profiles.qualityProfiles[0]?.name ?? "—"})</option>
+                  {profiles.qualityProfiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Root folder
+                <select
+                  value={effectiveAddOptions.rootFolderPath ?? ""}
+                  onChange={(e) =>
+                    updateAddOptions({ rootFolderPath: e.target.value || undefined })
+                  }
+                >
+                  <option value="">Default ({profiles.rootFolders[0]?.path ?? "—"})</option>
+                  {profiles.rootFolders.map((r) => (
+                    <option key={r.path} value={r.path}>
+                      {r.path}
+                      {typeof r.freeSpace === "number" ? ` — ${formatBytes(r.freeSpace)} free` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {profiles.metadataProfiles && profiles.metadataProfiles.length > 0 && (
+                <label>
+                  Metadata profile
+                  <select
+                    value={effectiveAddOptions.metadataProfileId ?? ""}
+                    onChange={(e) =>
+                      updateAddOptions({
+                        metadataProfileId: e.target.value ? Number(e.target.value) : undefined,
+                      })
+                    }
+                  >
+                    <option value="">Default</option>
+                    {profiles.metadataProfiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {kind === "series" && (
+                <label>
+                  Monitor
+                  <select
+                    value={effectiveAddOptions.monitor ?? "all"}
+                    onChange={(e) =>
+                      updateAddOptions({
+                        monitor: e.target.value as ArrAddOptions["monitor"],
+                      })
+                    }
+                  >
+                    {SONARR_MONITOR_OPTIONS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {kind === "movie" && (
+                <label>
+                  Minimum availability
+                  <select
+                    value={effectiveAddOptions.minimumAvailability ?? "released"}
+                    onChange={(e) =>
+                      updateAddOptions({
+                        minimumAvailability: e.target
+                          .value as ArrAddOptions["minimumAvailability"],
+                      })
+                    }
+                  >
+                    {MIN_AVAILABILITY_OPTIONS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="arr-add-check">
+                <input
+                  type="checkbox"
+                  checked={effectiveAddOptions.searchNow !== false}
+                  onChange={(e) => updateAddOptions({ searchNow: e.target.checked })}
+                />
+                Search immediately after adding
+              </label>
+            </details>
+          )}
           <ul className="arr-list">
             {results.map((item) => (
               <li key={item.key} className="arr-item">
@@ -1386,13 +1572,18 @@ export function ArrPanel({
 
       {tab === "calendar" && (
         <ul className="arr-list">
+          {calendar.length === 0 && (
+            <p className="hint empty">Nothing in the next 14 days.</p>
+          )}
           {calendar.map((item) => (
-            <li key={item.id} className="arr-item">
-              <strong>{item.title}</strong>
-              <span>
-                {(item.airDateUtc || item.releaseDate || "")
-                  .slice(0, 16)
-                  .replace("T", " ")}
+            <li key={`${item.id}-${item.airDateUtc || item.releaseDate}`} className="arr-item">
+              <div className="arr-row-main">
+                <strong>{item.title}</strong>
+                {item.subtitle ? <span className="meta">{item.subtitle}</span> : null}
+              </div>
+              <span className="meta">
+                {formatScheduleWhen(item.airDateUtc, item.releaseDate)}
+                {item.hasFile ? " · ✓" : ""}
               </span>
             </li>
           ))}
@@ -1406,8 +1597,24 @@ export function ArrPanel({
           )}
           {wanted.map((item) => (
             <li key={item.id} className="arr-item">
-              <strong>{item.title}</strong>
-              <span>{item.status || "Missing"}</span>
+              <div className="arr-row-main">
+                <strong>{item.title}</strong>
+                {item.subtitle ? <span className="meta">{item.subtitle}</span> : null}
+              </div>
+              {searchCommandFor(service, item) ? (
+                <button
+                  type="button"
+                  className="btn chip"
+                  disabled={busyRow != null}
+                  onClick={() =>
+                    void runRowAction(`w-${item.id}`, () => searchMediaRef(service, item))
+                  }
+                >
+                  {busyRow === `w-${item.id}` ? "…" : "Search"}
+                </button>
+              ) : (
+                <span className="meta">{item.status || "Missing"}</span>
+              )}
             </li>
           ))}
         </ul>
@@ -1415,15 +1622,100 @@ export function ArrPanel({
 
       {tab === "queue" && (
         <ul className="arr-list">
-          {queue.map((item) => (
-            <li key={item.id} className="arr-item">
-              <strong>{item.title}</strong>
-              <span>
-                {item.status}
-                {item.timeleft ? ` · ${item.timeleft}` : ""}
-              </span>
-            </li>
-          ))}
+          {queue.length === 0 && <p className="hint empty">Queue is empty.</p>}
+          {queue.map((item) => {
+            const attention = queueNeedsAttention(item);
+            const rowKey = `q-${item.id}`;
+            const state = String(item.trackedDownloadState || "").toLowerCase();
+            return (
+              <li
+                key={item.id}
+                className={`arr-item arr-queue-item${attention ? " attention" : ""}`}
+              >
+                <div className="arr-row-main">
+                  <strong>{item.mediaTitle || item.title}</strong>
+                  {item.mediaTitle ? <span className="meta">{item.title}</span> : null}
+                  <span className="meta">
+                    {[
+                      item.trackedDownloadState || item.status,
+                      item.timeleft ? `${item.timeleft} left` : "",
+                      item.size ? formatBytes(item.size) : "",
+                      item.downloadClient,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                  {item.progress != null ? (
+                    <div className="arr-progress" aria-label={`${item.progress}%`}>
+                      <div style={{ width: `${item.progress}%` }} />
+                    </div>
+                  ) : null}
+                  {(item.errorMessage || item.messages.length > 0) && (
+                    <ul className="arr-queue-messages">
+                      {[item.errorMessage, ...item.messages]
+                        .filter(Boolean)
+                        .slice(0, 4)
+                        .map((line) => (
+                          <li key={line}>{line}</li>
+                        ))}
+                    </ul>
+                  )}
+                  <div className="arr-item-actions">
+                    {state.startsWith("import") && item.outputPath ? (
+                      <button
+                        type="button"
+                        className="btn chip primary"
+                        disabled={busyRow != null}
+                        onClick={() =>
+                          void runRowAction(rowKey, () => retryQueueImport(service, item))
+                        }
+                      >
+                        Retry import
+                      </button>
+                    ) : null}
+                    {searchCommandFor(service, item) ? (
+                      <button
+                        type="button"
+                        className="btn chip"
+                        disabled={busyRow != null}
+                        onClick={() =>
+                          void runRowAction(rowKey, () => searchMediaRef(service, item))
+                        }
+                      >
+                        Search again
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn chip"
+                      disabled={busyRow != null}
+                      onClick={() => {
+                        if (!window.confirm(`Blocklist “${item.title}” and find another release?`)) return;
+                        void runRowAction(rowKey, () =>
+                          removeQueueItem(service, item, { blocklist: true }),
+                        );
+                      }}
+                    >
+                      Blocklist + replace
+                    </button>
+                    <button
+                      type="button"
+                      className="btn chip danger"
+                      disabled={busyRow != null}
+                      onClick={() => {
+                        if (!window.confirm(`Remove “${item.title}” from the queue and download client?`)) return;
+                        void runRowAction(rowKey, () =>
+                          removeQueueItem(service, item, { blocklist: false }),
+                        );
+                      }}
+                    >
+                      {busyRow === rowKey ? "…" : "Remove"}
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 

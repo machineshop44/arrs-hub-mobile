@@ -54,27 +54,34 @@ export async function playEmbeddedVlc(
   return new Promise((resolve, reject) => {
     let settled = false;
     let handle: { remove: () => Promise<void> } | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (finished: boolean) => {
       if (settled) return;
       settled = true;
+      if (timeoutId != null) clearTimeout(timeoutId);
       void handle?.remove();
       resolve({ finished });
     };
 
+    // Absolute safety net if native never emits closed (should be rare after listener-first).
+    timeoutId = setTimeout(() => finish(false), 4 * 60 * 60 * 1000);
+
+    // Register closed listener before play() so a fast close cannot race.
     void VlcPlayer.addListener("closed", (event) => {
       finish(Boolean(event?.finished));
-    }).then((h) => {
-      handle = h;
-    });
-
-    void VlcPlayer.play({ items: playlist, startIndex })
+    })
+      .then((h) => {
+        handle = h;
+        return VlcPlayer.play({ items: playlist, startIndex });
+      })
       .then(() => {
         /* wait for closed */
       })
       .catch((err) => {
         if (settled) return;
         settled = true;
+        if (timeoutId != null) clearTimeout(timeoutId);
         void handle?.remove();
         reject(err instanceof Error ? err : new Error(String(err)));
       });

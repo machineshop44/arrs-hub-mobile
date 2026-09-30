@@ -7,6 +7,7 @@ import {
 } from "@capgo/inappbrowser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ServiceIcon } from "./icons";
+import { serviceWebUrl } from "./plexApi";
 import type { ServiceConfig } from "./services";
 
 interface WebPanelProps {
@@ -23,7 +24,7 @@ interface WebPanelProps {
 export function WebPanel({ service, onBack }: WebPanelProps) {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const url = service.url.trim();
+  const url = serviceWebUrl(service);
   const native = Capacitor.isNativePlatform();
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;

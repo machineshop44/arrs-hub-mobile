@@ -1,6 +1,7 @@
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
-import { mergeHubAuthHeaders } from "./hubAuth";
+import { loadDevSeed } from "./devSeed";
+import { hubGetJson, httpRequest, normalizeBase } from "./http";
+import { mergeHubAuthHeaders, isHubAuthFailure } from "./hubAuth";
 import {
   arrApiVersion,
   buildDefaultConfigs,
@@ -57,6 +58,13 @@ export type HubWatchdogStatus = {
   pcs: Record<string, HubWatchdogPcLive>;
   settingsPcs: HubWatchdogPcConfig[];
   watchServices: Record<string, HubWatchdogWatchService>;
+};
+
+/** Result of GET /api/watchdog/status — distinguishes auth vs unreachable. */
+export type HubWatchdogFetchResult = {
+  status: HubWatchdogStatus | null;
+  /** Hub responded 401/403 — needs X-Arrs-Hub-Token (not offline). */
+  authRequired?: boolean;
 };
 
 export type HubHealthInfo = {
@@ -116,42 +124,9 @@ async function hubGet(
   if (!base) return null;
 
   const started = performance.now();
-  const headers = withHubAuth
-    ? mergeHubAuthHeaders({ Accept: "application/json" })
-    : { Accept: "application/json" };
   try {
-    if (Capacitor.isNativePlatform()) {
-      const res = await CapacitorHttp.get({
-        url: `${base}${path}`,
-        headers,
-        connectTimeout: timeoutMs,
-        readTimeout: timeoutMs,
-      });
-      const data =
-        typeof res.data === "string"
-          ? (() => {
-              try {
-                return JSON.parse(res.data);
-              } catch {
-                return null;
-              }
-            })()
-          : res.data;
-      return { status: res.status, data, started };
-    }
-
-    const res = await fetch(`${base}${path}`, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: "no-store",
-    });
-    let data: unknown = null;
-    try {
-      data = await res.json();
-    } catch {
-      data = null;
-    }
+    const res = await hubGetJson(`${base}${path}`, timeoutMs, withHubAuth);
+    const data = typeof res.data === "string" ? null : res.data;
     return { status: res.status, data, started };
   } catch {
     return null;
@@ -279,10 +254,14 @@ export async function fetchHubHealth(
 export async function fetchHubWatchdogStatus(
   hubBaseUrl: string,
   timeoutMs = 6000,
-): Promise<HubWatchdogStatus | null> {
+): Promise<HubWatchdogFetchResult> {
   const res = await hubGet(hubBaseUrl, "/api/watchdog/status", timeoutMs, true);
-  if (!res || res.status < 200 || res.status >= 400) return null;
-  if (!res.data || typeof res.data !== "object") return null;
+  if (!res) return { status: null };
+  if (isHubAuthFailure(res.status)) {
+    return { status: null, authRequired: true };
+  }
+  if (res.status < 200 || res.status >= 400) return { status: null };
+  if (!res.data || typeof res.data !== "object") return { status: null };
 
   const json = res.data as {
     services?: unknown;
@@ -290,18 +269,16 @@ export async function fetchHubWatchdogStatus(
     settings?: { pcs?: unknown; services?: unknown };
   };
   const services = parseWatchdogServices(json.services, res.started);
-  if (!services) return null;
+  if (!services) return { status: null };
 
   return {
-    services,
-    pcs: parseWatchdogPcs(json.pcs),
-    settingsPcs: parseSettingsPcs(json.settings?.pcs),
-    watchServices: parseWatchServices(json.settings?.services),
+    status: {
+      services,
+      pcs: parseWatchdogPcs(json.pcs),
+      settingsPcs: parseSettingsPcs(json.settings?.pcs),
+      watchServices: parseWatchServices(json.settings?.services),
+    },
   };
-}
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
 }
 
 /** 2xx = up; 401/403 = reachable but needs key (not generic Up for 404). */
@@ -318,13 +295,8 @@ export function probeResultFromHttpStatus(
   return { up: false, latencyMs, message: `HTTP ${status}` };
 }
 
-async function loadSeed() {
-  const modules = import.meta.glob<{ default: Record<string, unknown> }>(
-    "./credentials.local.ts",
-    { eager: true },
-  );
-  const mod = modules["./credentials.local.ts"];
-  return (mod?.default ?? {}) as import("./services").CredentialSeed;
+async function loadSeed(): Promise<import("./services").CredentialSeed> {
+  return (await loadDevSeed()).default ?? {};
 }
 
 async function httpGet(
@@ -332,47 +304,7 @@ async function httpGet(
   headers: Record<string, string> = {},
   timeoutMs = 8000,
 ): Promise<{ status: number; latencyMs: number; data: unknown }> {
-  const started = performance.now();
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({
-      url,
-      headers,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    let data: unknown = res.data;
-    if (typeof data === "string" && data.trim()) {
-      try {
-        data = JSON.parse(data);
-      } catch {
-        // keep string body
-      }
-    }
-    return {
-      status: res.status,
-      latencyMs: Math.round(performance.now() - started),
-      data,
-    };
-  }
-
-  const res = await fetch(url, {
-    method: "GET",
-    headers,
-    signal: AbortSignal.timeout(timeoutMs),
-    cache: "no-store",
-  });
-  let data: unknown = null;
-  try {
-    const text = await res.text();
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-  return {
-    status: res.status,
-    latencyMs: Math.round(performance.now() - started),
-    data,
-  };
+  return httpRequest(url, { headers, timeoutMs });
 }
 
 export async function probeService(service: ServiceConfig): Promise<ProbeResult> {

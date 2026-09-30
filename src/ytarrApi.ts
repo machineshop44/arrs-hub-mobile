@@ -1,9 +1,6 @@
+import { normalizeBase } from "./http";
 import { httpRequest } from "./arrApi";
 import type { ServiceConfig } from "./services";
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
 
 function ytarrHeaders(service: ServiceConfig): Record<string, string> {
   const headers: Record<string, string> = {

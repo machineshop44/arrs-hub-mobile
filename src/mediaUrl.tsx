@@ -1,3 +1,4 @@
+import { normalizeBase } from "./http";
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import {
   useEffect,
@@ -7,10 +8,6 @@ import {
 } from "react";
 import type { ServiceConfig } from "./services";
 import { arrApiVersion } from "./services";
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
 
 /** Lidarr/Readarr serve covers at `/MediaCover/...`; Sonarr/Radarr use `/api/v3/MediaCover/...`. */
 export function mediaCoverRoot(service: Pick<ServiceConfig, "id">): string {

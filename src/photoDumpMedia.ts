@@ -27,6 +27,19 @@ export type PhotoDumpMediaMonthResult = {
   count: number;
 };
 
+export type PhotoDumpAlbum = {
+  id: string;
+  name: string;
+  count: number;
+  coverUri?: string;
+};
+
+export type PhotoDumpAlbumResult = {
+  items: PhotoDumpMediaItem[];
+  bucketId: string;
+  count: number;
+};
+
 type PhotoDumpMediaPlugin = {
   pickMedia(options?: {
     multiple?: boolean;
@@ -35,7 +48,26 @@ type PhotoDumpMediaPlugin = {
     year: number;
     month: number;
   }): Promise<PhotoDumpMediaMonthResult>;
+  listAlbums(): Promise<{ albums: PhotoDumpAlbum[]; count: number }>;
+  queryAlbum(options: { bucketId: string }): Promise<PhotoDumpAlbumResult>;
   readUriBase64(options: { uri: string }): Promise<PhotoDumpMediaReadResult>;
+  hashUri(options: { uri: string }): Promise<{
+    sha256: string;
+    size: number;
+    name: string;
+    mimeType: string;
+  }>;
+  uploadUri(options: {
+    uri: string;
+    url: string;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+    expectedSize?: number;
+  }): Promise<{ status: number; data: string; sent: number }>;
+  thumbnailBase64(options: {
+    uri: string;
+    maxSize?: number;
+  }): Promise<{ base64: string; mimeType: string; size: number }>;
   deleteUri(options: { uri: string }): Promise<PhotoDumpMediaDeleteResult>;
   deleteUris(options: { uris: string[] }): Promise<PhotoDumpMediaDeleteResult>;
   consumeSharedMedia(): Promise<{ items: PhotoDumpMediaItem[]; count: number }>;
@@ -49,6 +81,25 @@ type PhotoDumpMediaPlugin = {
 };
 
 const PhotoDumpMedia = registerPlugin<PhotoDumpMediaPlugin>("PhotoDumpMedia");
+
+/** Cap concurrent native thumbnail decodes (large gallery grids). */
+const THUMB_CONCURRENCY = 3;
+let thumbActive = 0;
+const thumbWaiters: Array<() => void> = [];
+
+async function withThumbSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (thumbActive >= THUMB_CONCURRENCY) {
+    await new Promise<void>((resolve) => thumbWaiters.push(resolve));
+  }
+  thumbActive += 1;
+  try {
+    return await fn();
+  } finally {
+    thumbActive -= 1;
+    const next = thumbWaiters.shift();
+    if (next) next();
+  }
+}
 
 export function isPhotoDumpMediaNative(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
@@ -117,6 +168,37 @@ export async function queryPhotoDumpMediaMonth(
   return PhotoDumpMedia.queryMonth({ year, month });
 }
 
+export async function listPhotoDumpAlbums(): Promise<PhotoDumpAlbum[]> {
+  if (!isPhotoDumpMediaNative()) {
+    throw new Error("Album browse is only available on Android.");
+  }
+  const res = await PhotoDumpMedia.listAlbums();
+  const raw = Array.isArray(res.albums) ? res.albums : [];
+  const out: PhotoDumpAlbum[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const id = String(row.id || "").trim();
+    if (!id) continue;
+    const album: PhotoDumpAlbum = {
+      id,
+      name: String(row.name || "Album").trim() || "Album",
+      count: typeof row.count === "number" ? row.count : 0,
+    };
+    if (row.coverUri) album.coverUri = String(row.coverUri);
+    out.push(album);
+  }
+  return out;
+}
+
+export async function queryPhotoDumpAlbum(
+  bucketId: string,
+): Promise<PhotoDumpAlbumResult> {
+  if (!isPhotoDumpMediaNative()) {
+    throw new Error("Album query is only available on Android.");
+  }
+  return PhotoDumpMedia.queryAlbum({ bucketId });
+}
+
 export async function readPhotoDumpMediaBase64(
   uri: string,
 ): Promise<PhotoDumpMediaReadResult> {
@@ -124,6 +206,77 @@ export async function readPhotoDumpMediaBase64(
     throw new Error("Native URI read is only available on Android.");
   }
   return PhotoDumpMedia.readUriBase64({ uri });
+}
+
+/** Stream SHA-256 without loading the whole file into the WebView (avoids OOM). */
+export async function hashPhotoDumpMediaUri(uri: string): Promise<{
+  sha256: string;
+  size: number;
+  name: string;
+  mimeType: string;
+}> {
+  if (!isPhotoDumpMediaNative()) {
+    throw new Error("Native URI hash is only available on Android.");
+  }
+  const res = await PhotoDumpMedia.hashUri({ uri });
+  return {
+    sha256: String(res.sha256 || "").toLowerCase(),
+    size: typeof res.size === "number" ? res.size : 0,
+    name: String(res.name || "media"),
+    mimeType: String(res.mimeType || "application/octet-stream"),
+  };
+}
+
+/** Stream ContentResolver bytes straight to Hub (no base64 in JS). */
+export async function uploadPhotoDumpMediaUri(opts: {
+  uri: string;
+  url: string;
+  headers: Record<string, string>;
+  timeoutMs: number;
+  expectedSize: number;
+}): Promise<{ status: number; data: unknown; sent: number }> {
+  if (!isPhotoDumpMediaNative()) {
+    throw new Error("Native URI upload is only available on Android.");
+  }
+  const res = await PhotoDumpMedia.uploadUri({
+    uri: opts.uri,
+    url: opts.url,
+    headers: opts.headers,
+    timeoutMs: opts.timeoutMs,
+    expectedSize: opts.expectedSize,
+  });
+  let data: unknown = res.data;
+  if (typeof data === "string" && data.trim()) {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      // keep raw string
+    }
+  }
+  return {
+    status: typeof res.status === "number" ? res.status : 0,
+    data,
+    sent: typeof res.sent === "number" ? res.sent : opts.expectedSize,
+  };
+}
+
+/** Small JPEG data-URL for gallery grid (images + videos). */
+export async function readPhotoDumpThumbnailDataUrl(
+  uri: string,
+  maxSize = 256,
+): Promise<string | null> {
+  if (!isPhotoDumpMediaNative()) return null;
+  return withThumbSlot(async () => {
+    try {
+      const res = await PhotoDumpMedia.thumbnailBase64({ uri, maxSize });
+      const b64 = String(res.base64 || "").trim();
+      if (!b64) return null;
+      const mime = String(res.mimeType || "image/jpeg");
+      return `data:${mime};base64,${b64}`;
+    } catch {
+      return null;
+    }
+  });
 }
 
 export async function deletePhotoDumpMediaUri(

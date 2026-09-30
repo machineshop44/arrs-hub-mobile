@@ -1,3 +1,4 @@
+import { normalizeBase } from "./http";
 import { httpRequest } from "./arrApi";
 import {
   HubAuthError,
@@ -56,10 +57,6 @@ const JOB_PHASES: PlexUpdateJobPhase[] = [
   "done",
   "error",
 ];
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
 
 function asObject(data: unknown): Record<string, unknown> {
   if (data && typeof data === "object" && !Array.isArray(data)) {

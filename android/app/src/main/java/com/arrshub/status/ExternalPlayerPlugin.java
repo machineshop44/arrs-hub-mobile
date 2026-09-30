@@ -161,7 +161,7 @@ public class ExternalPlayerPlugin extends Plugin {
                     "Opened in VLC (first of "
                             + count
                             + "): "
-                            + firstUrl);
+                            + redactStreamUrlForLog(firstUrl));
 
             JSObject result = new JSObject();
             result.put("opened", true);

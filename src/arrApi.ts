@@ -1,4 +1,4 @@
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { httpRequest, normalizeBase } from "./http";
 import type { ServiceConfig } from "./services";
 import { arrApiVersion } from "./services";
 import {
@@ -9,66 +9,7 @@ import {
 } from "./mediaUrl";
 
 export { albumCoverUrl, bookCoverUrl, mediaCoverUrl } from "./mediaUrl";
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
-
-export async function httpRequest(
-  url: string,
-  options: {
-    method?: string;
-    headers?: Record<string, string>;
-    data?: unknown;
-    timeoutMs?: number;
-  } = {},
-): Promise<{ status: number; data: unknown; latencyMs: number }> {
-  const method = (options.method || "GET").toUpperCase();
-  const headers = options.headers ?? {};
-  const timeoutMs = options.timeoutMs ?? 20000;
-  const started = performance.now();
-
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.request({
-      url,
-      method,
-      headers,
-      data: options.data,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    return {
-      status: res.status,
-      data: res.data,
-      latencyMs: Math.round(performance.now() - started),
-    };
-  }
-
-  const res = await fetch(url, {
-    method,
-    headers,
-    body:
-      options.data === undefined
-        ? undefined
-        : typeof options.data === "string"
-          ? options.data
-          : JSON.stringify(options.data),
-    signal: AbortSignal.timeout(timeoutMs),
-    cache: "no-store",
-  });
-  const text = await res.text();
-  let data: unknown = text;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    // keep text
-  }
-  return {
-    status: res.status,
-    data,
-    latencyMs: Math.round(performance.now() - started),
-  };
-}
+export { httpRequest } from "./http";
 
 export function arrHeaders(service: ServiceConfig): Record<string, string> {
   const headers: Record<string, string> = {
@@ -126,6 +67,15 @@ export async function arrPut(
   });
 }
 
+export async function arrDelete(service: ServiceConfig, apiPath: string) {
+  const base = normalizeBase(service.url);
+  const path = resolveArrPath(service, apiPath);
+  return httpRequest(`${base}${path}`, {
+    method: "DELETE",
+    headers: arrHeaders(service),
+  });
+}
+
 export type ArrKind = "series" | "movie" | "artist" | "author" | "unknown";
 
 export function detectArrKind(service: ServiceConfig): ArrKind {
@@ -144,27 +94,68 @@ export function detectArrKind(service: ServiceConfig): ArrKind {
   }
 }
 
-export type ArrQueueItem = {
-  id: number;
-  title: string;
-  status: string;
-  trackedDownloadState?: string;
-  sizeleft?: number;
-  timeleft?: string;
+/** Ids a queue / wanted / calendar row can be searched or imported by. */
+export type ArrMediaRef = {
+  episodeId?: number;
+  seriesId?: number;
+  movieId?: number;
+  albumId?: number;
+  artistId?: number;
+  bookId?: number;
+  authorId?: number;
 };
 
-export type ArrWantedItem = {
+export type ArrQueueItem = ArrMediaRef & {
   id: number;
   title: string;
+  /** Show / movie / artist name when the arr includes it. */
+  mediaTitle?: string;
+  status: string;
+  trackedDownloadState?: string;
+  trackedDownloadStatus?: string;
+  size?: number;
+  sizeleft?: number;
+  timeleft?: string;
+  /** 0–100 when size is known. */
+  progress?: number;
+  messages: string[];
+  errorMessage?: string;
+  downloadClient?: string;
+  outputPath?: string;
+  downloadId?: string;
+  protocol?: string;
+};
+
+export type ArrWantedItem = ArrMediaRef & {
+  id: number;
+  title: string;
+  mediaTitle?: string;
+  subtitle?: string;
   status?: string;
 };
 
-export type ArrCalendarItem = {
+export type ArrCalendarItem = ArrMediaRef & {
   id: number;
   title: string;
+  mediaTitle?: string;
+  subtitle?: string;
   airDateUtc?: string;
   releaseDate?: string;
   hasFile?: boolean;
+};
+
+export type ArrHealthItem = {
+  source: string;
+  type: "ok" | "notice" | "warning" | "error";
+  message: string;
+  wikiUrl?: string;
+};
+
+export type ArrDiskSpace = {
+  path: string;
+  label?: string;
+  freeSpace: number;
+  totalSpace: number;
 };
 
 export type ArrLookupMediaType =
@@ -221,64 +212,240 @@ function asList(data: unknown): Record<string, unknown>[] {
   return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
 }
 
-export async function fetchArrOverview(service: ServiceConfig) {
-  const today = new Date();
-  const start = today.toISOString().slice(0, 10);
-  const endDate = new Date(today);
-  endDate.setDate(endDate.getDate() + 7);
-  const end = endDate.toISOString().slice(0, 10);
+/** Query flags so rows come back with their parent show / movie / artist. */
+function includeParams(kind: ArrKind, scope: "queue" | "wanted" | "calendar") {
+  if (kind === "series") {
+    return scope === "queue"
+      ? "includeSeries=true&includeEpisode=true"
+      : "includeSeries=true";
+  }
+  if (kind === "movie") return scope === "queue" ? "includeMovie=true" : "";
+  if (kind === "artist") {
+    return scope === "queue"
+      ? "includeArtist=true&includeAlbum=true"
+      : "includeArtist=true";
+  }
+  if (kind === "author") {
+    return scope === "queue"
+      ? "includeAuthor=true&includeBook=true"
+      : "includeAuthor=true";
+  }
+  return "";
+}
 
-  const [statusRes, queueRes, wantedRes, calendarRes, library] =
-    await Promise.all([
-      arrGet(service, "/api/v3/system/status"),
-      arrGet(service, "/api/v3/queue?pageSize=20"),
-      arrGet(
-        service,
-        "/api/v3/wanted/missing?pageSize=30&sortDirection=descending",
-      ).catch(async () =>
-        arrGet(service, "/api/v3/wanted/missing?pageSize=30"),
-      ),
-      arrGet(
-        service,
-        `/api/v3/calendar?start=${start}&end=${end}&unmonitored=false`,
-      ),
-      fetchLibrary(service).catch(() => [] as ArrLibraryItem[]),
-    ]);
+function withQuery(path: string, extra: string): string {
+  if (!extra) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}${extra}`;
+}
 
-  const queue = asRecords(queueRes.data).map((row) => ({
+function nestedTitle(row: Record<string, unknown>, key: string): string {
+  const nested = row[key] as
+    | { title?: string; artistName?: string; authorName?: string }
+    | undefined;
+  return String(
+    nested?.title || nested?.artistName || nested?.authorName || "",
+  ).trim();
+}
+
+function num0(raw: unknown): number | undefined {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function episodeCode(row: Record<string, unknown>): string {
+  const season = Number(row.seasonNumber);
+  const ep = Number(row.episodeNumber);
+  if (!Number.isFinite(season) || !Number.isFinite(ep)) return "";
+  return `S${String(season).padStart(2, "0")}E${String(ep).padStart(2, "0")}`;
+}
+
+function mediaRef(kind: ArrKind, row: Record<string, unknown>): ArrMediaRef {
+  if (kind === "series") {
+    return {
+      episodeId: num0(row.episodeId) ?? num0(row.id),
+      seriesId: num0(row.seriesId),
+    };
+  }
+  if (kind === "movie") return { movieId: num0(row.movieId) ?? num0(row.id) };
+  if (kind === "artist") {
+    return {
+      albumId: num0(row.albumId) ?? num0(row.id),
+      artistId: num0(row.artistId),
+    };
+  }
+  if (kind === "author") {
+    return {
+      bookId: num0(row.bookId) ?? num0(row.id),
+      authorId: num0(row.authorId),
+    };
+  }
+  return {};
+}
+
+function parentTitle(kind: ArrKind, row: Record<string, unknown>): string {
+  if (kind === "series") return nestedTitle(row, "series") || String(row.seriesTitle || "");
+  if (kind === "movie") return nestedTitle(row, "movie");
+  if (kind === "artist") return nestedTitle(row, "artist");
+  if (kind === "author") return nestedTitle(row, "author");
+  return "";
+}
+
+export function mapQueueRow(
+  kind: ArrKind,
+  row: Record<string, unknown>,
+): ArrQueueItem {
+  const size = typeof row.size === "number" ? row.size : undefined;
+  const sizeleft = typeof row.sizeleft === "number" ? row.sizeleft : undefined;
+  const progress =
+    size && size > 0 && sizeleft != null
+      ? Math.max(0, Math.min(100, Math.round(((size - sizeleft) / size) * 100)))
+      : undefined;
+  const messages: string[] = [];
+  for (const msg of Array.isArray(row.statusMessages) ? row.statusMessages : []) {
+    const m = msg as { title?: string; messages?: unknown[] };
+    for (const line of Array.isArray(m.messages) ? m.messages : []) {
+      if (line) messages.push(String(line));
+    }
+    if (!Array.isArray(m.messages) && m.title) messages.push(String(m.title));
+  }
+  const episode = row.episode as Record<string, unknown> | undefined;
+  const refRow = {
+    ...row,
+    id: undefined,
+  } as Record<string, unknown>;
+  return {
+    ...mediaRef(kind, refRow),
     id: Number(row.id) || 0,
     title: String(row.title || row.sourceTitle || "Queue item"),
+    mediaTitle:
+      [parentTitle(kind, row), episode ? episodeCode(episode) : ""]
+        .filter(Boolean)
+        .join(" · ") || undefined,
     status: String(row.status || row.trackedDownloadState || ""),
     trackedDownloadState: row.trackedDownloadState
       ? String(row.trackedDownloadState)
       : undefined,
-    sizeleft: typeof row.sizeleft === "number" ? row.sizeleft : undefined,
+    trackedDownloadStatus: row.trackedDownloadStatus
+      ? String(row.trackedDownloadStatus)
+      : undefined,
+    size,
+    sizeleft,
     timeleft: row.timeleft ? String(row.timeleft) : undefined,
-  })) as ArrQueueItem[];
+    progress,
+    messages,
+    errorMessage: row.errorMessage ? String(row.errorMessage) : undefined,
+    downloadClient: row.downloadClient ? String(row.downloadClient) : undefined,
+    outputPath: row.outputPath ? String(row.outputPath) : undefined,
+    downloadId: row.downloadId ? String(row.downloadId) : undefined,
+    protocol: row.protocol ? String(row.protocol) : undefined,
+  };
+}
+
+function mapScheduleRow(
+  kind: ArrKind,
+  row: Record<string, unknown>,
+  fallback: string,
+) {
+  const parent = parentTitle(kind, row);
+  const own = String(row.title || "").trim();
+  const code = kind === "series" ? episodeCode(row) : "";
+  return {
+    ...mediaRef(kind, row),
+    id: Number(row.id) || 0,
+    title: parent || own || fallback,
+    mediaTitle: parent || undefined,
+    subtitle:
+      kind === "series"
+        ? [code, own].filter(Boolean).join(" · ") || undefined
+        : parent && own && own !== parent
+          ? own
+          : undefined,
+  };
+}
+
+function localDay(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function calendarPath(kind: ArrKind, days: number): string {
+  // Local-day window; the arrs interpret bare dates as UTC so pad a day each side.
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 1);
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() + days + 1);
+  return withQuery(
+    `/api/v3/calendar?start=${localDay(startDate)}&end=${localDay(endDate)}&unmonitored=false`,
+    includeParams(kind, "calendar"),
+  );
+}
+
+function mapCalendar(kind: ArrKind, data: unknown, days: number): ArrCalendarItem[] {
+  const today = localDay(new Date());
+  const last = new Date();
+  last.setDate(last.getDate() + days);
+  const lastDay = localDay(last);
+  return asRecords(data)
+    .map((row) => ({
+      ...mapScheduleRow(kind, row, "Upcoming"),
+      airDateUtc: row.airDateUtc ? String(row.airDateUtc) : undefined,
+      releaseDate: String(
+        row.releaseDate || row.digitalRelease || row.physicalRelease || row.inCinemas || "",
+      ) || undefined,
+      hasFile: Boolean(row.hasFile),
+    }))
+    .filter((item) => {
+      const when = item.airDateUtc
+        ? localDay(new Date(item.airDateUtc))
+        : (item.releaseDate || "").slice(0, 10);
+      return !when || (when >= today && when <= lastDay);
+    })
+    .sort((a, b) =>
+      String(a.airDateUtc || a.releaseDate || "").localeCompare(
+        String(b.airDateUtc || b.releaseDate || ""),
+      ),
+    ) as ArrCalendarItem[];
+}
+
+export async function fetchArrCalendar(
+  service: ServiceConfig,
+  days = 7,
+): Promise<ArrCalendarItem[]> {
+  const kind = detectArrKind(service);
+  const res = await arrGet(service, calendarPath(kind, days));
+  if (res.status >= 400) throw new Error(`Calendar ${res.status}`);
+  return mapCalendar(kind, res.data, days);
+}
+
+export async function fetchArrOverview(service: ServiceConfig) {
+  const kind = detectArrKind(service);
+
+  const wantedPath = withQuery(
+    "/api/v3/wanted/missing?pageSize=50",
+    includeParams(kind, "wanted"),
+  );
+  const [statusRes, queueRes, wantedRes, calendarRes, library] =
+    await Promise.all([
+      arrGet(service, "/api/v3/system/status"),
+      arrGet(
+        service,
+        withQuery("/api/v3/queue?pageSize=100", includeParams(kind, "queue")),
+      ),
+      arrGet(service, `${wantedPath}&sortDirection=descending`).catch(
+        async () => arrGet(service, wantedPath),
+      ),
+      arrGet(service, calendarPath(kind, 14)),
+      fetchLibrary(service).catch(() => [] as ArrLibraryItem[]),
+    ]);
+
+  const queue = asRecords(queueRes.data).map((row) => mapQueueRow(kind, row));
 
   const wanted = asRecords(wantedRes.data).map((row) => ({
-    id: Number(row.id) || 0,
-    title: String(
-      row.title ||
-        row.seriesTitle ||
-        (row.series as { title?: string } | undefined)?.title ||
-        "Missing",
-    ),
+    ...mapScheduleRow(kind, row, "Missing"),
     status: row.status ? String(row.status) : undefined,
   })) as ArrWantedItem[];
 
-  const calendar = asRecords(calendarRes.data).map((row) => ({
-    id: Number(row.id) || 0,
-    title: String(
-      row.title ||
-        row.seriesTitle ||
-        (row.series as { title?: string } | undefined)?.title ||
-        "Upcoming",
-    ),
-    airDateUtc: row.airDateUtc ? String(row.airDateUtc) : undefined,
-    releaseDate: row.releaseDate ? String(row.releaseDate) : undefined,
-    hasFile: Boolean(row.hasFile),
-  })) as ArrCalendarItem[];
+  const calendar = mapCalendar(kind, calendarRes.data, 14);
 
   const statusOk = statusRes.status >= 200 && statusRes.status < 300;
   const version =
@@ -312,6 +479,184 @@ export async function triggerArrCommand(
     throw new Error(`Command failed (${res.status})`);
   }
 }
+
+export async function fetchArrQueue(service: ServiceConfig): Promise<ArrQueueItem[]> {
+  const kind = detectArrKind(service);
+  const res = await arrGet(
+    service,
+    withQuery("/api/v3/queue?pageSize=100", includeParams(kind, "queue")),
+  );
+  if (res.status >= 400) throw new Error(`Queue ${res.status}`);
+  return asRecords(res.data).map((row) => mapQueueRow(kind, row));
+}
+
+/** Search command for whatever a queue / wanted / calendar row points at. */
+export function searchCommandFor(
+  service: ServiceConfig,
+  ref: ArrMediaRef,
+): { name: string; body: Record<string, unknown> } | null {
+  const kind = detectArrKind(service);
+  if (kind === "series" && ref.episodeId) {
+    return { name: "EpisodeSearch", body: { episodeIds: [ref.episodeId] } };
+  }
+  if (kind === "series" && ref.seriesId) {
+    return { name: "SeriesSearch", body: { seriesId: ref.seriesId } };
+  }
+  if (kind === "movie" && ref.movieId) {
+    return { name: "MoviesSearch", body: { movieIds: [ref.movieId] } };
+  }
+  if (kind === "artist" && ref.albumId) {
+    return { name: "AlbumSearch", body: { albumIds: [ref.albumId] } };
+  }
+  if (kind === "author" && ref.bookId) {
+    return { name: "BookSearch", body: { bookIds: [ref.bookId] } };
+  }
+  return null;
+}
+
+export async function searchMediaRef(
+  service: ServiceConfig,
+  ref: ArrMediaRef,
+): Promise<string> {
+  const cmd = searchCommandFor(service, ref);
+  if (!cmd) throw new Error("Nothing to search for on this item.");
+  await triggerArrCommand(service, cmd.name, cmd.body);
+  return "Search sent to indexers.";
+}
+
+/**
+ * Remove a queue item. With `blocklist`, the release is blocklisted and the
+ * arr automatically searches for a replacement (skipRedownload=false).
+ */
+export async function removeQueueItem(
+  service: ServiceConfig,
+  item: Pick<ArrQueueItem, "id">,
+  opts: { blocklist: boolean; removeFromClient?: boolean },
+): Promise<string> {
+  const params = new URLSearchParams({
+    removeFromClient: String(opts.removeFromClient !== false),
+    blocklist: String(opts.blocklist),
+    skipRedownload: "false",
+  });
+  const res = await arrDelete(service, `/api/v3/queue/${item.id}?${params}`);
+  if (res.status >= 400) throw new Error(`Remove failed (${res.status})`);
+  return opts.blocklist
+    ? "Removed and blocklisted — searching for another release."
+    : "Removed from queue.";
+}
+
+const DOWNLOADED_SCAN_COMMAND: Partial<Record<ArrKind, string>> = {
+  series: "DownloadedEpisodesScan",
+  movie: "DownloadedMoviesScan",
+  artist: "DownloadedAlbumsScan",
+  author: "DownloadedBooksScan",
+};
+
+/** Re-run import for a finished download stuck in importPending / importBlocked. */
+export async function retryQueueImport(
+  service: ServiceConfig,
+  item: Pick<ArrQueueItem, "outputPath" | "downloadId">,
+): Promise<string> {
+  const name = DOWNLOADED_SCAN_COMMAND[detectArrKind(service)];
+  if (!name || !item.outputPath) {
+    throw new Error("No download path to import from — use the arr's Manual Import.");
+  }
+  await triggerArrCommand(service, name, {
+    path: item.outputPath,
+    downloadClientId: item.downloadId,
+    importMode: "auto",
+  });
+  return "Import scan started.";
+}
+
+export function queueNeedsAttention(item: ArrQueueItem): boolean {
+  const state = String(item.trackedDownloadState || "").toLowerCase();
+  const status = String(item.trackedDownloadStatus || "").toLowerCase();
+  return (
+    state.startsWith("import") ||
+    state.startsWith("fail") ||
+    status === "warning" ||
+    status === "error" ||
+    Boolean(item.errorMessage)
+  );
+}
+
+export async function fetchArrHealth(
+  service: ServiceConfig,
+): Promise<ArrHealthItem[]> {
+  const res = await arrGet(service, "/api/v3/health");
+  if (res.status >= 400) throw new Error(`Health ${res.status}`);
+  return asList(res.data).map((row) => {
+    const type = String(row.type || "").toLowerCase();
+    return {
+      source: String(row.source || ""),
+      type:
+        type === "error" || type === "warning" || type === "notice"
+          ? type
+          : "ok",
+      message: String(row.message || ""),
+      wikiUrl: row.wikiUrl ? String(row.wikiUrl) : undefined,
+    } as ArrHealthItem;
+  });
+}
+
+export async function fetchArrDiskSpace(
+  service: ServiceConfig,
+): Promise<ArrDiskSpace[]> {
+  const res = await arrGet(service, "/api/v3/diskspace");
+  if (res.status >= 400) throw new Error(`Disk space ${res.status}`);
+  return asList(res.data)
+    .map((row) => ({
+      path: String(row.path || ""),
+      label: row.label ? String(row.label) : undefined,
+      freeSpace: Number(row.freeSpace) || 0,
+      totalSpace: Number(row.totalSpace) || 0,
+    }))
+    .filter((d) => d.totalSpace > 0);
+}
+
+export type ArrAddOptions = {
+  qualityProfileId?: number;
+  rootFolderPath?: string;
+  languageProfileId?: number;
+  metadataProfileId?: number;
+  /** Sonarr addOptions.monitor */
+  monitor?:
+    | "all"
+    | "future"
+    | "missing"
+    | "existing"
+    | "firstSeason"
+    | "latestSeason"
+    | "pilot"
+    | "none";
+  /** Radarr / Whisparr */
+  minimumAvailability?: "announced" | "inCinemas" | "released";
+  searchNow?: boolean;
+};
+
+export const SONARR_MONITOR_OPTIONS: {
+  id: NonNullable<ArrAddOptions["monitor"]>;
+  label: string;
+}[] = [
+  { id: "all", label: "All episodes" },
+  { id: "future", label: "Future episodes" },
+  { id: "missing", label: "Missing episodes" },
+  { id: "existing", label: "Existing episodes" },
+  { id: "firstSeason", label: "First season" },
+  { id: "latestSeason", label: "Latest season" },
+  { id: "pilot", label: "Pilot only" },
+  { id: "none", label: "None" },
+];
+
+export const MIN_AVAILABILITY_OPTIONS: {
+  id: NonNullable<ArrAddOptions["minimumAvailability"]>;
+  label: string;
+}[] = [
+  { id: "announced", label: "Announced" },
+  { id: "inCinemas", label: "In cinemas" },
+  { id: "released", label: "Released" },
+];
 
 export async function fetchAddProfiles(
   service: ServiceConfig,
@@ -472,39 +817,57 @@ export async function lookupMedia(
   );
 }
 
+function resolveAddChoices(profiles: ArrAddProfile, opts: ArrAddOptions) {
+  const qualityProfileId = opts.qualityProfileId ?? profiles.qualityProfiles[0]?.id;
+  const rootFolderPath = opts.rootFolderPath ?? profiles.rootFolders[0]?.path;
+  if (!qualityProfileId || !rootFolderPath) {
+    throw new Error("No quality profile or root folder configured in the *arr app.");
+  }
+  return {
+    qualityProfileId,
+    rootFolderPath,
+    metadataProfileId:
+      opts.metadataProfileId ?? profiles.metadataProfiles?.[0]?.id,
+    languageProfileId:
+      opts.languageProfileId ?? profiles.languageProfiles?.[0]?.id,
+    searchNow: opts.searchNow !== false,
+  };
+}
+
 export async function addAndSearch(
   service: ServiceConfig,
   item: ArrLookupItem,
   profiles: ArrAddProfile,
+  opts: ArrAddOptions = {},
 ): Promise<string> {
   const kind = detectArrKind(service);
-  const qualityProfileId = profiles.qualityProfiles[0]?.id;
-  const rootFolderPath = profiles.rootFolders[0]?.path;
-  if (!qualityProfileId || !rootFolderPath) {
-    throw new Error("No quality profile or root folder configured in the *arr app.");
-  }
+  const { qualityProfileId, rootFolderPath, metadataProfileId, languageProfileId, searchNow } =
+    resolveAddChoices(profiles, opts);
 
   if (kind === "series") {
+    const monitor = opts.monitor ?? "all";
     const payload = {
       ...item.raw,
       qualityProfileId,
       rootFolderPath,
-      monitored: true,
+      monitored: monitor !== "none",
       seasonFolder: true,
       seriesType: item.raw.seriesType || "standard",
       addOptions: {
-        searchForMissingEpisodes: true,
+        monitor,
+        searchForMissingEpisodes: searchNow,
         searchForCutoffUnmetEpisodes: false,
       },
-      languageProfileId:
-        profiles.languageProfiles?.[0]?.id || item.raw.languageProfileId,
+      languageProfileId: languageProfileId || item.raw.languageProfileId,
     };
     delete (payload as { id?: number }).id;
     const res = await arrPost(service, "/api/v3/series", payload);
     if (res.status >= 400) {
       throw new Error(`Add series failed (${res.status})`);
     }
-    return "Added series and started search for missing episodes.";
+    return searchNow
+      ? "Added series and started search for missing episodes."
+      : "Added series.";
   }
 
   if (kind === "movie") {
@@ -513,9 +876,10 @@ export async function addAndSearch(
       qualityProfileId,
       rootFolderPath,
       monitored: true,
-      minimumAvailability: item.raw.minimumAvailability || "announced",
+      minimumAvailability:
+        opts.minimumAvailability || item.raw.minimumAvailability || "announced",
       addOptions: {
-        searchForMovie: true,
+        searchForMovie: searchNow,
       },
     };
     delete (payload as { id?: number }).id;
@@ -523,21 +887,23 @@ export async function addAndSearch(
     if (res.status >= 400) {
       throw new Error(`Add movie failed (${res.status})`);
     }
-    return "Added movie and sent search to download clients.";
+    return searchNow
+      ? "Added movie and sent search to download clients."
+      : "Added movie.";
   }
 
   if (kind === "artist") {
     if (item.mediaType === "album") {
-      return addAlbumAndSearch(service, item, profiles);
+      return addAlbumAndSearch(service, item, profiles, opts);
     }
     const payload = {
       ...item.raw,
       qualityProfileId,
-      metadataProfileId: profiles.metadataProfiles?.[0]?.id,
+      metadataProfileId,
       rootFolderPath,
       monitored: true,
       addOptions: {
-        searchForMissingAlbums: true,
+        searchForMissingAlbums: searchNow,
       },
     };
     delete (payload as { id?: number }).id;
@@ -550,16 +916,16 @@ export async function addAndSearch(
 
   if (kind === "author") {
     if (item.mediaType === "book") {
-      return addBookAndSearch(service, item, profiles);
+      return addBookAndSearch(service, item, profiles, opts);
     }
     const payload = {
       ...item.raw,
       qualityProfileId,
-      metadataProfileId: profiles.metadataProfiles?.[0]?.id,
+      metadataProfileId,
       rootFolderPath,
       monitored: true,
       addOptions: {
-        searchForMissingBooks: true,
+        searchForMissingBooks: searchNow,
       },
     };
     delete (payload as { id?: number }).id;
@@ -577,13 +943,10 @@ async function addAlbumAndSearch(
   service: ServiceConfig,
   item: ArrLookupItem,
   profiles: ArrAddProfile,
+  opts: ArrAddOptions,
 ): Promise<string> {
-  const qualityProfileId = profiles.qualityProfiles[0]?.id;
-  const rootFolderPath = profiles.rootFolders[0]?.path;
-  const metadataProfileId = profiles.metadataProfiles?.[0]?.id;
-  if (!qualityProfileId || !rootFolderPath) {
-    throw new Error("No quality profile or root folder configured in the *arr app.");
-  }
+  const { qualityProfileId, rootFolderPath, metadataProfileId } =
+    resolveAddChoices(profiles, opts);
 
   const albumId = Number(item.raw.id) || item.addedId || 0;
   const artistId = Number(item.raw.artistId) || 0;
@@ -628,13 +991,10 @@ async function addBookAndSearch(
   service: ServiceConfig,
   item: ArrLookupItem,
   profiles: ArrAddProfile,
+  opts: ArrAddOptions,
 ): Promise<string> {
-  const qualityProfileId = profiles.qualityProfiles[0]?.id;
-  const rootFolderPath = profiles.rootFolders[0]?.path;
-  const metadataProfileId = profiles.metadataProfiles?.[0]?.id;
-  if (!qualityProfileId || !rootFolderPath) {
-    throw new Error("No quality profile or root folder configured in the *arr app.");
-  }
+  const { qualityProfileId, rootFolderPath, metadataProfileId } =
+    resolveAddChoices(profiles, opts);
 
   const bookId = Number(item.raw.id) || item.addedId || 0;
   const authorId = Number(item.raw.authorId) || 0;
@@ -1251,6 +1611,32 @@ export async function grabRelease(
     throw new Error(`Grab failed (${res.status})`);
   }
   return "Sent to download client.";
+}
+
+/** Local, human time for calendar rows (arr APIs return UTC). */
+export function formatScheduleWhen(airDateUtc?: string, releaseDate?: string): string {
+  if (airDateUtc) {
+    const d = new Date(airDateUtc);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString([], {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+  }
+  if (releaseDate) {
+    // Date-only strings parse as UTC midnight; pin to local noon to keep the day.
+    const d = new Date(
+      /^\d{4}-\d{2}-\d{2}$/.test(releaseDate) ? `${releaseDate}T12:00:00` : releaseDate,
+    );
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    }
+  }
+  return "";
 }
 
 export function formatBytes(size?: number): string {

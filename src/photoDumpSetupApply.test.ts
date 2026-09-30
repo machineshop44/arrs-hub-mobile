@@ -38,7 +38,7 @@ describe("photoDumpSetupApply", () => {
     expect(plan.photoDumpUrl).toBe("");
   });
 
-  it("LAN QR never writes LAN into empty wol.hubUrl", () => {
+  it("LAN QR never writes LAN into empty wol.hubUrl but sets photo-dump for LAN-only", () => {
     const plan = planPhotoDumpSetupApply({
       scannedUrl: "http://192.168.1.50:3000",
       existingWolHubUrl: "",
@@ -46,7 +46,7 @@ describe("photoDumpSetupApply", () => {
     });
     expect(plan.homeBaseUrl).toBe("http://192.168.1.50");
     expect(plan.wolHubUrl).toBeUndefined();
-    expect(plan.photoDumpUrl).toBe("");
+    expect(plan.photoDumpUrl).toBe("http://192.168.1.50");
   });
 
   it("WAN QR sets wol.hubUrl and photo-dump url", () => {

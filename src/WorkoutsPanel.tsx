@@ -22,6 +22,7 @@ import {
   playWorkoutDay,
   probeHubReachable,
   probeWorkoutMediaStream,
+  redactHubAuthUrl,
   withVlcDirectStreamUrl,
   type PlaylistItem,
   type WorkoutClient,
@@ -180,7 +181,7 @@ function WorkoutPlayer({
       const probe = await probeWorkoutMediaStream(streamUrl);
       if (!probe.ok) {
         setExternalHint(
-          `Stream not playable.\n${probe.detail}\nTried: ${probe.url}${
+          `Stream not playable.\n${probe.detail}\nTried: ${redactHubAuthUrl(probe.url)}${
             probe.status ? ` (HTTP ${probe.status})` : ""
           }`,
         );
@@ -527,7 +528,7 @@ export function WorkoutsPanel({
                 ? "\nSet Hub API token in Settings → Network (same token as Hub Settings), then retry. After updating Hub, streams also carry hubToken for VLC."
                 : "";
             throw new Error(
-              `Workout stream not playable in VLC.\n${probe.detail}${authHint}\nTried: ${probe.url}${
+              `Workout stream not playable in VLC.\n${probe.detail}${authHint}\nTried: ${redactHubAuthUrl(probe.url)}${
                 probe.status ? ` (HTTP ${probe.status})` : ""
               }`,
             );

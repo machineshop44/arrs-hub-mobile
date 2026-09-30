@@ -102,7 +102,8 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     probe: "arr",
     auth: "apiKey",
     category: "media-management",
-    defaultEnabled: true,
+    /** Upstream Readarr was retired in 2025 — opt in if you still run it. */
+    defaultEnabled: false,
   },
   {
     id: "prowlarr",
@@ -216,16 +217,6 @@ export const DEFAULT_SERVICES: ServiceDefinition[] = [
     defaultEnabled: false,
   },
   {
-    id: "overseerr",
-    name: "Overseerr",
-    defaultUrl: "",
-    color: "#6366f1",
-    probe: "http",
-    auth: "apiKey",
-    category: "requests",
-    defaultEnabled: false,
-  },
-  {
     id: "whisparr",
     name: "Whisparr",
     defaultUrl: "",
@@ -296,6 +287,16 @@ export function isCompanionOnlyService(
   service: Pick<ServiceConfig, "id" | "url">,
 ): boolean {
   return service.id === "fileflows-node" || isCompanionOnlyUrl(service.url);
+}
+
+/**
+ * Probed for Up/Down, but no module tile: FlareSolverr's "web UI" is a JSON
+ * readiness page, and companion-only services have no HTTP UI at all.
+ */
+export function isStatusOnlyService(
+  service: Pick<ServiceConfig, "id" | "url">,
+): boolean {
+  return service.id === "flaresolverr" || isCompanionOnlyService(service);
 }
 
 export function buildDefaultConfigs(seed: CredentialSeed = {}): ServiceConfig[] {

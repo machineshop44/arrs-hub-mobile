@@ -1,28 +1,17 @@
-import { Capacitor, CapacitorHttp } from "@capacitor/core";
+import { httpRequest, normalizeBase } from "./http";
 import type { ServiceConfig } from "./services";
 
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
-
 async function httpGet(url: string, timeoutMs = 12000) {
-  if (Capacitor.isNativePlatform()) {
-    return CapacitorHttp.get({
-      url,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-  }
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(timeoutMs),
-    cache: "no-store",
-  });
-  const data = await res.json().catch(() => null);
-  return { status: res.status, data };
+  return httpRequest(url, { timeoutMs });
 }
 
 export type TautulliSession = {
   sessionKey: string;
+  /** Plex session id — what terminate_session needs. */
+  sessionId: string;
+  /** Why Plex is transcoding (codec / resolution / subtitle burn / bandwidth). */
+  transcodeReasons: string[];
+  isTranscoding: boolean;
   user: string;
   title: string;
   /** Show / movie / album headline (grandparent or title). */
@@ -157,6 +146,49 @@ function episodeSubtitle(row: Record<string, unknown>): string {
   return epTitle;
 }
 
+function changed(from: string, to: string): string {
+  if (!from || !to || from.toLowerCase() === to.toLowerCase()) return "";
+  return `${from.toUpperCase()} → ${to.toUpperCase()}`;
+}
+
+/** Human reasons from Tautulli's per-stream decisions (get_activity fields). */
+export function transcodeReasonsFor(row: Record<string, unknown>): string[] {
+  const reasons: string[] = [];
+  if (str(row, "video_decision").toLowerCase() === "transcode") {
+    const codec = changed(str(row, "video_codec"), str(row, "stream_video_codec"));
+    const res = changed(
+      str(row, "video_full_resolution"),
+      str(row, "stream_video_full_resolution"),
+    );
+    reasons.push(
+      ["Video", codec, res].filter(Boolean).join(" ") || "Video transcode",
+    );
+  }
+  if (str(row, "audio_decision").toLowerCase() === "transcode") {
+    const codec = changed(str(row, "audio_codec"), str(row, "stream_audio_codec"));
+    reasons.push(codec ? `Audio ${codec}` : "Audio transcode");
+  }
+  const subtitle = str(row, "subtitle_decision", "stream_subtitle_decision").toLowerCase();
+  if (subtitle === "burn") {
+    const codec = str(row, "subtitle_codec");
+    reasons.push(`Burning subtitles${codec ? ` (${codec.toUpperCase()})` : ""}`);
+  }
+  if (str(row, "stream_container_decision").toLowerCase() === "transcode") {
+    const c = changed(str(row, "container"), str(row, "stream_container"));
+    reasons.push(c ? `Container ${c}` : "Container remux");
+  }
+  const profile = str(row, "quality_profile");
+  if (reasons.length && profile && !/original/i.test(profile)) {
+    reasons.push(`Quality set to ${profile}`);
+  }
+  const hwDec = row.transcode_hw_decoding === 1 || row.transcode_hw_decoding === "1";
+  const hwEnc = row.transcode_hw_encoding === 1 || row.transcode_hw_encoding === "1";
+  if (reasons.length) {
+    reasons.push(hwDec || hwEnc ? "Hardware transcoding" : "Software (CPU) transcoding");
+  }
+  return reasons;
+}
+
 function mapSession(
   service: ServiceConfig,
   row: Record<string, unknown>,
@@ -231,14 +263,23 @@ function mapSession(
         })
     : undefined;
 
+  const user = str(row, "friendly_name", "username", "user") || "User";
+  const player = str(row, "player") || "Player";
+  const transcodeReasons = transcodeReasonsFor(row);
   return {
-    sessionKey: str(row, "session_key", "session_id") || String(Math.random()),
-    user: str(row, "friendly_name", "username", "user") || "User",
+    // Stable fallback so React doesn't remount (and re-fetch posters) every poll.
+    sessionKey:
+      str(row, "session_key", "session_id") ||
+      `${user}|${str(row, "rating_key")}|${player}`,
+    sessionId: str(row, "session_id"),
+    transcodeReasons,
+    isTranscoding: /transcode/i.test(transcodeRaw),
+    user,
     title,
     displayTitle,
     subtitle,
     fullTitle,
-    player: str(row, "player") || "Player",
+    player,
     product: str(row, "product"),
     platform: str(row, "platform", "platform_name"),
     device: str(row, "device"),
@@ -331,4 +372,95 @@ export async function fetchTautulliActivity(
       sessions: [],
     };
   }
+}
+
+async function tautulliCmd(
+  service: ServiceConfig,
+  cmd: string,
+  params: Record<string, string> = {},
+): Promise<unknown> {
+  const base = normalizeBase(service.url);
+  const key = service.apiKey.trim();
+  if (!base || !key) throw new Error("Add your Tautulli URL and API key in Settings.");
+  const qs = new URLSearchParams({ apikey: key, cmd, ...params });
+  const res = await httpGet(`${base}/api/v2?${qs.toString()}`);
+  if (res.status >= 400) throw new Error(`Tautulli HTTP ${res.status}`);
+  const payload = res.data as {
+    response?: { result?: string; message?: string; data?: unknown };
+  };
+  if (payload?.response?.result !== "success") {
+    throw new Error(payload?.response?.message || `Tautulli ${cmd} failed`);
+  }
+  return payload.response.data;
+}
+
+/** Stop a Plex stream through Tautulli (needs Plex Pass on the server). */
+export async function terminateTautulliSession(
+  service: ServiceConfig,
+  session: Pick<TautulliSession, "sessionId" | "sessionKey">,
+  message = "",
+): Promise<void> {
+  const params: Record<string, string> = {};
+  if (session.sessionId) params.session_id = session.sessionId;
+  else params.session_key = session.sessionKey;
+  if (message.trim()) params.message = message.trim();
+  await tautulliCmd(service, "terminate_session", params);
+}
+
+export type TautulliRecentItem = {
+  key: string;
+  title: string;
+  subtitle: string;
+  mediaType: string;
+  library: string;
+  addedAt?: number;
+  posterUrl?: string;
+};
+
+export async function fetchTautulliRecentlyAdded(
+  service: ServiceConfig,
+  count = 20,
+): Promise<TautulliRecentItem[]> {
+  const data = (await tautulliCmd(service, "get_recently_added", {
+    count: String(count),
+  })) as { recently_added?: Record<string, unknown>[] } | null;
+  return asArray(data?.recently_added).map((row, index) => {
+    const mediaType = str(row, "media_type").toLowerCase();
+    const grandparent = str(row, "grandparent_title");
+    const parent = str(row, "parent_title");
+    const title = str(row, "title");
+    let headline = title;
+    let subtitle = str(row, "year");
+    let ratingKey = str(row, "rating_key");
+    let thumb = str(row, "thumb");
+    if (mediaType === "episode") {
+      headline = grandparent || title;
+      subtitle = episodeSubtitle(row);
+      ratingKey = str(row, "grandparent_rating_key") || ratingKey;
+      thumb = str(row, "grandparent_thumb") || thumb;
+    } else if (mediaType === "season") {
+      headline = parent || title;
+      subtitle = title;
+      ratingKey = str(row, "parent_rating_key") || ratingKey;
+    } else if (mediaType === "album" || mediaType === "track") {
+      headline = parent || grandparent || title;
+      subtitle = title;
+    }
+    const addedAt = Number(row.added_at);
+    return {
+      key: `${str(row, "rating_key") || index}`,
+      title: headline || "Untitled",
+      subtitle,
+      mediaType,
+      library: str(row, "library_name", "section_name"),
+      addedAt: Number.isFinite(addedAt) && addedAt > 0 ? addedAt * 1000 : undefined,
+      posterUrl: tautulliImageUrl(service, {
+        ratingKey: ratingKey || undefined,
+        img: thumb || undefined,
+        width: 200,
+        height: 300,
+        fallback: mediaType === "album" || mediaType === "track" ? "cover" : "poster",
+      }),
+    };
+  });
 }

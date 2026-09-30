@@ -73,13 +73,15 @@ export function planPhotoDumpSetupApply(input: {
   if (scannedLan) {
     const lanBase = `http://${scannedHost}`;
     const pdIsWan = isWanHubUrl(input.existingPhotoDumpUrl);
+    const wolIsWan = isWanHubUrl(input.existingWolHubUrl);
 
     // Never write LAN into wol.hubUrl. Keep existing WAN photo-dump URL;
-    // otherwise clear so pathing falls back to wol.hubUrl.
+    // if wol already holds WAN, clear private photo-dump so preferHubRemoteUrl
+    // uses wol; otherwise set LAN photo-dump so LAN-only setups still work.
     return {
       homeBaseUrl: lanBase,
       ...portUpdate,
-      ...(pdIsWan ? {} : { photoDumpUrl: "" }),
+      ...(pdIsWan ? {} : wolIsWan ? { photoDumpUrl: "" } : { photoDumpUrl: hubHost }),
     };
   }
 

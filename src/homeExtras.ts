@@ -27,6 +27,24 @@ export type ArrHealthSummary = {
   failed: string[];
 };
 
+/** Only these drives matter (system + media); other mounts are noise. */
+export const WATCHED_DRIVES = ["C:", "N:"] as const;
+
+export function isWatchedDrive(path: string): boolean {
+  const p = path.trim().toUpperCase();
+  return WATCHED_DRIVES.some((d) => p === d || p.startsWith(`${d}\\`) || p.startsWith(`${d}/`));
+}
+
+/**
+ * Per-indexer failures (NZB API daily limits etc.) clear on their own, so they
+ * aren't problems. "No indexers available" checks are kept.
+ */
+export function isTransientIndexerIssue(item: Pick<ArrHealthItem, "source" | "message">): boolean {
+  const source = item.source.toLowerCase();
+  if (source === "indexerstatuscheck" || source === "indexerlongtermstatuscheck") return true;
+  return /indexers? (are |is )?unavailable due to failures/i.test(item.message);
+}
+
 /** Low when under 10% or under 50 GB free. */
 export function isLowDisk(d: Pick<ArrDiskSpace, "freeSpace" | "totalSpace">): boolean {
   if (d.totalSpace <= 0) return false;
@@ -103,11 +121,16 @@ export async function fetchArrHealthSummary(
   );
   const issues: HealthIssue[] = results.flatMap(({ service, health }) =>
     health
-      .filter((h) => h.type === "warning" || h.type === "error")
+      .filter((h) => (h.type === "warning" || h.type === "error") && !isTransientIndexerIssue(h))
       .map((h) => ({ ...h, appId: service.id, appName: service.name })),
   );
   issues.sort((a, b) => (a.type === b.type ? 0 : a.type === "error" ? -1 : 1));
-  const disks = mergeDisks(results.map((r) => ({ appName: r.service.name, disks: r.disks })));
+  const disks = mergeDisks(
+    results.map((r) => ({
+      appName: r.service.name,
+      disks: r.disks.filter((d) => isWatchedDrive(d.path)),
+    })),
+  );
   return {
     issues,
     disks,

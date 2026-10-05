@@ -12,7 +12,12 @@ import {
   mapSabQueue,
   parseSetCookie,
 } from "./downloadsApi";
-import { isLowDisk, mergeDisks } from "./homeExtras";
+import {
+  isLowDisk,
+  isTransientIndexerIssue,
+  isWatchedDrive,
+  mergeDisks,
+} from "./homeExtras";
 import {
   buildOmbiTvRequestBody,
   mapOmbiRequests,
@@ -255,5 +260,34 @@ describe("home health", () => {
     ]);
     expect(merged).toHaveLength(1);
     expect(merged[0]!.appNames).toEqual(["Sonarr", "Radarr"]);
+  });
+
+  it("only watches C: and N:", () => {
+    expect(isWatchedDrive("C:\\")).toBe(true);
+    expect(isWatchedDrive("n:\\Media")).toBe(true);
+    expect(isWatchedDrive("N:")).toBe(true);
+    expect(isWatchedDrive("D:\\")).toBe(false);
+    expect(isWatchedDrive("/mnt/media")).toBe(false);
+  });
+
+  it("ignores per-indexer failures but keeps 'no indexers' checks", () => {
+    expect(
+      isTransientIndexerIssue({
+        source: "IndexerStatusCheck",
+        message: "Indexers unavailable due to failures: NZBgeek",
+      }),
+    ).toBe(true);
+    expect(
+      isTransientIndexerIssue({ source: "IndexerLongTermStatusCheck", message: "x" }),
+    ).toBe(true);
+    expect(
+      isTransientIndexerIssue({
+        source: "IndexerSearchCheck",
+        message: "No indexers available with Automatic Search enabled",
+      }),
+    ).toBe(false);
+    expect(
+      isTransientIndexerIssue({ source: "DownloadClientCheck", message: "Unable to connect" }),
+    ).toBe(false);
   });
 });

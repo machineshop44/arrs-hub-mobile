@@ -21,7 +21,9 @@ import {
 import {
   buildOmbiTvRequestBody,
   mapOmbiRequests,
+  mapOmbiRootFolders,
   mapOmbiSeasons,
+  ombiRootFolderLabel,
 } from "./ombiApi";
 import { plexWebUrl, serviceWebUrl } from "./plexApi";
 import { mergeProwlarrIndexers } from "./prowlarrApi";
@@ -156,14 +158,33 @@ describe("ombi seasons + requests", () => {
         type: "seasons",
         seasons: [{ seasonNumber: 2, episodeNumbers: [1, 2], available: false, requested: false }],
       },
+      42,
     );
     expect(picked.theMovieDbId).toBe(8);
+    expect(picked.rootFolderOverride).toBe(42);
     expect(picked.seasons).toEqual([
       { seasonNumber: 2, episodes: [{ episodeNumber: 1 }, { episodeNumber: 2 }] },
     ]);
     expect(() =>
       buildOmbiTvRequestBody({ tvdbId: 1, tmdbId: null }, { type: "seasons", seasons: [] }),
     ).toThrow();
+  });
+
+  it("maps Ombi root folders and skips bad rows", () => {
+    const folders = mapOmbiRootFolders([
+      { id: 1, path: "N:\\Anime", freeSpace: 50 * 1024 ** 3 },
+      { id: 2, path: "N:\\TV" },
+      { id: 0, path: "bad" },
+      { id: 3, path: "" },
+      { id: 4, rootFolderPath: "C:\\Movies", freeSpaceBytes: 10 },
+    ]);
+    expect(folders).toEqual([
+      { id: 1, path: "N:\\Anime", freeSpace: 50 * 1024 ** 3 },
+      { id: 2, path: "N:\\TV", freeSpace: null },
+      { id: 4, path: "C:\\Movies", freeSpace: 10 },
+    ]);
+    expect(ombiRootFolderLabel(folders[0]!)).toContain("N:\\Anime");
+    expect(ombiRootFolderLabel(folders[0]!)).toContain("GB free");
   });
 
   it("flattens TV child requests with status", () => {

@@ -407,9 +407,75 @@ export type OmbiTvRequestScope =
   | { type: "latest" }
   | { type: "seasons"; seasons: OmbiSeason[] };
 
+export type OmbiRootFolder = {
+  id: number;
+  path: string;
+  freeSpace: number | null;
+};
+
+/** Normalize Ombi / Radarr / Sonarr root-folder rows for the request dialog. */
+export function mapOmbiRootFolders(rows: unknown): OmbiRootFolder[] {
+  const out: OmbiRootFolder[] = [];
+  for (const raw of asArray(rows)) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const id = numId(row.id);
+    const path = String(row.path || row.rootFolderPath || "").trim();
+    if (!id || !path) continue;
+    const free = Number(row.freeSpace ?? row.freeSpaceBytes);
+    out.push({
+      id,
+      path,
+      freeSpace: Number.isFinite(free) ? free : null,
+    });
+  }
+  return out;
+}
+
+/** Radarr + Sonarr root folders via Ombi (anime vs regular library paths). */
+export async function fetchOmbiRootFolders(
+  service: ServiceConfig,
+): Promise<{ movie: OmbiRootFolder[]; tv: OmbiRootFolder[] }> {
+  const [movieRes, tvRes] = await Promise.all([
+    ombiRequest(service, "/api/v1/Radarr/RootFolders", { timeoutMs: 20000 }),
+    ombiRequest(service, "/api/v1/Sonarr/RootFolders", { timeoutMs: 20000 }),
+  ]);
+  return {
+    movie:
+      movieRes.status >= 200 && movieRes.status < 300
+        ? mapOmbiRootFolders(movieRes.data)
+        : [],
+    tv:
+      tvRes.status >= 200 && tvRes.status < 300
+        ? mapOmbiRootFolders(tvRes.data)
+        : [],
+  };
+}
+
+export function ombiRootFolderLabel(folder: OmbiRootFolder): string {
+  if (folder.freeSpace == null || !Number.isFinite(folder.freeSpace) || folder.freeSpace < 0) {
+    return folder.path;
+  }
+  const gib = folder.freeSpace / 1024 ** 3;
+  const free =
+    gib >= 100
+      ? `${Math.round(gib)} GB free`
+      : gib >= 1
+        ? `${gib.toFixed(1)} GB free`
+        : `${Math.round(folder.freeSpace / 1024 ** 2)} MB free`;
+  return `${folder.path} (${free})`;
+}
+
+export type OmbiRequestOptions = {
+  tvScope?: OmbiTvRequestScope;
+  rootFolderId?: number | null;
+  rootFolderPath?: string | null;
+};
+
 export function buildOmbiTvRequestBody(
   hit: Pick<OmbiSearchHit, "tvdbId" | "tmdbId">,
   scope: OmbiTvRequestScope,
+  rootFolderId?: number | null,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     requestAll: scope.type === "all",
@@ -426,6 +492,8 @@ export function buildOmbiTvRequestBody(
       episodes: s.episodeNumbers.map((episodeNumber) => ({ episodeNumber })),
     }));
   }
+  const folderId = numId(rootFolderId);
+  if (folderId) body.rootFolderOverride = folderId;
   return body;
 }
 
@@ -444,12 +512,29 @@ function tvScopeLabel(scope: OmbiTvRequestScope): string {
   }
 }
 
+function folderNote(
+  rootFolderId?: number | null,
+  rootFolderPath?: string | null,
+): string {
+  const path = typeof rootFolderPath === "string" ? rootFolderPath.trim() : "";
+  if (path) return ` → ${path}`;
+  const id = numId(rootFolderId);
+  return id ? ` → root #${id}` : "";
+}
+
 /** Submit a media request to Ombi (may still need admin approval). */
 export async function requestOmbiMedia(
   service: ServiceConfig,
   hit: OmbiSearchHit,
-  tvScope: OmbiTvRequestScope = { type: "all" },
+  options: OmbiTvRequestScope | OmbiRequestOptions = { type: "all" },
 ): Promise<string> {
+  // Back-compat: older callers passed OmbiTvRequestScope as the 3rd arg.
+  const opts: OmbiRequestOptions =
+    options && typeof options === "object" && "type" in options
+      ? { tvScope: options as OmbiTvRequestScope }
+      : (options as OmbiRequestOptions);
+  const tvScope = opts.tvScope ?? { type: "all" };
+
   if (hit.available) {
     throw new Error("Already available in the library.");
   }
@@ -459,22 +544,25 @@ export async function requestOmbiMedia(
 
   if (hit.kind === "movie") {
     if (!hit.tmdbId) throw new Error("Missing TMDb id for this movie.");
+    const body: Record<string, unknown> = { theMovieDbId: hit.tmdbId };
+    const folderId = numId(opts.rootFolderId);
+    if (folderId) body.rootFolderOverride = folderId;
     const { status, data } = await ombiRequest(service, "/api/v1/Request/movie", {
       method: "POST",
-      data: { theMovieDbId: hit.tmdbId },
+      data: body,
     });
     assertOk(status, data, "Movie request failed");
-    return `Requested “${hit.title}” via Ombi → Radarr.`;
+    return `Requested “${hit.title}” via Ombi → Radarr${folderNote(opts.rootFolderId, opts.rootFolderPath)}.`;
   }
 
   if (hit.kind === "tv") {
-    const body = buildOmbiTvRequestBody(hit, tvScope);
+    const body = buildOmbiTvRequestBody(hit, tvScope, opts.rootFolderId);
     const { status, data } = await ombiRequest(service, "/api/v1/Request/tv", {
       method: "POST",
       data: body,
     });
     assertOk(status, data, "TV request failed");
-    return `Requested “${hit.title}” (${tvScopeLabel(tvScope)}) via Ombi → Sonarr.`;
+    return `Requested “${hit.title}” (${tvScopeLabel(tvScope)}) via Ombi → Sonarr${folderNote(opts.rootFolderId, opts.rootFolderPath)}.`;
   }
 
   if (!hit.foreignAlbumId) {

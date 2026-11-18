@@ -22,6 +22,7 @@ import {
 } from "./homeExtras";
 import { fetchTautulliActivity, type TautulliSession } from "./tautulliApi";
 import { updateHubWidget } from "./hubWidget";
+import { MediaImg } from "./mediaUrl";
 
 /** App versions change rarely; the summary still polls every 20 s. */
 const CHIP_VERSIONS_INTERVAL_MS = 5 * 60_000;
@@ -1214,13 +1215,12 @@ export const HomeStatusChips = forwardRef<
               onClick={onOpenStreams}
               title={s.fullTitle}
             >
-              {s.posterUrl ? (
-                <img className="home-np-poster" src={s.posterUrl} alt="" loading="lazy" />
-              ) : (
-                <span className="home-np-poster placeholder" aria-hidden>
-                  ▶
-                </span>
-              )}
+              <MediaImg
+                src={s.posterUrl}
+                className="home-np-poster"
+                fallbackClassName="home-np-poster placeholder"
+                alt=""
+              />
               <span className="home-np-body">
                 <strong>{s.displayTitle || s.title}</strong>
                 <small>
@@ -1402,10 +1402,16 @@ export const HomeStatusChips = forwardRef<
                           Boolean(app.updateAvailable) &&
                           CLICK_UPDATE_APP_IDS.has(app.id) &&
                           !updating;
+                        const jobDetail =
+                          job?.error || job?.message || app.error || undefined;
                         const value = updating
-                          ? "updating…"
+                          ? job?.message || "updating…"
                           : job?.phase === "error"
-                            ? "err"
+                            ? jobDetail
+                              ? jobDetail.length > 40
+                                ? `${jobDetail.slice(0, 37)}…`
+                                : jobDetail
+                              : "err"
                             : !app.configured
                               ? "need key"
                               : !app.ok
@@ -1424,6 +1430,7 @@ export const HomeStatusChips = forwardRef<
                                 type="button"
                                 className="dash-sheet-row-btn dash-queue-app-update"
                                 disabled={updating}
+                                title={jobDetail}
                                 onClick={() =>
                                   void startStackAppUpdate(app.id)
                                 }
@@ -1432,7 +1439,10 @@ export const HomeStatusChips = forwardRef<
                                 <strong>{value}</strong>
                               </button>
                             ) : (
-                              <span className="dash-queue-app-static">
+                              <span
+                                className="dash-queue-app-static"
+                                title={jobDetail}
+                              >
                                 <span>{app.label}</span>
                                 <strong>{value}</strong>
                               </span>
@@ -1553,11 +1563,17 @@ export const HomeStatusChips = forwardRef<
                           app.up === null && verInfo?.version
                             ? "installed"
                             : companionAppHealthLabel(app.up);
+                        const jobDetail =
+                          job?.error || job?.message || app.message || undefined;
                         let value = health;
                         if (updating) {
-                          value = "updating…";
+                          value = job?.message || "updating…";
                         } else if (job?.phase === "error") {
-                          value = "err";
+                          value = jobDetail
+                            ? jobDetail.length > 40
+                              ? `${jobDetail.slice(0, 37)}…`
+                              : jobDetail
+                            : "err";
                         } else if (verInfo?.updateAvailable) {
                           value = `upd → ${verInfo.latestVersion || "?"}`;
                         } else if (verInfo?.version) {
@@ -1600,6 +1616,7 @@ export const HomeStatusChips = forwardRef<
                                 type="button"
                                 className={rowClass}
                                 disabled={updating}
+                                title={jobDetail}
                                 onClick={() =>
                                   void startStackAppUpdate(
                                     app.id,
@@ -1614,6 +1631,7 @@ export const HomeStatusChips = forwardRef<
                               <button
                                 type="button"
                                 className={rowClass}
+                                title={jobDetail}
                                 onClick={() => {
                                   setSheet(null);
                                   onOpenService(app.id);
@@ -1623,12 +1641,7 @@ export const HomeStatusChips = forwardRef<
                                 <strong>{value}</strong>
                               </button>
                             ) : (
-                              <span
-                                className={staticClass}
-                                title={
-                                  job?.error || app.message || undefined
-                                }
-                              >
+                              <span className={staticClass} title={jobDetail}>
                                 <span>{app.label}</span>
                                 <strong>{value}</strong>
                               </span>

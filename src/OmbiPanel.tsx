@@ -6,13 +6,17 @@ import { ServiceIcon } from "./icons";
 import {
   denyOmbiRequestDirect,
   fetchOmbiRequests,
+  fetchOmbiRootFolders,
   fetchOmbiTvSeasons,
   ombiHitStatusLabel,
   ombiKindLabel,
   ombiRequestStatusLabel,
+  ombiRootFolderLabel,
   requestOmbiMedia,
   searchOmbi,
+  type OmbiRequestOptions,
   type OmbiRequestRow,
+  type OmbiRootFolder,
   type OmbiSearchHit,
   type OmbiSearchMode,
   type OmbiSeason,
@@ -31,6 +35,18 @@ const MODE_OPTIONS: { id: OmbiSearchMode; label: string }[] = [
   { id: "music", label: "Music" },
 ];
 
+type RequestDraft = {
+  hit: OmbiSearchHit;
+  /** TV only — quick season mode; "custom" uses selected season checkboxes. */
+  seasonMode: "all" | "first" | "latest" | "custom";
+  seasons: OmbiSeason[] | null;
+  selected: number[];
+  folders: OmbiRootFolder[];
+  foldersLoading: boolean;
+  foldersError: string | null;
+  rootFolderId: number | null;
+};
+
 export function OmbiPanel({
   service,
   onBack,
@@ -46,15 +62,11 @@ export function OmbiPanel({
   const [view, setView] = useState<"search" | "requests">("search");
   const [requests, setRequests] = useState<OmbiRequestRow[] | null>(null);
   const [requestsLoading, setRequestsLoading] = useState(false);
-  const [seasonPick, setSeasonPick] = useState<{
-    hit: OmbiSearchHit;
-    seasons: OmbiSeason[] | null;
-    selected: number[];
-  } | null>(null);
+  const [draft, setDraft] = useState<RequestDraft | null>(null);
 
   useAndroidBackHandler(() => {
-    if (seasonPick) {
-      setSeasonPick(null);
+    if (draft) {
+      setDraft(null);
       return true;
     }
     onBack();
@@ -97,14 +109,72 @@ export function OmbiPanel({
     }
   };
 
-  const openSeasonPicker = async (hit: OmbiSearchHit) => {
-    setSeasonPick({ hit, seasons: null, selected: [] });
+  const loadRootFolders = async (hit: OmbiSearchHit) => {
+    try {
+      const foldersByKind = await fetchOmbiRootFolders(service);
+      const folders = hit.kind === "tv" ? foldersByKind.tv : foldersByKind.movie;
+      setDraft((prev) => {
+        if (!prev || prev.hit.key !== hit.key) return prev;
+        return {
+          ...prev,
+          folders,
+          rootFolderId: folders[0]?.id ?? null,
+          foldersLoading: false,
+          foldersError: folders.length
+            ? null
+            : "No root folders from Ombi — request will use Ombi’s default.",
+        };
+      });
+    } catch (err) {
+      setDraft((prev) => {
+        if (!prev || prev.hit.key !== hit.key) return prev;
+        return {
+          ...prev,
+          folders: [],
+          rootFolderId: null,
+          foldersLoading: false,
+          foldersError:
+            err instanceof Error
+              ? err.message
+              : "Could not load root folders — Ombi default will be used.",
+        };
+      });
+    }
+  };
+
+  const loadSeasons = async (hit: OmbiSearchHit) => {
     try {
       const seasons = await fetchOmbiTvSeasons(service, hit);
-      setSeasonPick((prev) => (prev && prev.hit.key === hit.key ? { ...prev, seasons } : prev));
+      setDraft((prev) =>
+        prev && prev.hit.key === hit.key ? { ...prev, seasons } : prev,
+      );
     } catch {
-      setSeasonPick((prev) => (prev && prev.hit.key === hit.key ? { ...prev, seasons: [] } : prev));
+      setDraft((prev) =>
+        prev && prev.hit.key === hit.key ? { ...prev, seasons: [] } : prev,
+      );
     }
+  };
+
+  const openRequestOptions = (hit: OmbiSearchHit) => {
+    if (busyKey) return;
+    setError(null);
+    setMessage(null);
+    if (hit.kind === "music") {
+      void onRequest(hit);
+      return;
+    }
+    setDraft({
+      hit,
+      seasonMode: "all",
+      seasons: hit.kind === "tv" ? null : [],
+      selected: [],
+      folders: [],
+      foldersLoading: true,
+      foldersError: null,
+      rootFolderId: null,
+    });
+    void loadRootFolders(hit);
+    if (hit.kind === "tv") void loadSeasons(hit);
   };
 
   useEffect(() => {
@@ -141,15 +211,15 @@ export function OmbiPanel({
     }
   };
 
-  const onRequest = async (hit: OmbiSearchHit, tvScope?: OmbiTvRequestScope) => {
+  const onRequest = async (hit: OmbiSearchHit, options: OmbiRequestOptions = {}) => {
     if (busyKey) return;
     setBusyKey(hit.key);
     setError(null);
     setMessage(null);
     try {
-      const msg = await requestOmbiMedia(service, hit, tvScope);
+      const msg = await requestOmbiMedia(service, hit, options);
       setMessage(msg);
-      setSeasonPick(null);
+      setDraft(null);
       setRequests(null);
       setResults((prev) =>
         prev.map((row) =>
@@ -161,6 +231,31 @@ export function OmbiPanel({
     } finally {
       setBusyKey(null);
     }
+  };
+
+  const confirmDraft = () => {
+    if (!draft || draft.foldersLoading) return;
+    let tvScope: OmbiTvRequestScope | undefined;
+    if (draft.hit.kind === "tv") {
+      if (draft.seasonMode === "custom") {
+        const seasons = (draft.seasons ?? []).filter((s) =>
+          draft.selected.includes(s.seasonNumber),
+        );
+        if (!seasons.length) {
+          setError("Pick at least one season.");
+          return;
+        }
+        tvScope = { type: "seasons", seasons };
+      } else {
+        tvScope = { type: draft.seasonMode };
+      }
+    }
+    const selected = draft.folders.find((f) => f.id === draft.rootFolderId);
+    void onRequest(draft.hit, {
+      tvScope,
+      rootFolderId: draft.rootFolderId,
+      rootFolderPath: selected?.path ?? null,
+    });
   };
 
   const openOmbiWeb = async () => {
@@ -328,92 +423,165 @@ export function OmbiPanel({
         </section>
       )}
 
-      {seasonPick && (
-        <div className="dash-sheet-scrim" onClick={() => setSeasonPick(null)}>
-          <div className="dash-sheet ombi-season-sheet" role="dialog" onClick={(e) => e.stopPropagation()}>
+      {draft && (
+        <div
+          className="dash-sheet-scrim"
+          onClick={() => {
+            if (!busyKey) setDraft(null);
+          }}
+        >
+          <div
+            className="dash-sheet ombi-season-sheet"
+            role="dialog"
+            aria-labelledby="ombi-request-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="dash-sheet-head">
-              <strong>Request “{seasonPick.hit.title}”</strong>
+              <strong id="ombi-request-title">
+                Request “{draft.hit.title}”
+                {draft.hit.year ? ` (${draft.hit.year})` : ""}
+              </strong>
             </div>
-            <div className="arr-item-actions" style={{ flexWrap: "wrap" }}>
-              {(["all", "first", "latest"] as const).map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  className="btn chip primary"
-                  disabled={busyKey != null}
-                  onClick={() => void onRequest(seasonPick.hit, { type })}
-                >
-                  {type === "all" ? "All seasons" : type === "first" ? "First season" : "Latest season"}
-                </button>
-              ))}
-            </div>
-            {seasonPick.seasons == null ? (
-              <p className="hint">Loading seasons…</p>
-            ) : seasonPick.seasons.length === 0 ? (
-              <p className="hint">Ombi didn’t return a season list — use a quick option above.</p>
-            ) : (
+            <p className="hint" style={{ margin: 0 }}>
+              {draft.hit.kind === "tv"
+                ? "Pick seasons, then the Sonarr root folder (TV vs anime)."
+                : "Pick the Radarr root folder (Movies vs Anime Movies)."}
+            </p>
+
+            {draft.hit.kind === "tv" ? (
               <>
-                <ul className="ombi-season-list">
-                  {seasonPick.seasons.map((s) => {
-                    const locked = s.available || s.requested;
-                    const checked = seasonPick.selected.includes(s.seasonNumber);
-                    return (
-                      <li key={s.seasonNumber}>
-                        <label>
-                          <input
-                            type="checkbox"
-                            disabled={locked}
-                            checked={checked}
-                            onChange={() =>
-                              setSeasonPick((prev) =>
-                                prev
-                                  ? {
-                                      ...prev,
-                                      selected: checked
-                                        ? prev.selected.filter((n) => n !== s.seasonNumber)
-                                        : [...prev.selected, s.seasonNumber],
-                                    }
-                                  : prev,
-                              )
-                            }
-                          />
-                          Season {s.seasonNumber}
-                          <span className="meta">
-                            {s.available
-                              ? " · available"
-                              : s.requested
-                                ? " · requested"
-                                : s.episodeNumbers.length
-                                  ? ` · ${s.episodeNumbers.length} eps`
-                                  : ""}
-                          </span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
-                <button
-                  type="button"
-                  className="btn primary"
-                  disabled={busyKey != null || seasonPick.selected.length === 0}
-                  onClick={() =>
-                    void onRequest(seasonPick.hit, {
-                      type: "seasons",
-                      seasons: (seasonPick.seasons ?? []).filter((s) =>
-                        seasonPick.selected.includes(s.seasonNumber),
-                      ),
-                    })
-                  }
-                >
-                  {busyKey === seasonPick.hit.key
-                    ? "Requesting…"
-                    : `Request ${seasonPick.selected.length || ""} selected`}
-                </button>
+                <div className="arr-item-actions" style={{ flexWrap: "wrap" }}>
+                  {(["all", "first", "latest"] as const).map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      className={`btn chip${draft.seasonMode === type ? " primary" : ""}`}
+                      disabled={busyKey != null}
+                      onClick={() =>
+                        setDraft((prev) =>
+                          prev ? { ...prev, seasonMode: type, selected: [] } : prev,
+                        )
+                      }
+                    >
+                      {type === "all"
+                        ? "All seasons"
+                        : type === "first"
+                          ? "First season"
+                          : "Latest season"}
+                    </button>
+                  ))}
+                </div>
+                {draft.seasons == null ? (
+                  <p className="hint">Loading seasons…</p>
+                ) : draft.seasons.length === 0 ? (
+                  <p className="hint">
+                    Ombi didn’t return a season list — use a quick option above.
+                  </p>
+                ) : (
+                  <ul className="ombi-season-list">
+                    {draft.seasons.map((s) => {
+                      const locked = s.available || s.requested;
+                      const checked = draft.selected.includes(s.seasonNumber);
+                      return (
+                        <li key={s.seasonNumber}>
+                          <label>
+                            <input
+                              type="checkbox"
+                              disabled={locked || busyKey != null}
+                              checked={checked}
+                              onChange={() =>
+                                setDraft((prev) => {
+                                  if (!prev) return prev;
+                                  const selected = checked
+                                    ? prev.selected.filter((n) => n !== s.seasonNumber)
+                                    : [...prev.selected, s.seasonNumber];
+                                  return {
+                                    ...prev,
+                                    seasonMode: "custom",
+                                    selected,
+                                  };
+                                })
+                              }
+                            />
+                            Season {s.seasonNumber}
+                            <span className="meta">
+                              {s.available
+                                ? " · available"
+                                : s.requested
+                                  ? " · requested"
+                                  : s.episodeNumbers.length
+                                    ? ` · ${s.episodeNumbers.length} eps`
+                                    : ""}
+                            </span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </>
+            ) : null}
+
+            <label className="ombi-request-folder-label" htmlFor="ombi-root-folder">
+              Root folder
+            </label>
+            {draft.foldersLoading ? (
+              <p className="hint">Loading folders from Ombi…</p>
+            ) : draft.folders.length > 0 ? (
+              <select
+                id="ombi-root-folder"
+                className="ombi-request-select"
+                value={draft.rootFolderId ?? ""}
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  setDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          rootFolderId: Number.isFinite(id) ? id : null,
+                        }
+                      : prev,
+                  );
+                }}
+                disabled={busyKey != null}
+              >
+                {draft.folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {ombiRootFolderLabel(folder)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="hint">
+                {draft.foldersError ||
+                  "No root folders listed — Ombi default will be used."}
+              </p>
             )}
-            <button type="button" className="btn" onClick={() => setSeasonPick(null)}>
-              Cancel
-            </button>
+
+            <div className="arr-item-actions" style={{ flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={busyKey != null}
+                onClick={() => setDraft(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={
+                  busyKey != null ||
+                  draft.foldersLoading ||
+                  (draft.hit.kind === "tv" &&
+                    draft.seasonMode === "custom" &&
+                    draft.selected.length === 0)
+                }
+                onClick={confirmDraft}
+              >
+                {busyKey === draft.hit.key ? "Requesting…" : "Send request"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -490,9 +658,7 @@ export function OmbiPanel({
                         type="button"
                         className="btn primary chip"
                         disabled={busyKey != null}
-                        onClick={() =>
-                          hit.kind === "tv" ? void openSeasonPicker(hit) : void onRequest(hit)
-                        }
+                        onClick={() => openRequestOptions(hit)}
                       >
                         {busyKey === hit.key ? "Requesting…" : "Request"}
                       </button>
